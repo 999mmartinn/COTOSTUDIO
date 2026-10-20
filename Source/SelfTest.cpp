@@ -173,7 +173,7 @@ private:
                 song::insertPlugin (*song::getTrack (H(), 0), *found[0]);
             },
             [this] { return pluginParam (H()) >= 0 && pluginParam (P1()) >= 0 && pluginParam (P2()) >= 0; },
-            15000, 0, ! havePlugin });
+            15000, 600, ! havePlugin });   // 0.6 s: a person can't turn a knob faster than that after inserting
 
         steps.push_back ({ "Knob turned inside the plugin's own window on the host -> peers follow",
             [this]
@@ -266,6 +266,18 @@ private:
                 std::cout << "host sync stats: sent " << st.sent << ", applied " << st.applied << ", failed " << st.failed
                           << ", knob messages sent " << st.paramsSent << " / applied " << st.paramsApplied << std::endl;
             }
+
+            for (auto* sess : { &host, &peer1, &peer2 })
+                if (auto* es = sess->getSync())
+                {
+                    auto st = es->getStats();
+                    std::cout << sess->peerName << ": sent " << st.sent << ", applied " << st.applied
+                              << ", failed " << st.failed << ", knobs sent " << st.paramsSent
+                              << " / applied " << st.paramsApplied << "; top sent:" << std::endl;
+
+                    for (auto& line : es->getTopSentKinds (6))
+                        std::cout << "      " << line << std::endl;
+                }
 
             std::cout << "resyncs: peer1 " << peer1.getResyncCount() << ", peer2 " << peer2.getResyncCount() << std::endl;
             finished (failed == 0 ? 0 : 1);

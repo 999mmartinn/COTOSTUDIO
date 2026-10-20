@@ -71,7 +71,7 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     for (auto* c : std::initializer_list<juce::Component*> { &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor,
                                                              &portLabel, &addressLabel, &statusLabel, &playButton,
                                                              &addTrackButton, &addPluginButton, &scanButton, &audioButton,
-                                                             &trackPanel, &grid, &logView })
+                                                             &trackCaption, &gridCaption, &trackPanel, &grid, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -79,6 +79,13 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     logView.setScrollbarsShown (true);
     logView.setFont (juce::FontOptions (13.0f));
     statusLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+
+    for (auto* l : { &trackCaption, &gridCaption })
+    {
+        l->setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+        l->setFont (juce::FontOptions (13.0f));
+        l->setBorderSize ({});
+    }
 
     grid.getEdit = [this] { return session.getEdit(); };
 
@@ -343,10 +350,6 @@ void MainComponent::showAudioSettings()
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (background);
-    g.setColour (juce::Colours::white.withAlpha (0.6f));
-    g.setFont (13.0f);
-    g.drawText ("Tracks and plugins (click a plugin to open it)", 12, 98, 400, 18, juce::Justification::left);
-    g.drawText ("Pattern of the selected track (click to toggle notes)", 12, 98 + 18 + 152, 500, 18, juce::Justification::left);
 }
 
 void MainComponent::resized()
@@ -376,9 +379,11 @@ void MainComponent::resized()
         row2.removeFromLeft (8);
     }
 
-    r.removeFromTop (26);
+    r.removeFromTop (8);
+    trackCaption.setBounds (r.removeFromTop (22));
     trackPanel.setBounds (r.removeFromTop (150));
-    r.removeFromTop (20);
+    r.removeFromTop (6);
+    gridCaption.setBounds (r.removeFromTop (22));
     logView.setBounds (r.removeFromBottom (130));
     r.removeFromBottom (10);
     grid.setBounds (r);

@@ -45,6 +45,8 @@ private:
     juce::TextButton playButton { "Play" }, addTrackButton { "+ Track" }, addPluginButton { "+ Plugin" },
                      scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };
 
+    juce::Label trackCaption { {}, "Tracks and plugins - click a track to select it, click a plugin to open its window (right-click: options)" },
+                gridCaption  { {}, "Pattern of the selected track - click squares to add or remove notes" };
     juce::Component trackPanel;
     juce::OwnedArray<juce::TextButton> trackButtons, pluginButtons;
     StepGrid grid;

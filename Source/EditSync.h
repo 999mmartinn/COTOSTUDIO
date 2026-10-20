@@ -16,6 +16,10 @@ namespace ids
     #define SYNC_DECLARE_ID(name) inline const juce::Identifier name { #name };
     SYNC_DECLARE_ID (MSG)
     SYNC_DECLARE_ID (OP)
+    SYNC_DECLARE_ID (stub)
+    SYNC_DECLARE_ID (sid)
+    SYNC_DECLARE_ID (removedKeys)
+    SYNC_DECLARE_ID (tree)
     SYNC_DECLARE_ID (SYNCLOCAL)
     SYNC_DECLARE_ID (type)
     SYNC_DECLARE_ID (kind)
@@ -47,20 +51,30 @@ namespace ids
     Mirrors one Tracktion Edit to and from other peers.
 
     Two channels:
-      1. Structure: every change to the Edit's ValueTree (tracks, clips, notes,
-         plugin inserts, built-in plugin settings) becomes a small "op" with a
-         path made of child indices. Nodes and properties that are purely local
-         (window positions, transport position...) are skipped.
-      2. Live knobs: third-party plugins (VST3) don't write their knob values to
-         the ValueTree while you turn them, so their AutomatableParameters are
-         listened to directly and sent as "param" ops (coalesced every 30 ms).
+      1. Structure. Changed parts of the Edit's ValueTree (tracks, clips, notes,
+         plugin inserts, built-in plugin settings) are collected during one
+         message-loop turn and then sent as *descriptions of how they look now*:
+           - "props":    every shared property of one node;
+           - "children": the ordered list of a node's children. Children with an
+                         ID that the receiver already has are sent as stubs, new
+                         ones and ID-less ones (notes...) are sent in full.
+         The receiver reconciles its copy with that description, matching
+         children by type + ID (or by position among siblings of the same type
+         when there is no ID). Applying a description twice changes nothing, so
+         the engine's own follow-up changes on both sides settle instead of
+         echoing back and forth.
+         Nodes are addressed by key paths like "TRACK:1013/MIDICLIP:1020/SEQUENCE#0".
+      2. Live knobs. Third-party plugins (VST3) don't write knob values to the
+         tree while you turn them, so their parameters are listened to directly
+         and sent as "param" ops (coalesced every 30 ms).
 
-    Remote ops are applied with notifications suppressed so they are not echoed.
-    A hash of the shared part of the tree lets peers detect divergence.
+    Local-only data (window positions, transport, input devices) is never sent.
+    A hash of the shared state lets peers detect divergence.
 */
 class EditSync  : private juce::ValueTree::Listener,
                   private te::AutomatableParameter::Listener,
-                  private juce::Timer
+                  private juce::Timer,
+                  private juce::AsyncUpdater
 {
 public:
     explicit EditSync (te::Edit&);
@@ -70,22 +84,30 @@ public:
 
     /** Called (message thread) for every local change that should be sent. */
     std::function<void (const juce::ValueTree& op)> onLocalOp;
-    /** Called after one or more remote ops were applied (for UI refresh). */
-    std::function<void()> onRemoteChange;
     std::function<void (const juce::String&)> onLog;
 
     /** Applies an op from another peer. Returns false if it could not be
-        applied (the trees have diverged and a resync is needed). */
+        applied (the copies have diverged and a fresh copy is needed). */
     bool applyRemote (const juce::ValueTree& op);
+
+    /** Sends any collected changes now (normally done automatically). */
+    void flushNow();
 
     /** Hash of the shared state (local-only data excluded). */
     juce::int64 computeHash() const;
+
+    /** Gives notes (and other list items without an engine ID) a sync ID so
+        two people can edit the same list at once. Call on the host's song. */
+    void assignMissingSyncIDs();
 
     /** Flushes plugin states and returns a copy of the shared state. */
     juce::ValueTree createSnapshot();
 
     struct Stats { int sent = 0, applied = 0, failed = 0, paramsSent = 0, paramsApplied = 0; };
     Stats getStats() const noexcept                      { return stats; }
+
+    /** The most frequently sent kinds of change, for diagnostics. */
+    juce::StringArray getTopSentKinds (int maxItems) const;
 
     //==============================================================================
     static bool isLocalNode (const juce::ValueTree&);
@@ -99,6 +121,8 @@ private:
     int applyingDepth = 0;
     int tick = 0;
     Stats stats;
+    std::map<juce::String, int> sentKinds;
+    bool trace = false;
 
     struct ScopedApplying
     {
@@ -106,6 +130,10 @@ private:
         ~ScopedApplying()                                    { --owner.applyingDepth; }
         EditSync& owner;
     };
+
+    // Changes collected during this message-loop turn
+    juce::Array<juce::ValueTree> propsDirty, childrenDirty, addedChildren;
+    std::vector<std::pair<juce::ValueTree, juce::StringArray>> removedKeys;
 
     // Parameter (knob) sync for external plugins
     std::vector<te::AutomatableParameter::Ptr> listenedParams;
@@ -118,13 +146,21 @@ private:
     void removeAllParameterListeners();
     void flushPendingParams();
 
-    // Path helpers (indices count only non-local siblings)
-    static int syncedIndexOf (const juce::ValueTree& parent, const juce::ValueTree& child);
-    static int syncedIndexBefore (const juce::ValueTree& parent, int actualIndex);
-    static int actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex);
-    bool isInsideLocal (const juce::ValueTree&) const;
+    // Addressing
+    static juce::String keyOf (const juce::ValueTree& parent, const juce::ValueTree& child);
+    static juce::String stableKeyOf (const juce::ValueTree& child);   // empty if positional
+    static bool needsSyncID (const juce::ValueTree& child);
+    bool isAttachedAndShared (const juce::ValueTree&) const;
     juce::String pathOf (const juce::ValueTree&) const;
     juce::ValueTree resolve (const juce::String& path) const;
+    static int depthOf (const juce::String& path);
+
+    // Building and applying descriptions
+    juce::ValueTree describeChildren (const juce::ValueTree& node) const;
+    juce::ValueTree describeProps (const juce::ValueTree& node) const;
+    bool reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming);
+    bool reconcileChildren (juce::ValueTree& local, const juce::ValueTree& incoming);
+    bool reconcileNode (juce::ValueTree& local, const juce::ValueTree& incoming);
 
     void send (const juce::ValueTree& op);
     void log (const juce::String&);
@@ -142,6 +178,7 @@ private:
     void parameterChanged (te::AutomatableParameter&, float newValue) override;
 
     void timerCallback() override;
+    void handleAsyncUpdate() override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EditSync)
 };

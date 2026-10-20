@@ -30,6 +30,8 @@ static const juce::Identifier hashExcludedProperties[] =
     "state",
 };
 
+static const juce::Identifier stateProperty ("state");
+
 bool EditSync::isLocalNode (const juce::ValueTree& v)
 {
     for (auto& t : localNodeTypes)
@@ -41,6 +43,9 @@ bool EditSync::isLocalNode (const juce::ValueTree& v)
 
 bool EditSync::isLocalProperty (const juce::ValueTree&, const juce::Identifier& prop, bool forHash)
 {
+    if (prop == ids::stub)
+        return true;
+
     for (auto& p : localProperties)
         if (prop == p)
             return true;
@@ -69,6 +74,24 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
         if (! isLocalNode (child))
             copy.appendChild (filteredCopy (child, forHash), nullptr);
 
+    // The order of notes inside a pattern doesn't change the music, and two
+    // people adding notes at the same moment can end up with them in a different
+    // order: don't count that as a difference.
+    if (forHash && v.hasType (te::IDs::SEQUENCE))
+    {
+        struct ByKey
+        {
+            static int compareElements (const juce::ValueTree& a, const juce::ValueTree& b)
+            {
+                return (a.getType().toString() + stableKeyOf (a) + a.toXmlString())
+                         .compare (b.getType().toString() + stableKeyOf (b) + b.toXmlString());
+            }
+        };
+
+        ByKey sorter;
+        copy.sort (sorter, nullptr, true);
+    }
+
     return copy;
 }
 
@@ -89,6 +112,7 @@ juce::String EditSync::describeFirstDifference (const juce::ValueTree& a, const 
 EditSync::EditSync (te::Edit& e)
     : edit (e), root (e.state)
 {
+    trace = juce::SystemStats::getEnvironmentVariable ("SYNCTEST_TRACE", {}).isNotEmpty();
     root.addListener (this);
     refreshParameterListeners();
     startTimer (30);
@@ -97,6 +121,7 @@ EditSync::EditSync (te::Edit& e)
 EditSync::~EditSync()
 {
     stopTimer();
+    cancelPendingUpdate();
     root.removeListener (this);
     removeAllParameterListeners();
 }
@@ -111,45 +136,31 @@ void EditSync::send (const juce::ValueTree& op)
 {
     ++stats.sent;
 
+    auto kind = op[ids::kind].toString();
+    auto desc = kind == "param" ? kind : kind + " " + resolve (op[ids::path].toString()).getType().toString();
+    ++sentKinds[desc];
+
+    if (trace)
+        log ("SEND " + desc + " " + op[ids::path].toString()
+              + (op.getNumChildren() > 0 ? "  " + op.getChild (0).toXmlString().replace ("\n", " ").substring (0, 300)
+                                         : juce::String()));
+
     if (onLocalOp)
         onLocalOp (op);
 }
 
 //==============================================================================
-int EditSync::syncedIndexOf (const juce::ValueTree& parent, const juce::ValueTree& child)
-{
-    int n = 0;
+// Addressing: "TRACK:1013/MIDICLIP:1020/SEQUENCE#0/NOTE#3"
+// Children with an ID are named by it; others by their position among
+// siblings of the same type that also have no ID.
 
-    for (const auto& c : parent)
-    {
-        if (c == child)
-            return n;
-
-        if (! isLocalNode (c))
-            ++n;
-    }
-
-    return -1;
-}
-
-int EditSync::syncedIndexBefore (const juce::ValueTree& parent, int actualIndex)
-{
-    int n = 0;
-
-    for (int i = 0; i < juce::jmin (actualIndex, parent.getNumChildren()); ++i)
-        if (! isLocalNode (parent.getChild (i)))
-            ++n;
-
-    return n;
-}
-
-int EditSync::actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex)
+static int actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex)
 {
     int n = 0;
 
     for (int i = 0; i < parent.getNumChildren(); ++i)
     {
-        if (isLocalNode (parent.getChild (i)))
+        if (EditSync::isLocalNode (parent.getChild (i)))
             continue;
 
         if (n == syncedIndex)
@@ -158,150 +169,443 @@ int EditSync::actualIndexForSynced (const juce::ValueTree& parent, int syncedInd
         ++n;
     }
 
-    return syncedIndex == n ? parent.getNumChildren() : -1;
+    return parent.getNumChildren();
 }
 
-bool EditSync::isInsideLocal (const juce::ValueTree& v) const
+bool EditSync::needsSyncID (const juce::ValueTree& child)
 {
-    for (auto n = v; n.isValid() && n != root; n = n.getParent())
-        if (isLocalNode (n))
+    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX" };
+
+    if (child.hasProperty (te::IDs::id) || child.hasProperty (ids::sid))
+        return false;
+
+    for (auto& t : listItems)
+        if (child.hasType (t))
             return true;
 
     return false;
 }
 
+juce::String EditSync::stableKeyOf (const juce::ValueTree& child)
+{
+    if (child.hasProperty (te::IDs::id))
+        return child.getType().toString() + ":" + child[te::IDs::id].toString();
+
+    if (child.hasProperty (ids::sid))
+        return child.getType().toString() + "~" + child[ids::sid].toString();
+
+    return {};
+}
+
+juce::String EditSync::keyOf (const juce::ValueTree& parent, const juce::ValueTree& child)
+{
+    auto stable = stableKeyOf (child);
+
+    if (stable.isNotEmpty())
+        return stable;
+
+    int n = 0;
+
+    for (const auto& c : parent)
+    {
+        if (c == child)
+            break;
+
+        if (c.hasType (child.getType()) && stableKeyOf (c).isEmpty() && ! isLocalNode (c))
+            ++n;
+    }
+
+    return child.getType().toString() + "#" + juce::String (n);
+}
+
 juce::String EditSync::pathOf (const juce::ValueTree& node) const
 {
-    juce::StringArray parts;
+    juce::StringArray keys;
 
     for (auto v = node; v != root; )
     {
         auto parent = v.getParent();
 
-        if (! parent.isValid())
-            return "!";     // not attached to this Edit
+        if (! parent.isValid() || isLocalNode (v))
+            return "!";
 
-        parts.insert (0, juce::String (syncedIndexOf (parent, v)));
+        keys.insert (0, keyOf (parent, v));
         v = parent;
     }
 
-    return parts.joinIntoString ("/");
+    return keys.joinIntoString ("/");
+}
+
+bool EditSync::isAttachedAndShared (const juce::ValueTree& v) const
+{
+    return pathOf (v) != "!";
+}
+
+int EditSync::depthOf (const juce::String& path)
+{
+    return path.isEmpty() ? 0 : juce::StringArray::fromTokens (path, "/", {}).size();
 }
 
 juce::ValueTree EditSync::resolve (const juce::String& path) const
 {
     auto v = root;
 
-    for (auto& token : juce::StringArray::fromTokens (path, "/", {}))
+    for (auto& key : juce::StringArray::fromTokens (path, "/", {}))
     {
-        if (token.isEmpty())
+        if (key.isEmpty())
             continue;
 
-        auto i = actualIndexForSynced (v, token.getIntValue());
+        juce::ValueTree next;
 
-        if (i < 0 || i >= v.getNumChildren())
+        if (key.contains (":") || key.contains ("~"))
+        {
+            for (const auto& c : v)
+                if (! isLocalNode (c) && stableKeyOf (c) == key)
+                    { next = c; break; }
+        }
+        else
+        {
+            auto type = key.upToFirstOccurrenceOf ("#", false, false);
+            int wanted = key.fromFirstOccurrenceOf ("#", false, false).getIntValue();
+            int n = 0;
+
+            for (const auto& c : v)
+            {
+                if (c.getType().toString() == type && stableKeyOf (c).isEmpty() && ! isLocalNode (c))
+                {
+                    if (n == wanted)
+                        { next = c; break; }
+
+                    ++n;
+                }
+            }
+        }
+
+        if (! next.isValid())
             return {};
 
-        v = v.getChild (i);
+        v = next;
     }
 
     return v;
 }
 
 //==============================================================================
+// Collecting local changes
+
 void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& prop)
 {
-    if (applyingDepth > 0 || isInsideLocal (v) || isLocalProperty (v, prop, false))
+    if (applyingDepth > 0 || isLocalProperty (v, prop, false))
         return;
 
-    auto path = pathOf (v);
-
-    if (path == "!")
-        return;
-
-    juce::ValueTree op (ids::OP);
-    op.setProperty (ids::kind, "prop", nullptr);
-    op.setProperty (ids::path, path, nullptr);
-    op.setProperty (ids::name, prop.toString(), nullptr);
-
-    if (v.hasProperty (prop))
-        op.setProperty (ids::value, v.getProperty (prop), nullptr);
-    else
-        op.setProperty (ids::removed, true, nullptr);
-
-    send (op);
+    propsDirty.addIfNotAlreadyThere (v);
+    triggerAsyncUpdate();
 }
 
 void EditSync::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& child)
 {
-    if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
+    if (applyingDepth > 0 || isLocalNode (child))
         return;
 
-    auto path = pathOf (parent);
+    if (needsSyncID (child))
+        child.setProperty (ids::sid, juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()), nullptr);
 
-    if (path == "!")
-        return;
-
-    juce::ValueTree op (ids::OP);
-    op.setProperty (ids::kind, "add", nullptr);
-    op.setProperty (ids::path, path, nullptr);
-    op.setProperty (ids::index, syncedIndexOf (parent, child), nullptr);
-    op.appendChild (filteredCopy (child, false), nullptr);
-    send (op);
+    childrenDirty.addIfNotAlreadyThere (parent);
+    addedChildren.addIfNotAlreadyThere (child);
+    triggerAsyncUpdate();
 }
 
-void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int index)
+void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int)
 {
-    if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
+    if (applyingDepth > 0 || isLocalNode (child))
         return;
 
-    auto path = pathOf (parent);
+    addedChildren.removeAllInstancesOf (child);
+    auto key = stableKeyOf (child);
 
-    if (path == "!")
-        return;
+    if (key.isNotEmpty())
+    {
+        auto it = std::find_if (removedKeys.begin(), removedKeys.end(), [&] (auto& p) { return p.first == parent; });
 
-    juce::ValueTree op (ids::OP);
-    op.setProperty (ids::kind, "remove", nullptr);
-    op.setProperty (ids::path, path, nullptr);
-    op.setProperty (ids::index, syncedIndexBefore (parent, index), nullptr);
-    op.setProperty (ids::childType, child.getType().toString(), nullptr);
-    send (op);
+        if (it == removedKeys.end())
+            removedKeys.push_back ({ parent, juce::StringArray (key) });
+        else
+            it->second.addIfNotAlreadyThere (key);
+    }
+
+    childrenDirty.addIfNotAlreadyThere (parent);
+    triggerAsyncUpdate();
 }
 
-void EditSync::valueTreeChildOrderChanged (juce::ValueTree& parent, int oldIndex, int newIndex)
+void EditSync::valueTreeChildOrderChanged (juce::ValueTree& parent, int, int)
 {
-    if (applyingDepth > 0 || isInsideLocal (parent))
+    if (applyingDepth > 0)
         return;
 
-    auto moved = parent.getChild (newIndex);
+    childrenDirty.addIfNotAlreadyThere (parent);
+    triggerAsyncUpdate();
+}
 
-    if (isLocalNode (moved))
+void EditSync::handleAsyncUpdate()
+{
+    flushNow();
+}
+
+juce::ValueTree EditSync::describeChildren (const juce::ValueTree& node) const
+{
+    juce::ValueTree desc (node.getType());
+
+    for (const auto& child : node)
+    {
+        if (isLocalNode (child))
+            continue;
+
+        if (stableKeyOf (child).isNotEmpty() && ! addedChildren.contains (child))
+        {
+            // The receiver already has this one: name it, don't resend it.
+            juce::ValueTree stub (child.getType());
+
+            if (child.hasProperty (te::IDs::id))
+                stub.setProperty (te::IDs::id, child[te::IDs::id], nullptr);
+            else
+                stub.setProperty (ids::sid, child[ids::sid], nullptr);
+
+            stub.setProperty (ids::stub, true, nullptr);
+            desc.appendChild (stub, nullptr);
+        }
+        else
+        {
+            desc.appendChild (filteredCopy (child, false), nullptr);
+        }
+    }
+
+    for (auto& [parent, keys] : removedKeys)
+        if (parent == node)
+            desc.setProperty (ids::removedKeys, keys.joinIntoString ("|"), nullptr);
+
+    return desc;
+}
+
+juce::ValueTree EditSync::describeProps (const juce::ValueTree& node) const
+{
+    juce::ValueTree desc (node.getType());
+
+    for (int i = 0; i < node.getNumProperties(); ++i)
+    {
+        auto name = node.getPropertyName (i);
+
+        if (! isLocalProperty (node, name, false))
+            desc.setProperty (name, node.getProperty (name), nullptr);
+    }
+
+    return desc;
+}
+
+void EditSync::flushNow()
+{
+    cancelPendingUpdate();
+
+    if (propsDirty.isEmpty() && childrenDirty.isEmpty())
         return;
 
-    // Rebuild the order before the move to know the moved child's old synced index.
-    std::vector<juce::ValueTree> before;
+    struct Pending { juce::String path; int depth; juce::ValueTree op; };
+    std::vector<Pending> childOps, propOps;
 
-    for (const auto& c : parent)
-        before.push_back (c);
+    for (auto& node : childrenDirty)
+    {
+        auto path = pathOf (node);
 
-    before.erase (before.begin() + newIndex);
-    before.insert (before.begin() + oldIndex, moved);
+        if (path == "!")
+            continue;
 
-    int oldSynced = 0;
+        juce::ValueTree op (ids::OP);
+        op.setProperty (ids::kind, "children", nullptr);
+        op.setProperty (ids::path, path, nullptr);
+        op.appendChild (describeChildren (node), nullptr);
+        childOps.push_back ({ path, depthOf (path), op });
+    }
 
-    for (int i = 0; i < oldIndex; ++i)
-        if (! isLocalNode (before[(size_t) i]))
-            ++oldSynced;
+    // A node that travelled in full inside a "children" description doesn't
+    // need its own "props" op.
+    auto isCovered = [this] (const juce::ValueTree& node)
+    {
+        for (auto x = node; x.isValid() && x != root; x = x.getParent())
+        {
+            auto parent = x.getParent();
 
-    juce::ValueTree op (ids::OP);
-    op.setProperty (ids::kind, "move", nullptr);
-    op.setProperty (ids::path, pathOf (parent), nullptr);
-    op.setProperty (ids::oldIndex, oldSynced, nullptr);
-    op.setProperty (ids::newIndex, syncedIndexOf (parent, moved), nullptr);
-    send (op);
+            if (childrenDirty.contains (parent) && (addedChildren.contains (x) || stableKeyOf (x).isEmpty()))
+                return true;
+        }
+
+        return false;
+    };
+
+    for (auto& node : propsDirty)
+    {
+        auto path = pathOf (node);
+
+        if (path == "!" || isCovered (node))
+            continue;
+
+        juce::ValueTree op (ids::OP);
+        op.setProperty (ids::kind, "props", nullptr);
+        op.setProperty (ids::path, path, nullptr);
+        op.appendChild (describeProps (node), nullptr);
+        propOps.push_back ({ path, depthOf (path), op });
+    }
+
+    // Parents before children so every path exists when it is applied.
+    auto byDepth = [] (const Pending& a, const Pending& b) { return a.depth < b.depth; };
+    std::stable_sort (childOps.begin(), childOps.end(), byDepth);
+    std::stable_sort (propOps.begin(), propOps.end(), byDepth);
+
+    propsDirty.clear();
+    childrenDirty.clear();
+    addedChildren.clear();
+    removedKeys.clear();
+
+    for (auto& p : childOps)  send (p.op);
+    for (auto& p : propOps)   send (p.op);
 }
 
 //==============================================================================
+// Applying remote changes
+
+bool EditSync::reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming)
+{
+    for (int i = 0; i < incoming.getNumProperties(); ++i)
+    {
+        auto name = incoming.getPropertyName (i);
+
+        if (isLocalProperty (local, name, false))
+            continue;
+
+        auto value = incoming.getProperty (name);
+
+        if (! local.hasProperty (name) || local.getProperty (name) != value)
+        {
+            local.setProperty (name, value, nullptr);
+            restoreExternalPluginStateIfNeeded (local, name);
+        }
+    }
+
+    for (int i = local.getNumProperties(); --i >= 0;)
+    {
+        auto name = local.getPropertyName (i);
+
+        if (! isLocalProperty (local, name, false) && ! incoming.hasProperty (name))
+            local.removeProperty (name, nullptr);
+    }
+
+    // Built-in plugins: the engine updates the stored value but leaves the live
+    // parameter alone ("always go via setParameter"), so push it through here.
+    if (local.hasType (te::IDs::PLUGIN))
+        if (auto plugin = te::findPluginForID (edit, te::EditItemID::fromVar (local[te::IDs::id])))
+            if (dynamic_cast<te::ExternalPlugin*> (plugin.get()) == nullptr)
+                for (auto* ap : plugin->getAutomatableParameters())
+                    ap->updateFromAttachedValue();
+
+    return true;
+}
+
+bool EditSync::reconcileNode (juce::ValueTree& local, const juce::ValueTree& incoming)
+{
+    bool ok = reconcileProps (local, incoming);
+    return reconcileChildren (local, incoming) && ok;
+}
+
+bool EditSync::reconcileChildren (juce::ValueTree& local, const juce::ValueTree& incoming)
+{
+    bool ok = true;
+
+    juce::Array<juce::ValueTree> existing;
+
+    for (const auto& c : local)
+        if (! isLocalNode (c))
+            existing.add (c);
+
+    const auto removed = juce::StringArray::fromTokens (incoming[ids::removedKeys].toString(), "|", {});
+    juce::Array<juce::ValueTree> desired;
+    std::map<juce::String, int> occurrence;
+
+    for (const auto& inc : incoming)
+    {
+        juce::ValueTree match;
+        const auto key = stableKeyOf (inc);
+
+        if (key.isNotEmpty())
+        {
+            for (auto& c : existing)
+                if (stableKeyOf (c) == key && ! desired.contains (c))
+                    { match = c; break; }
+        }
+        else
+        {
+            const auto type = inc.getType();
+            const int wanted = occurrence[type.toString()]++;
+            int n = 0;
+
+            for (auto& c : existing)
+            {
+                if (c.hasType (type) && stableKeyOf (c).isEmpty())
+                {
+                    if (n == wanted)
+                        { match = c; break; }
+
+                    ++n;
+                }
+            }
+        }
+
+        if (match.isValid())
+        {
+            if (! (bool) inc[ids::stub])
+                ok = reconcileNode (match, inc) && ok;
+
+            desired.add (match);
+        }
+        else if ((bool) inc[ids::stub])
+        {
+            ok = false;     // the sender thinks we have it, but we don't
+        }
+        else
+        {
+            desired.add (inc.createCopy());
+        }
+    }
+
+    // Children the sender didn't mention:
+    //  - with a stable key: someone else probably added them at the same time,
+    //    so keep them unless the sender explicitly removed them;
+    //  - without one: the sender's list is the truth, remove them.
+    for (auto& c : existing)
+    {
+        if (desired.contains (c))
+            continue;
+
+        const auto key = stableKeyOf (c);
+
+        if (key.isEmpty() || removed.contains (key))
+            local.removeChild (c, nullptr);
+        else
+            desired.add (c);
+    }
+
+    for (int i = 0; i < desired.size(); ++i)
+    {
+        auto child = desired.getReference (i);
+        const int target = actualIndexForSynced (local, i);
+        const int current = local.indexOf (child);
+
+        if (current < 0)
+            local.addChild (child, target, nullptr);
+        else if (current != target && target < local.getNumChildren())
+            local.moveChild (current, target, nullptr);
+    }
+
+    return ok;
+}
+
 bool EditSync::applyRemote (const juce::ValueTree& op)
 {
     const auto kind = op[ids::kind].toString();
@@ -328,69 +632,33 @@ bool EditSync::applyRemote (const juce::ValueTree& op)
         return true;
     }
 
+    // Anything we had collected but not yet sent describes an older state of
+    // the nodes we are about to change; send it first so ordering is kept.
+    flushNow();
+
     ScopedApplying sa (*this);
     auto target = resolve (op[ids::path].toString());
 
-    if (! target.isValid())
+    if (! target.isValid() || op.getNumChildren() != 1)
     {
         ++stats.failed;
-        log ("Could not find " + op[ids::path].toString() + " for a '" + kind + "' change");
+        log ("Could not find '" + op[ids::path].toString() + "' for a '" + kind + "' change");
         return false;
     }
 
-    bool ok = true;
+    bool ok = false;
 
-    if (kind == "prop")
-    {
-        juce::Identifier name (op[ids::name].toString());
-
-        if (op[ids::removed])
-            target.removeProperty (name, nullptr);
-        else
-            target.setProperty (name, op[ids::value], nullptr);
-
-        restoreExternalPluginStateIfNeeded (target, name);
-    }
-    else if (kind == "add")
-    {
-        auto index = actualIndexForSynced (target, (int) op[ids::index]);
-
-        if (index < 0 || op.getNumChildren() != 1)
-            ok = false;
-        else
-            target.addChild (op.getChild (0).createCopy(), index, nullptr);
-    }
-    else if (kind == "remove")
-    {
-        auto index = actualIndexForSynced (target, (int) op[ids::index]);
-        auto child = target.getChild (index);
-
-        if (index < 0 || ! child.isValid() || child.getType().toString() != op[ids::childType].toString())
-            ok = false;
-        else
-            target.removeChild (index, nullptr);
-    }
-    else if (kind == "move")
-    {
-        auto from = actualIndexForSynced (target, (int) op[ids::oldIndex]);
-        auto to   = actualIndexForSynced (target, (int) op[ids::newIndex]);
-
-        if (from < 0 || to < 0 || from >= target.getNumChildren() || to >= target.getNumChildren())
-            ok = false;
-        else
-            target.moveChild (from, to, nullptr);
-    }
-    else
-    {
-        ok = false;
-    }
+    if (kind == "props")
+        ok = reconcileProps (target, op.getChild (0));
+    else if (kind == "children")
+        ok = reconcileChildren (target, op.getChild (0));
 
     if (ok)
         ++stats.applied;
     else
     {
         ++stats.failed;
-        log ("Could not apply a '" + kind + "' change at " + op[ids::path].toString());
+        log ("Could not fully apply a '" + kind + "' change at '" + op[ids::path].toString() + "'");
     }
 
     return ok;
@@ -400,7 +668,7 @@ void EditSync::restoreExternalPluginStateIfNeeded (const juce::ValueTree& node, 
 {
     // A third-party plugin's full state (preset, internal settings) arrives as the
     // "state" property. Tracktion doesn't reload it by itself, so do it here.
-    if (prop != juce::Identifier ("state") || ! node.hasType (te::IDs::PLUGIN))
+    if (prop != stateProperty || ! node.hasType (te::IDs::PLUGIN))
         return;
 
     if (auto plugin = te::findPluginForID (edit, te::EditItemID::fromVar (node[te::IDs::id])))
@@ -409,8 +677,13 @@ void EditSync::restoreExternalPluginStateIfNeeded (const juce::ValueTree& node, 
 }
 
 //==============================================================================
+// Live knobs of third-party plugins
+
 void EditSync::parameterChanged (te::AutomatableParameter& param, float newValue)
 {
+    if (trace)
+        log ("knob " + param.paramID + " = " + juce::String (newValue) + (applyingDepth > 0 ? " (remote)" : ""));
+
     if (applyingDepth > 0)
         return;
 
@@ -477,6 +750,9 @@ void EditSync::refreshParameterListeners()
         if (listenedSet.count (p.get()) == 0)
             p->addListener (this);
 
+    if (trace)
+        log ("listening to " + juce::String ((int) current.size()) + " plugin parameters");
+
     listenedParams = std::move (current);
     listenedSet = std::move (currentSet);
 }
@@ -496,11 +772,44 @@ void EditSync::timerCallback()
 
     // Plugin instances (and so their parameters) are created asynchronously,
     // so re-check which parameters exist a couple of times per second.
-    if (++tick % 15 == 0)
+    if (++tick % 5 == 0)
         refreshParameterListeners();
 }
 
 //==============================================================================
+juce::StringArray EditSync::getTopSentKinds (int maxItems) const
+{
+    std::vector<std::pair<int, juce::String>> sorted;
+
+    for (auto& [k, n] : sentKinds)
+        sorted.push_back ({ n, k });
+
+    std::sort (sorted.begin(), sorted.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+
+    juce::StringArray out;
+
+    for (size_t i = 0; i < sorted.size() && (int) i < maxItems; ++i)
+        out.add (juce::String (sorted[i].first) + "x  " + sorted[i].second);
+
+    return out;
+}
+
+void EditSync::assignMissingSyncIDs()
+{
+    std::function<void (juce::ValueTree)> visit = [&] (juce::ValueTree v)
+    {
+        for (auto c : v)
+        {
+            if (needsSyncID (c))
+                c.setProperty (ids::sid, juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()), nullptr);
+
+            visit (c);
+        }
+    };
+
+    visit (root);
+}
+
 juce::int64 EditSync::computeHash() const
 {
     return filteredCopy (root, true).toXmlString().hashCode64();
@@ -508,12 +817,10 @@ juce::int64 EditSync::computeHash() const
 
 juce::ValueTree EditSync::createSnapshot()
 {
-    {
-        // Write every plugin's current state into the tree, without sending
-        // those writes as ops (the snapshot carries them).
-        ScopedApplying sa (*this);
-        edit.flushState();
-    }
+    // Write every plugin's current state into the tree. These writes are sent
+    // to the other peers too, so everyone keeps the same copy.
+    edit.flushState();
+    flushNow();
 
     return filteredCopy (root, false);
 }

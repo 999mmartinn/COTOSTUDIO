@@ -37,7 +37,7 @@ jobs:
                  -NoNewWindow -Wait -PassThru -RedirectStandardOutput selftest.txt
           Get-Content selftest.txt
           # Summary lines also go to the run's public annotations.
-          Get-Content selftest.txt | Select-String -Pattern "PASS|FAIL|SKIPPED|passed,|resyncs" |
+          Get-Content selftest.txt | Select-String -Pattern "PASS|FAIL|SKIPPED|passed,|resyncs|: sent|^      [0-9]+x" |
             ForEach-Object { Write-Output "::notice::$($_.Line)" }
           exit $p.ExitCode
 

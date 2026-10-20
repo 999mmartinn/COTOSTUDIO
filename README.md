@@ -24,6 +24,10 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
   everyone else.
 * Two kinds of changes are sent:
   1. **Song edits** – tracks, notes, plugin inserts, built-in synth settings.
+     Every changed part is sent as "this is how it looks now"; the other PC
+     compares and changes only what differs. Notes get a small sync ID so two
+     people can edit the same pattern at the same time without erasing each
+     other's notes.
   2. **Plugin knobs** – when you turn a knob in a Waves/FabFilter window, the
      new value is sent (about 30 times a second while dragging).
      When you **close** a plugin window, its full state (preset) is sent too.
@@ -69,10 +73,12 @@ Join `127.0.0.1` in the other.
 
 ## Known limits of this test (on purpose)
 
-* Changes are addressed by position in the song. If two people change the
-  *same* list at the exact same moment, the copies can briefly differ; the
-  fingerprint check catches it and the joiner gets a fresh copy within a few
-  seconds. The real product will use per-item IDs/CRDTs to avoid that.
+* If two people change the *same thing* at the same moment (both move the
+  same knob, or reorder tracks), the last change wins. Rarely the copies can
+  briefly differ; the fingerprint check catches it and the joiner gets a fresh
+  copy within a few seconds.
+* A knob turned in the first half-second after a plugin is inserted may not be
+  sent (the plugin is still loading). Closing its window sends its full state.
 * Plugin *audio* isn't compared, only settings. A plugin that behaves
   differently on two PCs (different version) will sound different.
 * No recording, audio clips, mixer view, undo sync or chat yet.

@@ -150,6 +150,7 @@ void Session::createLocalEdit()
     auto newEdit = te::createEmptyEdit (engine, juce::File());
     addStarterContent (*newEdit);
     installEdit (std::move (newEdit));
+    editSync->assignMissingSyncIDs();
 }
 
 void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
@@ -375,6 +376,9 @@ void Session::sendLocalOp (const juce::ValueTree& op)
 
 void Session::flushOutgoing()
 {
+    if (editSync != nullptr)
+        editSync->flushNow();      // turns collected edits into ops (lands in pendingOps)
+
     if (pendingOps.getNumChildren() == 0)
         return;
 
@@ -498,6 +502,7 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
     msg.setProperty (ids::position, edit->getTransport().getPosition().inSeconds(), nullptr);
     msg.appendChild (editSync->createSnapshot(), nullptr);
     c.sendTree (msg);
+    flushOutgoing();   // plugin states written by the snapshot go to everyone else
 }
 
 void Session::loadSnapshot (const juce::ValueTree& msg)
