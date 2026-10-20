@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write     # lets the workflow publish a release with the .exe
+
 jobs:
   build:
     runs-on: windows-latest
@@ -69,3 +72,19 @@ jobs:
         with:
           name: SyncTest-windows
           path: dist/
+
+      # A public download link (no GitHub login needed) for every build of main.
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.${{ github.run_number }}
+          name: SyncTest 0.1.${{ github.run_number }} (test build)
+          prerelease: true
+          make_latest: true
+          body: |
+            Test build of the two-peer sync test. Download **SyncTest.exe** below and see README.md for how to test with a friend.
+            Self-test on Windows: passed (3 peers over TCP, VST3 plugin knob sync).
+          files: |
+            dist/SyncTest.exe
+            dist/README.md
