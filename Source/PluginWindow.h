@@ -1,0 +1,144 @@
+#pragma once
+
+#include <JuceHeader.h>
+
+namespace te = tracktion;
+
+//==============================================================================
+/** Simple sliders for a built-in Tracktion plugin (they have no GUI of their own). */
+class GenericPluginPanel  : public juce::Component,
+                            private juce::Timer
+{
+public:
+    explicit GenericPluginPanel (te::Plugin& p) : plugin (p)
+    {
+        auto params = plugin.getAutomatableParameters();
+
+        for (int i = 0; i < juce::jmin (40, params.size()); ++i)
+        {
+            te::AutomatableParameter::Ptr ap (params[i]);
+            auto* row = rows.add (new Row());
+            row->label.setText (ap->getParameterName(), juce::dontSendNotification);
+            row->slider.setRange (0.0, 1.0);
+            row->slider.setValue (ap->getCurrentNormalisedValue(), juce::dontSendNotification);
+            row->slider.onValueChange = [ap, s = &row->slider]
+            {
+                ap->setNormalisedParameter ((float) s->getValue(), juce::sendNotification);
+            };
+            row->param = ap;
+            content.addAndMakeVisible (row->label);
+            content.addAndMakeVisible (row->slider);
+        }
+
+        viewport.setViewedComponent (&content, false);
+        addAndMakeVisible (viewport);
+        setSize (420, juce::jmin (520, 30 * rows.size() + 10));
+        startTimerHz (15);
+    }
+
+    void resized() override
+    {
+        viewport.setBounds (getLocalBounds());
+        content.setSize (getWidth() - viewport.getScrollBarThickness(), 30 * rows.size() + 10);
+
+        int y = 5;
+
+        for (auto* r : rows)
+        {
+            r->label.setBounds (5, y, 150, 26);
+            r->slider.setBounds (160, y, content.getWidth() - 165, 26);
+            y += 30;
+        }
+    }
+
+private:
+    struct Row
+    {
+        juce::Label label;
+        juce::Slider slider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        te::AutomatableParameter::Ptr param;
+    };
+
+    te::Plugin& plugin;
+    juce::OwnedArray<Row> rows;
+    juce::Component content;
+    juce::Viewport viewport;
+
+    // Follow changes made by other peers.
+    void timerCallback() override
+    {
+        for (auto* r : rows)
+            if (! r->slider.isMouseButtonDown())
+                r->slider.setValue (r->param->getCurrentNormalisedValue(), juce::dontSendNotification);
+    }
+};
+
+//==============================================================================
+/** A window showing a plugin's own editor (VST3) or the generic panel (built-in). */
+class PluginEditorWindow  : public juce::DocumentWindow
+{
+public:
+    explicit PluginEditorWindow (te::Plugin& p)
+        : DocumentWindow (p.getName(), juce::Colours::darkgrey, DocumentWindow::closeButton),
+          plugin (p)
+    {
+        setUsingNativeTitleBar (true);
+
+        if (auto* ext = dynamic_cast<te::ExternalPlugin*> (&plugin))
+        {
+            if (auto* instance = ext->getAudioPluginInstance())
+            {
+                content.reset (instance->createEditorAndMakeActive());
+
+                if (content == nullptr)
+                    content = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
+            }
+        }
+
+        if (content == nullptr)
+            content = std::make_unique<GenericPluginPanel> (plugin);
+
+        setContentNonOwned (content.get(), true);
+        setResizable (false, false);
+        setTopLeftPosition (plugin.windowState->choosePositionForPluginWindow());
+        setVisible (true);
+        toFront (true);
+    }
+
+    ~PluginEditorWindow() override
+    {
+        // Writes the plugin's full state (preset etc.) into the song, which is
+        // then sent to the other peers.
+        plugin.edit.flushPluginStateIfNeeded (plugin);
+        clearContentComponent();
+        content.reset();
+    }
+
+    void closeButtonPressed() override
+    {
+        plugin.windowState->closeWindowExplicitly();
+    }
+
+private:
+    te::Plugin& plugin;
+    std::unique_ptr<juce::Component> content;
+};
+
+//==============================================================================
+class AppUIBehaviour  : public te::UIBehaviour
+{
+public:
+    std::unique_ptr<juce::Component> createPluginWindow (te::PluginWindowState& state) override
+    {
+        if (auto* ws = dynamic_cast<te::Plugin::WindowState*> (&state))
+        {
+            if (auto* ext = dynamic_cast<te::ExternalPlugin*> (&ws->plugin))
+                if (ext->getAudioPluginInstance() == nullptr)
+                    return {};   // not installed on this PC
+
+            return std::make_unique<PluginEditorWindow> (ws->plugin);
+        }
+
+        return {};
+    }
+};

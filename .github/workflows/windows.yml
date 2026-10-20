@@ -1,0 +1,47 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Self-test (3 peers over TCP on this Windows machine)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse build -Filter SyncTest.exe | Select-Object -First 1
+          $vst = Get-ChildItem -Recurse build -Directory -Filter SyncTestGain.vst3 | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest","--plugin=$($vst.FullName)" `
+                 -NoNewWindow -Wait -PassThru -RedirectStandardOutput selftest.txt
+          Get-Content selftest.txt
+          exit $p.ExitCode
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $exe = Get-ChildItem -Recurse build -Filter SyncTest.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist/
+          Copy-Item README.md dist/
+          Copy-Item LICENSE dist/LICENSE.txt
+          Copy-Item selftest.txt dist/ -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SyncTest-windows
+          path: dist/
