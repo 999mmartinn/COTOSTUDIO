@@ -31,11 +31,22 @@ static const juce::Identifier hashExcludedProperties[] =
 };
 
 static const juce::Identifier stateProperty ("state");
+static const juce::Identifier generatedProperty ("generated");
 
 bool EditSync::isLocalNode (const juce::ValueTree& v)
 {
     for (auto& t : localNodeTypes)
         if (v.hasType (t))
+            return true;
+
+    // Clips generated on each PC from the patterns (see PatternCompiler).
+    return (bool) v[generatedProperty];
+}
+
+bool EditSync::isInsideLocal (const juce::ValueTree& v) const
+{
+    for (auto t = v; t.isValid() && t != root; t = t.getParent())
+        if (isLocalNode (t))
             return true;
 
     return false;
@@ -74,10 +85,10 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
         if (! isLocalNode (child))
             copy.appendChild (filteredCopy (child, forHash), nullptr);
 
-    // The order of notes inside a pattern doesn't change the music, and two
+    // The order of notes inside a pattern (ours: PATTERN, the engine's: SEQUENCE) doesn't change the music, and two
     // people adding notes at the same moment can end up with them in a different
     // order: don't count that as a difference.
-    if (forHash && v.hasType (te::IDs::SEQUENCE))
+    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN")))
     {
         struct ByKey
         {
@@ -174,7 +185,7 @@ static int actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex)
 
 bool EditSync::needsSyncID (const juce::ValueTree& child)
 {
-    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX" };
+    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX", "PATTERN", "PNOTE" };
 
     if (child.hasProperty (te::IDs::id) || child.hasProperty (ids::sid))
         return false;
@@ -295,7 +306,7 @@ juce::ValueTree EditSync::resolve (const juce::String& path) const
 
 void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& prop)
 {
-    if (applyingDepth > 0 || isLocalProperty (v, prop, false))
+    if (applyingDepth > 0 || isLocalProperty (v, prop, false) || isInsideLocal (v))
         return;
 
     propsDirty.addIfNotAlreadyThere (v);
@@ -304,7 +315,7 @@ void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identif
 
 void EditSync::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& child)
 {
-    if (applyingDepth > 0 || isLocalNode (child))
+    if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
         return;
 
     if (needsSyncID (child))
@@ -317,7 +328,7 @@ void EditSync::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& ch
 
 void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int)
 {
-    if (applyingDepth > 0 || isLocalNode (child))
+    if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
         return;
 
     addedChildren.removeAllInstancesOf (child);
@@ -339,7 +350,7 @@ void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& 
 
 void EditSync::valueTreeChildOrderChanged (juce::ValueTree& parent, int, int)
 {
-    if (applyingDepth > 0)
+    if (applyingDepth > 0 || isInsideLocal (parent))
         return;
 
     childrenDirty.addIfNotAlreadyThere (parent);

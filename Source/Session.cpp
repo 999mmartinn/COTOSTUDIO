@@ -1,4 +1,6 @@
 #include "Session.h"
+#include "SongModel.h"
+#include "PatternCompiler.h"
 
 namespace collab
 {
@@ -66,6 +68,7 @@ Session::~Session()
 {
     stopTimer();
     leave();
+    compiler.reset();
     editSync.reset();
     edit.reset();
 }
@@ -116,39 +119,16 @@ juce::String Session::getStatusText() const
 //==============================================================================
 static void setUpLocalTransport (te::Edit& edit)
 {
-    // Loop the 1-bar pattern, FL-style pattern mode.
-    auto& transport = edit.getTransport();
-    transport.setLoopRange (edit.tempoSequence.toTime ({ te::BeatPosition::fromBeats (0.0),
-                                                        te::BeatPosition::fromBeats (4.0) }));
-    transport.looping = true;
+    // Pattern mode: the PatternCompiler sets the loop to the playing pattern.
+    edit.getTransport().looping = true;
     edit.playInStopEnabled = true;
-    transport.ensureContextAllocated();
-}
-
-void addStarterContent (te::Edit& edit)
-{
-    edit.ensureNumberOfAudioTracks (1);
-    auto track = te::getAudioTracks (edit)[0];
-    track->setName ("Synth");
-
-    if (auto synth = edit.getPluginCache().createNewPlugin (te::FourOscPlugin::xmlTypeName, {}))
-        track->pluginList.insertPlugin (synth, 0, nullptr);
-
-    auto range = edit.tempoSequence.toTime ({ te::BeatPosition::fromBeats (0.0), te::BeatPosition::fromBeats (4.0) });
-
-    if (auto clip = track->insertMIDIClip ("Pattern", range, nullptr))
-    {
-        auto& seq = clip->getSequence();
-
-        for (int step : { 0, 4, 8, 12 })
-            seq.addNote (60, te::BeatPosition::fromBeats (step * 0.25), te::BeatDuration::fromBeats (0.25), 100, 0, nullptr);
-    }
+    edit.getTransport().ensureContextAllocated();
 }
 
 void Session::createLocalEdit()
 {
     auto newEdit = te::createEmptyEdit (engine, juce::File());
-    addStarterContent (*newEdit);
+    song::createDefaultSong (*newEdit);
     installEdit (std::move (newEdit));
     editSync->assignMissingSyncIDs();
 }
@@ -158,6 +138,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     if (onEditAboutToBeReplaced)
         onEditAboutToBeReplaced();
 
+    compiler.reset();
     editSync.reset();
     edit.reset();
     edit = std::move (newEdit);
@@ -168,6 +149,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
 
     setUpLocalTransport (*edit);
     attachSync();
+    compiler = std::make_unique<PatternCompiler> (*edit);
 
     if (onEditReplaced)
         onEditReplaced();
@@ -438,16 +420,55 @@ void Session::applyTransport (const juce::ValueTree& msg)
     if (edit == nullptr)
         return;
 
-    auto& transport = edit->getTransport();
-    transport.setPosition (te::TimePosition::fromSeconds ((double) msg[ids::position]));
+    if (msg.hasProperty (ids::pattern) && compiler != nullptr)
+        compiler->setPattern (msg[ids::pattern].toString());
 
-    if ((bool) msg[ids::playing])
-        transport.play (false);
-    else
-        transport.stop (false, false);
+    auto& transport = edit->getTransport();
+    const bool shouldPlay = (bool) msg[ids::playing];
+
+    if (shouldPlay != transport.isPlaying() || ! (bool) msg[ids::patternOnly])
+    {
+        transport.setPosition (te::TimePosition::fromSeconds ((double) msg[ids::position]));
+
+        if (shouldPlay)
+            transport.play (false);
+        else
+            transport.stop (false, false);
+    }
+
+    if (onTransportChanged)
+        onTransportChanged();
 
     if (onRemoteChange)
         onRemoteChange();
+}
+
+juce::String Session::getPlayingPattern() const
+{
+    return compiler != nullptr ? compiler->getPattern() : juce::String();
+}
+
+void Session::sendTransport (bool patternOnly)
+{
+    if (edit == nullptr)
+        return;
+
+    auto& transport = edit->getTransport();
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "transport", nullptr);
+    msg.setProperty (ids::playing, transport.isPlaying(), nullptr);
+    msg.setProperty (ids::position, transport.getPosition().inSeconds(), nullptr);
+    msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
+    msg.setProperty (ids::patternOnly, patternOnly, nullptr);
+
+    if (mode == Mode::hosting)
+        broadcast (msg, nullptr);
+    else if (mode == Mode::joined && hostLink != nullptr)
+    {
+        flushOutgoing();
+        hostLink->sendTree (msg);
+    }
 }
 
 void Session::setPlaying (bool shouldPlay)
@@ -459,6 +480,9 @@ void Session::setPlaying (bool shouldPlay)
 
     if (shouldPlay)
     {
+        if (compiler != nullptr)
+            compiler->compileNow();
+
         transport.setPosition (te::TimePosition());
         transport.play (false);
     }
@@ -467,18 +491,22 @@ void Session::setPlaying (bool shouldPlay)
         transport.stop (false, false);
     }
 
-    juce::ValueTree msg (ids::MSG);
-    msg.setProperty (ids::type, "transport", nullptr);
-    msg.setProperty (ids::playing, shouldPlay, nullptr);
-    msg.setProperty (ids::position, transport.getPosition().inSeconds(), nullptr);
+    sendTransport (false);
 
-    if (mode == Mode::hosting)
-        broadcast (msg, nullptr);
-    else if (mode == Mode::joined && hostLink != nullptr)
-    {
-        flushOutgoing();
-        hostLink->sendTree (msg);
-    }
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
+void Session::setPlayingPattern (const juce::String& patternSid)
+{
+    if (compiler == nullptr || patternSid == compiler->getPattern())
+        return;
+
+    compiler->setPattern (patternSid);
+    sendTransport (true);   // everyone hears the same pattern
+
+    if (onTransportChanged)
+        onTransportChanged();
 }
 
 //==============================================================================
@@ -500,6 +528,7 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
     msg.setProperty (ids::reason, reason, nullptr);
     msg.setProperty (ids::playing, edit->getTransport().isPlaying(), nullptr);
     msg.setProperty (ids::position, edit->getTransport().getPosition().inSeconds(), nullptr);
+    msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
     msg.appendChild (editSync->createSnapshot(), nullptr);
     c.sendTree (msg);
     flushOutgoing();   // plugin states written by the snapshot go to everyone else
@@ -539,6 +568,9 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
     lastHashMatched = true;
     mode = Mode::joined;
     installEdit (std::move (newEdit));
+
+    if (msg.hasProperty (ids::pattern))
+        compiler->setPattern (msg[ids::pattern].toString());
 
     if ((bool) msg[ids::playing])
         applyTransport (msg);

@@ -1,13 +1,26 @@
-# SyncTest — two-peer sync test for a multiplayer DAW
+# SyncTest — a multiplayer, FL-style DAW for Windows (work in progress)
 
-This is the first proof-of-concept for a multiplayer, pattern-based DAW for Windows.
-It answers one question before we build anything bigger:
+Several people work on the **same song at the same time**, each on their own PC,
+each using their own native **VST3 plugins** (Waves, FabFilter...).
 
-> Can two (or more) PCs edit the **same song at the same time**, using their own
-> **native VST3 plugins** (Waves, FabFilter...), and stay in sync?
+Built step by step, with stability first. Current step:
 
-It is deliberately small: one window, tracks, a 16-step pattern grid, plugin
-inserts, Play/Stop, Host/Join. Everything else comes later.
+**Step 1 – Channel rack + patterns (v0.2)**
+* **Channel rack**: one row per instrument with mute, volume and pan knobs and a
+  step sequencer. Click or drag across steps to paint them.
+* **Built-in drum synth** (Kick, Clap, Hat, Snare – pure synthesis, no sample
+  files) and the built-in **4OSC** synth. **+ Channel** also lists your own VST3
+  instruments.
+* **Patterns**: several patterns (1, 2 or 4 bars), **+** for a new one,
+  **...** to rename / clone / delete. Pattern mode: Play loops the pattern you
+  are viewing; switching pattern while playing switches it for everyone.
+* **Piano roll** for the selected channel: click to add a note, drag to move or
+  lengthen it, drag its right edge to resize, right-click to delete.
+* **Effects per channel**: right-click a channel name → *Add effect* (Waves,
+  FabFilter...), *Effects* → open / remove. Also *Open instrument*, rename, delete.
+* **Tempo (BPM)**, **Undo/Redo** (Ctrl+Z / Ctrl+Y, your own changes),
+  **Space** = play/stop.
+* Everything above is shared live with everyone in the session.
 
 Built on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (GPLv3)
 and [JUCE](https://juce.com) (AGPLv3). This project is published under the
@@ -23,7 +36,8 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
 * One PC **hosts**, the others **join**. The host passes every change on to
   everyone else.
 * Two kinds of changes are sent:
-  1. **Song edits** – tracks, notes, plugin inserts, built-in synth settings.
+  1. **Song edits** – channels, patterns, notes, plugin inserts, built-in synth
+     settings, tempo, volume/pan/mute.
      Every changed part is sent as "this is how it looks now"; the other PC
      compares and changes only what differs. Notes get a small sync ID so two
      people can edit the same pattern at the same time without erasing each
@@ -49,8 +63,10 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
 4. Friend: type the host's address in **Host address**, press **Join**.
    The status turns green: "Joined as peer 1 - in sync".
 5. Try it:
-   * click squares in the pattern grid on either PC – the other sees them;
-   * **+ Plugin** → pick a Waves/FabFilter plugin – it appears on both PCs;
+   * click steps in the channel rack or notes in the piano roll on either PC –
+     the other sees them;
+   * right-click a channel name → **Add effect** → pick a Waves/FabFilter
+     plugin – it appears on both PCs;
    * click the plugin's button to open its window and move a knob – the
      other PC's knob moves;
    * press **Play** on either PC – both play the loop.
@@ -60,9 +76,10 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
 * **Same house / same Wi-Fi:** the host's local IP (in Windows: `ipconfig`,
   "IPv4 Address", e.g. `192.168.1.23`).
 * **Over the internet**, choose one:
-  * **A free virtual LAN app** (easiest, no router changes): both install the
-    same one (e.g. Tailscale, ZeroTier or Radmin VPN), join the same network,
-    and type the host's address from that app.
+  * **A free virtual LAN app** (easiest, no router changes): both install
+    Tailscale (recommended) or Radmin VPN, join the same network (in Tailscale:
+    share the host's machine with the friend's account), and type the host's
+    address from that app (Tailscale addresses start with `100.`).
   * **Port forwarding:** the host forwards **TCP port 47800** on the router to
     their PC and gives the friend their public IP.
 * Windows Firewall will ask the host to allow SyncTest the first time:
@@ -81,7 +98,10 @@ Join `127.0.0.1` in the other.
   sent (the plugin is still loading). Closing its window sends its full state.
 * Plugin *audio* isn't compared, only settings. A plugin that behaves
   differently on two PCs (different version) will sound different.
-* No recording, audio clips, mixer view, undo sync or chat yet.
+* What the engine plays is generated on each PC from the shared patterns
+  (never sent), so every PC plays exactly the same notes.
+* Not yet: playlist/arrangement, mixer view, recording/audio clips, saving
+  projects, chat. Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test

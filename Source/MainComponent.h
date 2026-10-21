@@ -1,23 +1,8 @@
 #pragma once
 
-#include "Session.h"
-
-//==============================================================================
-/** 16-step x 12-note grid editing the selected track's pattern. */
-class StepGrid  : public juce::Component
-{
-public:
-    std::function<te::Edit*()> getEdit;
-    int trackIndex = 0;
-
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-
-    static constexpr int lowestPitch = 60, numRows = 12;
-
-private:
-    juce::Rectangle<float> cellBounds (int step, int row) const;
-};
+#include "EditorState.h"
+#include "ChannelRack.h"
+#include "PianoRoll.h"
 
 //==============================================================================
 class MainComponent  : public juce::Component,
@@ -30,38 +15,42 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress&) override;
 
 private:
     te::Engine& engine;
     collab::Session session { engine };
+    EditorState state { session };
     juce::ApplicationProperties appProperties;
     juce::ValueTree watchedState;
-    int selectedTrack = 0;
 
+    // Connection bar
     juce::TextButton hostButton { "Host" }, joinButton { "Join" }, leaveButton { "Leave" };
     juce::TextEditor portEditor, addressEditor;
     juce::Label portLabel { {}, "Port" }, addressLabel { {}, "Host address" }, statusLabel;
 
-    juce::TextButton playButton { "Play" }, addTrackButton { "+ Track" }, addPluginButton { "+ Plugin" },
+    // Transport / pattern bar
+    juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
+                     undoButton { "Undo" }, redoButton { "Redo" },
                      scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };
+    juce::Slider tempoSlider { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
+    juce::Label tempoLabel { {}, "BPM" }, patternLabel { {}, "Pattern" }, playingLabel;
+    juce::ComboBox patternBox, lengthBox;
 
-    juce::Label trackCaption { {}, "Tracks and plugins - click a track to select it, click a plugin to open its window (right-click: options)" },
-                gridCaption  { {}, "Pattern of the selected track - click squares to add or remove notes" };
-    juce::Component trackPanel;
-    juce::OwnedArray<juce::TextButton> trackButtons, pluginButtons;
-    StepGrid grid;
+    ChannelRack rack { engine, state };
+    PianoRoll pianoRoll { state };
     juce::TextEditor logView;
 
     void appendLog (const juce::String&);
     void watchEdit();
     void unwatchEdit();
     void refresh();
-    void rebuildTrackPanel();
-    void layoutTrackPanel();
-    void showPluginMenu();
+    void refreshPatternControls();
+    void selectPattern (const juce::String& sid);
+    void showPatternMenu();
     void showPluginScanner();
     void showAudioSettings();
-    void showPluginOptions (te::Plugin&);
+    void undo (bool redo);
 
     void handleAsyncUpdate() override                          { refresh(); }
     void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override  { triggerAsyncUpdate(); }

@@ -1,10 +1,13 @@
 // Automatic test: one host and two joiners in the same process, talking over
-// real TCP sockets on 127.0.0.1. Run with:  SyncTest --selftest [--plugin=<path to .vst3>] [--dump=<dir>]
+// real TCP sockets on 127.0.0.1. Run with:
+//   SyncTest --selftest [--plugin=<path to a VST3 effect>] [--dump=<dir>]
 
 #include "SelfTest.h"
 #include <iostream>
 #include "Session.h"
-#include "SongHelpers.h"
+#include "SongModel.h"
+#include "PatternCompiler.h"
+#include "DrumSynthPlugin.h"
 
 namespace
 {
@@ -53,11 +56,85 @@ private:
     juce::uint32 stepStart = 0;
     int passed = 0, failed = 0, skipped = 0;
     juce::StringArray failures;
+    juce::String deletedChannelID;
     static constexpr int port = 47811;
 
     te::Edit& H()  { return *host.getEdit(); }
     te::Edit& P1() { return *peer1.getEdit(); }
     te::Edit& P2() { return *peer2.getEdit(); }
+
+    //==============================================================================
+    static te::AudioTrack* ch (te::Edit& e, const juce::String& name)
+    {
+        for (auto* t : song::getChannels (e))
+            if (t->getName() == name)
+                return t;
+
+        return nullptr;
+    }
+
+    static juce::ValueTree pat (te::Edit& e, const juce::String& name)
+    {
+        for (auto& p : song::getPatterns (e))
+            if (p[song::ids::name].toString() == name)
+                return p;
+
+        return {};
+    }
+
+    static bool hasStep (te::Edit& e, const juce::String& patternName, const juce::String& channelName, int step)
+    {
+        auto p = pat (e, patternName);
+        auto* t = ch (e, channelName);
+        return p.isValid() && t != nullptr && song::hasStep (p, song::getChannelID (*t), step);
+    }
+
+    static juce::ValueTree note (te::Edit& e, const juce::String& patternName, const juce::String& channelName, int pitch, double beat)
+    {
+        auto p = pat (e, patternName);
+        auto* t = ch (e, channelName);
+        return p.isValid() && t != nullptr ? song::findNoteAt (p, song::getChannelID (*t), pitch, beat) : juce::ValueTree();
+    }
+
+    static te::AutomatableParameter* drumParam (te::Edit& e, const juce::String& channelName, const juce::String& paramID)
+    {
+        if (auto* t = ch (e, channelName))
+            if (auto* inst = song::getInstrument (*t))
+                if (auto ap = inst->getAutomatableParameterByID (paramID))
+                    return ap.get();
+
+        return nullptr;
+    }
+
+    static float effectKnob (te::Edit& e)
+    {
+        if (auto* t = ch (e, "Synth"))
+            for (auto* p : song::getEffects (*t))
+                if (auto* ext = dynamic_cast<te::ExternalPlugin*> (p))
+                    if (auto* pi = ext->getAudioPluginInstance())
+                        if (! pi->getParameters().isEmpty())
+                            return pi->getParameters()[0]->getValue();
+
+        return -1.0f;
+    }
+
+    static void setEffectKnob (te::Edit& e, float v)
+    {
+        if (auto* t = ch (e, "Synth"))
+            for (auto* p : song::getEffects (*t))
+                if (auto* ext = dynamic_cast<te::ExternalPlugin*> (p))
+                    if (auto* pi = ext->getAudioPluginInstance())
+                        pi->getParameters()[0]->setValueNotifyingHost (v);
+    }
+
+    juce::StringArray compiled (collab::Session& s, const juce::String& channelName)
+    {
+        if (auto* t = ch (*s.getEdit(), channelName))
+            if (auto* c = s.getCompiler())
+                return c->describeCompiledNotes (*t);
+
+        return {};
+    }
 
     bool allJoined() const
     {
@@ -76,23 +153,17 @@ private:
         return pred (H()) && pred (P1()) && pred (P2());
     }
 
-    static float pluginParam (te::Edit& e)
+    bool compiledEqualEverywhere()
     {
-        if (auto* ext = song::findExternalPlugin (e, "SyncTestGain"))
-            if (auto* pi = ext->getAudioPluginInstance())
-                if (! pi->getParameters().isEmpty())
-                    return pi->getParameters()[0]->getValue();
+        for (auto* t : song::getChannels (H()))
+        {
+            auto a = compiled (host, t->getName());
 
-        return -1.0f;
-    }
+            if (a != compiled (peer1, t->getName()) || a != compiled (peer2, t->getName()))
+                return false;
+        }
 
-    static te::AutomatableParameter* synthParam (te::Edit& e)
-    {
-        for (auto* p : te::getAllPlugins (e, false))
-            if (auto* synth = dynamic_cast<te::FourOscPlugin*> (p))
-                return synth->getNumAutomatableParameters() > 0 ? synth->getAutomatableParameter (0).get() : nullptr;
-
-        return nullptr;
+        return true;
     }
 
     static bool idsUnique (te::Edit& e)
@@ -112,142 +183,234 @@ private:
         dumpDir.getChildFile (name + "-shared.xml").replaceWithText (collab::EditSync::filteredCopy (e.state, true).toXmlString());
     }
 
+    float renderPeak (te::Edit& e)
+    {
+        // Renders the playing pattern offline and returns the loudest sample.
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("synctest-render", ".wav");
+        juce::BigInteger tracks;
+        tracks.setRange (0, te::getAllTracks (e).size(), true);
+        auto range = e.getTransport().getLoopRange();
+
+        if (! te::Renderer::renderToFile ("test", file, e, range, tracks, true, true, {}, false))
+            return -1.0f;
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        float peak = 0.0f;
+
+        if (std::unique_ptr<juce::AudioFormatReader> reader { fm.createReaderFor (file) })
+        {
+            juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+            reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true);
+            peak = buffer.getMagnitude (0, buffer.getNumSamples());
+        }
+
+        file.deleteFile();
+        return peak;
+    }
+
     //==============================================================================
     void buildSteps()
     {
-        steps.push_back ({ "Host starts a song and listens on port 47811",
+        steps.push_back ({ "Host creates the default song (Kick, Clap, Hat, Snare, Synth + a beat) and hosts",
             [this] { host.createLocalEdit(); host.startHosting (port); },
-            [this] { return host.getMode() == collab::Session::Mode::hosting; } });
+            [this]
+            {
+                return host.getMode() == collab::Session::Mode::hosting
+                    && song::getChannels (H()).size() == 5 && song::getPatterns (H()).size() == 1
+                    && compiled (host, "Kick").size() == 4 && compiled (host, "Hat").size() == 4;
+            } });
+
+        steps.push_back ({ "The default beat makes sound (offline render of the drum synth)",
+            {},
+            [this] { auto peak = renderPeak (H()); std::cout << "    peak level " << peak << std::endl; return peak > 0.05f; },
+            8000, 0, true });
 
         steps.push_back ({ "Two peers join and receive the song",
             [this] { peer1.join ("127.0.0.1", port); peer2.join ("127.0.0.1", port); },
-            [this] { return allJoined() && hashesEqual(); } });
+            [this] { return allJoined() && hashesEqual() && compiledEqualEverywhere(); } });
 
         steps.push_back ({ "Copies stay identical for 4 s with nobody editing (no resyncs needed)",
             [this] { dump ("host-after-join", H()); dump ("peer1-after-join", P1()); },
             [this] { return hashesEqual() && peer1.getResyncCount() == 0 && peer2.getResyncCount() == 0; },
             8000, 4000 });
 
-        steps.push_back ({ "Host adds a note -> both peers get it",
-            [this] { song::setNote (H(), 0, 64, 2, true); },
-            [this] { return everywhere ([] (te::Edit& e) { return song::hasNote (e, 0, 64, 2); }); } });
-
-        steps.push_back ({ "Peer 1 adds a note -> host and peer 2 get it (relayed)",
-            [this] { song::setNote (P1(), 0, 67, 6, true); },
-            [this] { return everywhere ([] (te::Edit& e) { return song::hasNote (e, 0, 67, 6); }); } });
-
-        steps.push_back ({ "Peer 2 deletes a note -> gone everywhere",
-            [this] { song::setNote (P2(), 0, 60, 0, false); },
-            [this] { return everywhere ([] (te::Edit& e) { return ! song::hasNote (e, 0, 60, 0); }); } });
-
-        steps.push_back ({ "Peer 1 turns a knob on the built-in synth -> same value everywhere",
-            [this] { if (auto* p = synthParam (P1())) p->setNormalisedParameter (0.3f, juce::sendNotification); },
+        steps.push_back ({ "Host clicks a step (Kick, step 3) -> lit everywhere and compiled into playback",
+            [this] { song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Kick"), 2, true); },
             [this]
             {
-                auto* a = synthParam (H()); auto* b = synthParam (P1()); auto* c = synthParam (P2());
-                return a && b && c && std::abs (a->getCurrentNormalisedValue() - 0.3f) < 1.0e-4f
-                        && std::abs (b->getCurrentValue() - a->getCurrentValue()) < 1.0e-6f
-                        && std::abs (c->getCurrentValue() - a->getCurrentValue()) < 1.0e-6f;
+                return everywhere ([] (te::Edit& e) { return hasStep (e, "Pattern 1", "Kick", 2); })
+                    && compiled (peer2, "Kick").size() == 5 && compiledEqualEverywhere();
             } });
 
-        steps.push_back ({ "Host adds a second track -> both peers have 2 tracks",
-            [this] { song::addSynthTrack (H()); },
-            [this] { return everywhere ([] (te::Edit& e) { return te::getAudioTracks (e).size() == 2; }) && hashesEqual(); } });
+        steps.push_back ({ "Peer 1 draws a note in the piano roll (Synth) -> everywhere",
+            [this] { song::addNote (P1(), pat (P1(), "Pattern 1"), song::getChannelID (*ch (P1(), "Synth")), 67, 1.0, 0.5); },
+            [this] { return everywhere ([] (te::Edit& e) { return note (e, "Pattern 1", "Synth", 67, 1.0).isValid(); }); } });
+
+        steps.push_back ({ "Peer 2 turns off a step (Kick, step 1) -> off everywhere",
+            [this] { song::setStep (P2(), pat (P2(), "Pattern 1"), *ch (P2(), "Kick"), 0, false); },
+            [this] { return everywhere ([] (te::Edit& e) { return ! hasStep (e, "Pattern 1", "Kick", 0); }); } });
+
+        steps.push_back ({ "Peer 2 drags that piano-roll note to another time and pitch -> moves everywhere",
+            [this]
+            {
+                auto n = note (P2(), "Pattern 1", "Synth", 67, 1.0);
+                n.setProperty (song::ids::p, 69, &P2().getUndoManager());
+                n.setProperty (song::ids::b, 2.0, &P2().getUndoManager());
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return note (e, "Pattern 1", "Synth", 69, 2.0).isValid()
+                                                             && ! note (e, "Pattern 1", "Synth", 67, 1.0).isValid(); });
+            } });
+
+        steps.push_back ({ "Peer 1 makes 'Pattern 2' (2 bars), peer 2 adds a Hat step in bar 2 -> everywhere",
+            [this] { song::addPattern (P1(), "Pattern 2", 2); },
+            [this] { return everywhere ([] (te::Edit& e) { return song::getBars (pat (e, "Pattern 2")) == 2; }); } });
+
+        steps.push_back ({ "  ...and the Hat step in bar 2 arrives everywhere",
+            [this] { song::setStep (P2(), pat (P2(), "Pattern 2"), *ch (P2(), "Hat"), 20, true); },
+            [this] { return everywhere ([] (te::Edit& e) { return hasStep (e, "Pattern 2", "Hat", 20); }); } });
+
+        steps.push_back ({ "Peer 1 changes the Kick's drum-synth Decay knob -> same value everywhere",
+            [this] { drumParam (P1(), "Kick", "decay")->setNormalisedParameter (0.75f, juce::sendNotification); },
+            [this]
+            {
+                auto* a = drumParam (H(), "Kick", "decay");
+                auto* c = drumParam (P2(), "Kick", "decay");
+                return a && c && std::abs (a->getCurrentNormalisedValue() - 0.75f) < 1.0e-4f
+                        && std::abs (c->getCurrentNormalisedValue() - 0.75f) < 1.0e-4f;
+            } });
+
+        steps.push_back ({ "Peer 2 sets the tempo to 140 BPM -> everywhere",
+            [this] { P2().tempoSequence.getTempo (0)->setBpm (140.0); },
+            [this] { return everywhere ([] (te::Edit& e) { return std::abs (e.tempoSequence.getTempo (0)->getBpm() - 140.0) < 0.01; }); } });
+
+        steps.push_back ({ "Host turns the Snare volume knob and peer 1 mutes the Clap -> everywhere",
+            [this]
+            {
+                song::getVolumePlugin (*ch (H(), "Snare"))->volParam->setNormalisedParameter (0.5f, juce::sendNotification);
+                ch (P1(), "Clap")->setMute (true);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return std::abs (song::getVolumePlugin (*ch (e, "Snare"))->volParam->getCurrentNormalisedValue() - 0.5f) < 1.0e-4f
+                        && ch (e, "Clap")->isMuted (false);
+                });
+            } });
 
         const bool havePlugin = pluginFile.exists();
 
-        steps.push_back ({ "Host inserts a third-party VST3 (SyncTestGain) -> it loads on both peers",
+        steps.push_back ({ "Host adds a third-party VST3 effect to the Synth channel -> loads everywhere",
             [this]
             {
                 juce::VST3PluginFormat format;
                 juce::OwnedArray<juce::PluginDescription> found;
                 format.findAllTypesForFile (found, pluginFile.getFullPathName());
 
-                if (found.isEmpty())
+                if (! found.isEmpty())
                 {
-                    std::cout << "    could not read " << pluginFile.getFullPathName() << std::endl;
-                    return;
+                    engine.getPluginManager().knownPluginList.addType (*found[0]);
+                    song::addEffect (*ch (H(), "Synth"), *found[0]);
                 }
-
-                engine.getPluginManager().knownPluginList.addType (*found[0]);
-                song::insertPlugin (*song::getTrack (H(), 0), *found[0]);
             },
-            [this] { return pluginParam (H()) >= 0 && pluginParam (P1()) >= 0 && pluginParam (P2()) >= 0; },
-            15000, 600, ! havePlugin });   // 0.6 s: a person can't turn a knob faster than that after inserting
+            [this] { return effectKnob (H()) >= 0 && effectKnob (P1()) >= 0 && effectKnob (P2()) >= 0; },
+            15000, 600, ! havePlugin });
 
-        steps.push_back ({ "Knob turned inside the plugin's own window on the host -> peers follow",
-            [this]
-            {
-                if (auto* ext = song::findExternalPlugin (H(), "SyncTestGain"))
-                    ext->getAudioPluginInstance()->getParameters()[0]->setValueNotifyingHost (0.8f);
-            },
-            [this] { return std::abs (pluginParam (P1()) - 0.8f) < 1.0e-4f && std::abs (pluginParam (P2()) - 0.8f) < 1.0e-4f; },
+        steps.push_back ({ "Knob turned in that plugin's window on the host -> peers follow",
+            [this] { setEffectKnob (H(), 0.8f); },
+            [this] { return std::abs (effectKnob (P1()) - 0.8f) < 1.0e-4f && std::abs (effectKnob (P2()) - 0.8f) < 1.0e-4f; },
             8000, 0, ! havePlugin });
 
-        steps.push_back ({ "Knob turned in the plugin window on peer 2 -> host and peer 1 follow",
-            [this]
-            {
-                if (auto* ext = song::findExternalPlugin (P2(), "SyncTestGain"))
-                    ext->getAudioPluginInstance()->getParameters()[0]->setValueNotifyingHost (0.25f);
-            },
-            [this] { return std::abs (pluginParam (H()) - 0.25f) < 1.0e-4f && std::abs (pluginParam (P1()) - 0.25f) < 1.0e-4f; },
+        steps.push_back ({ "Fast knob drag (200 moves) on peer 2 -> everyone ends on the last value",
+            [this] { for (int i = 0; i <= 200; ++i) setEffectKnob (P2(), i / 200.0f * 0.3f); },
+            [this] { return std::abs (effectKnob (H()) - 0.3f) < 1.0e-4f && std::abs (effectKnob (P1()) - 0.3f) < 1.0e-4f; },
             8000, 0, ! havePlugin });
 
-        steps.push_back ({ "Fast knob drag (200 moves) on peer 1 -> everyone ends on the last value",
+        steps.push_back ({ "All three edit at the same instant (two steps + a new channel) -> everyone converges",
             [this]
             {
-                if (auto* ext = song::findExternalPlugin (P1(), "SyncTestGain"))
-                    for (int i = 0; i <= 200; ++i)
-                        ext->getAudioPluginInstance()->getParameters()[0]->setValueNotifyingHost (i / 200.0f * 0.6f);
-            },
-            [this] { return std::abs (pluginParam (H()) - 0.6f) < 1.0e-4f && std::abs (pluginParam (P2()) - 0.6f) < 1.0e-4f; },
-            8000, 0, ! havePlugin });
-
-        steps.push_back ({ "All three edit at the same instant -> everyone converges on the same song",
-            [this]
-            {
-                song::setNote (H(), 0, 72, 3, true);
-                song::setNote (P1(), 0, 74, 5, true);
-                song::addSynthTrack (P2());
+                song::setStep (H(),  pat (H(),  "Pattern 1"), *ch (H(),  "Kick"), 6, true);
+                song::setStep (P1(), pat (P1(), "Pattern 1"), *ch (P1(), "Kick"), 10, true);
+                song::addChannel (P2(), song::InstrumentKind::clap)->setName ("Clap 2");
             },
             [this]
             {
                 return hashesEqual()
-                    && everywhere ([] (te::Edit& e) { return song::hasNote (e, 0, 72, 3) && song::hasNote (e, 0, 74, 5)
-                                                             && te::getAudioTracks (e).size() == 3; });
+                    && everywhere ([] (te::Edit& e) { return hasStep (e, "Pattern 1", "Kick", 6) && hasStep (e, "Pattern 1", "Kick", 10)
+                                                             && song::getChannels (e).size() == 6 && ch (e, "Clap 2") != nullptr; });
             },
             20000, 3500 });
 
-        steps.push_back ({ "Item IDs are unique (no clashes between peers) and identical everywhere",
+        steps.push_back ({ "Item IDs are unique (no clashes between peers)",
             {},
+            [this] { return idsUnique (H()) && idsUnique (P1()) && idsUnique (P2()); } });
+
+        steps.push_back ({ "Peer 2 plays Pattern 2 -> everyone plays Pattern 2",
             [this]
             {
-                auto a = te::EditItemID::findAllIDs (H().state), b = te::EditItemID::findAllIDs (P1().state);
-                return idsUnique (H()) && idsUnique (P1()) && idsUnique (P2()) && a.size() + 1 == b.size(); // +1 = SYNCLOCAL
-            } });
+                peer2.setPlayingPattern (pat (P2(), "Pattern 2")[song::ids::sid].toString());
+                peer2.setPlaying (true);
+            },
+            [this]
+            {
+                auto sid = pat (H(), "Pattern 2")[song::ids::sid].toString();
+                return H().getTransport().isPlaying() && P1().getTransport().isPlaying()
+                    && host.getPlayingPattern() == sid && peer1.getPlayingPattern() == sid
+                    && compiled (host, "Hat").contains ("60@5.000+0.250*100");
+            },
+            4000 });
 
-        steps.push_back ({ "Peer 2 presses Play -> host and peer 1 are playing too",
-            [this] { peer2.setPlaying (true); },
-            [this] { return H().getTransport().isPlaying() && P1().getTransport().isPlaying(); },
-            4000, 0, true });
+        steps.push_back ({ "What each PC plays is identical (compiled notes of every channel)",
+            {},
+            [this] { return compiledEqualEverywhere(); } });
 
         steps.push_back ({ "Peer 1 presses Stop -> everyone stops",
             [this] { peer1.setPlaying (false); },
             [this] { return ! H().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
-            4000, 0, true });
+            4000 });
+
+        steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
+            [this]
+            {
+                auto* snare = ch (H(), "Snare");
+                deletedChannelID = song::getChannelID (*snare);
+                H().getUndoManager().beginNewTransaction();
+                song::setStep (H(), pat (H(), "Pattern 1"), *snare, 4, true);
+                H().getUndoManager().beginNewTransaction();
+                song::removeChannel (H(), *snare);
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e)
+                {
+                    return ch (e, "Snare") == nullptr && song::getNotes (pat (e, "Pattern 1"), deletedChannelID).isEmpty();
+                }) && hashesEqual();
+            },
+            8000, 1600 });
+
+        steps.push_back ({ "Host presses Undo -> the Snare channel and its step come back everywhere",
+            [this] { H().undo(); },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return hasStep (e, "Pattern 1", "Snare", 4); }) && hashesEqual();
+            },
+            8000, 1600 });
 
         steps.push_back ({ "Peer 1 leaves; host keeps editing with peer 2",
-            [this] { peer1.leave(); song::setNote (H(), 0, 76, 9, true); },
-            [this] { return song::hasNote (P2(), 0, 76, 9) && host.getNumConnectedPeers() == 1; },
+            [this] { peer1.leave(); song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Hat"), 15, true); },
+            [this] { return hasStep (P2(), "Pattern 1", "Hat", 15) && host.getNumConnectedPeers() == 1; },
             8000, 1600 });
 
         steps.push_back ({ "Peer 1 rejoins and gets the latest song",
             [this] { peer1.join ("127.0.0.1", port); },
-            [this] { return allJoined() && hashesEqual() && song::hasNote (P1(), 0, 76, 9); } });
+            [this] { return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15); } });
 
-        steps.push_back ({ "Final check: all copies identical",
+        steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },
-            [this] { return hashesEqual(); }, 4000, 1600 });
+            [this] { return hashesEqual() && compiledEqualEverywhere(); }, 4000, 1600 });
     }
 
     void timerCallback() override
@@ -259,13 +422,6 @@ private:
 
             for (auto& f : failures)
                 std::cout << "  FAILED: " << f << std::endl;
-
-            if (auto* s = host.getSync())
-            {
-                auto st = s->getStats();
-                std::cout << "host sync stats: sent " << st.sent << ", applied " << st.applied << ", failed " << st.failed
-                          << ", knob messages sent " << st.paramsSent << " / applied " << st.paramsApplied << std::endl;
-            }
 
             for (auto* sess : { &host, &peer1, &peer2 })
                 if (auto* es = sess->getSync())

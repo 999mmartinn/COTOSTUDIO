@@ -36,7 +36,12 @@ target_sources(SyncTest PRIVATE
     Source/EditSync.cpp
     Source/Session.cpp
     Source/MainComponent.cpp
-    Source/SelfTest.cpp)
+    Source/SelfTest.cpp
+    Source/SongModel.cpp
+    Source/PatternCompiler.cpp
+    Source/DrumSynthPlugin.cpp
+    Source/ChannelRack.cpp
+    Source/PianoRoll.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1

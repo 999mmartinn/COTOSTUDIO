@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "PluginWindow.h"
 #include "SelfTest.h"
+#include "DrumSynthPlugin.h"
 
 class SyncTestApplication  : public juce::JUCEApplication
 {
@@ -12,6 +13,7 @@ public:
     void initialise (const juce::String&) override
     {
         engine = std::make_unique<te::Engine> ("SyncTest", std::make_unique<AppUIBehaviour>(), nullptr);
+        engine->getPluginManager().createBuiltInType<DrumSynthPlugin>();
 
         auto args = getCommandLineParameterArray();
 
@@ -42,7 +44,7 @@ private:
     {
     public:
         explicit MainWindow (te::Engine& e)
-            : DocumentWindow ("SyncTest - two-peer sync test", juce::Colour (0xff1e2227), DocumentWindow::allButtons)
+            : DocumentWindow ("SyncTest - multiplayer DAW (step 1: channel rack)", juce::Colour (0xff1e2227), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
             setContentOwned (new MainComponent (e), true);

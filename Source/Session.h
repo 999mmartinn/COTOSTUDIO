@@ -2,6 +2,8 @@
 
 #include "EditSync.h"
 
+class PatternCompiler;
+
 namespace collab
 {
 
@@ -65,15 +67,21 @@ public:
     /** Play/stop is shared: each PC renders its own audio from the same song. */
     void setPlaying (bool shouldPlay);
 
+    /** Pattern mode: which pattern plays. Shared too, so everyone hears the same thing. */
+    void setPlayingPattern (const juce::String& patternSid);
+    juce::String getPlayingPattern() const;
+    PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
+
     std::function<void()> onEditAboutToBeReplaced;
     std::function<void()> onEditReplaced;
     std::function<void()> onRemoteChange;
+    std::function<void()> onTransportChanged;
     std::function<void()> onStatusChanged;
     std::function<void (const juce::String&)> onLog;
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 1;
+    static constexpr int protocolVersion = 2;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -89,6 +97,7 @@ private:
     te::Engine& engine;
     std::unique_ptr<te::Edit> edit;
     std::unique_ptr<EditSync> editSync;
+    std::unique_ptr<PatternCompiler> compiler;
     std::unique_ptr<Server> server;
     juce::OwnedArray<PeerConnection, juce::CriticalSection> clients;   // host side (added from the server thread)
     std::unique_ptr<PeerConnection> hostLink;     // joining side
@@ -109,6 +118,7 @@ private:
     void broadcast (const juce::ValueTree& msg, PeerConnection* except);
     void applyOps (const juce::ValueTree& msg, PeerConnection* from);
     void applyTransport (const juce::ValueTree& msg);
+    void sendTransport (bool patternOnly);
     void sendSnapshotTo (PeerConnection&, const juce::String& reason);
     void loadSnapshot (const juce::ValueTree& msg);
     void log (const juce::String&);
@@ -118,9 +128,5 @@ private:
     JUCE_DECLARE_WEAK_REFERENCEABLE (Session)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Session)
 };
-
-//==============================================================================
-/** Creates the starter song: one track with the built-in synth and a 1-bar pattern. */
-void addStarterContent (te::Edit&);
 
 } // namespace collab

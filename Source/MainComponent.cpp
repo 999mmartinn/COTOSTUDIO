@@ -1,58 +1,7 @@
 #include "MainComponent.h"
-#include "SongHelpers.h"
+#include "PatternCompiler.h"
 
-static const juce::Colour background (0xff1e2227), panel (0xff2a2f36), accent (0xfff28c28), cellOff (0xff3a414a);
-
-//==============================================================================
-juce::Rectangle<float> StepGrid::cellBounds (int step, int row) const
-{
-    auto w = (float) getWidth() / (float) song::numSteps;
-    auto h = (float) getHeight() / (float) numRows;
-    return { step * w, row * h, w, h };
-}
-
-void StepGrid::paint (juce::Graphics& g)
-{
-    g.fillAll (panel);
-    auto* edit = getEdit ? getEdit() : nullptr;
-    static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-
-    for (int row = 0; row < numRows; ++row)
-    {
-        const int pitch = lowestPitch + (numRows - 1 - row);
-
-        for (int step = 0; step < song::numSteps; ++step)
-        {
-            auto r = cellBounds (step, row).reduced (2.0f);
-            const bool on = edit != nullptr && song::hasNote (*edit, trackIndex, pitch, step);
-            auto off = (step / 4) % 2 == 0 ? cellOff : cellOff.brighter (0.12f);
-            g.setColour (on ? accent : off);
-            g.fillRoundedRectangle (r, 3.0f);
-
-            if (step == 0)
-            {
-                g.setColour (on ? juce::Colours::black : juce::Colours::white.withAlpha (0.5f));
-                g.setFont (11.0f);
-                g.drawText (names[pitch % 12], r.reduced (3.0f, 0.0f), juce::Justification::centredLeft);
-            }
-        }
-    }
-}
-
-void StepGrid::mouseDown (const juce::MouseEvent& e)
-{
-    auto* edit = getEdit ? getEdit() : nullptr;
-
-    if (edit == nullptr)
-        return;
-
-    const int step = juce::jlimit (0, song::numSteps - 1, (int) (e.position.x / getWidth() * song::numSteps));
-    const int row  = juce::jlimit (0, numRows - 1, (int) (e.position.y / getHeight() * numRows));
-    const int pitch = lowestPitch + (numRows - 1 - row);
-
-    song::setNote (*edit, trackIndex, pitch, step, ! song::hasNote (*edit, trackIndex, pitch, step));
-    repaint();
-}
+static const juce::Colour background (0xff1e2227), accent (0xfff28c28);
 
 //==============================================================================
 MainComponent::MainComponent (te::Engine& e) : engine (e)
@@ -68,10 +17,11 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     addressEditor.setText (settings->getValue ("address", "127.0.0.1"));
     portEditor.setInputRestrictions (5, "0123456789");
 
-    for (auto* c : std::initializer_list<juce::Component*> { &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor,
-                                                             &portLabel, &addressLabel, &statusLabel, &playButton,
-                                                             &addTrackButton, &addPluginButton, &scanButton, &audioButton,
-                                                             &trackCaption, &gridCaption, &trackPanel, &grid, &logView })
+    for (auto* c : std::initializer_list<juce::Component*> {
+             &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
+             &playButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
+             &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
+             &rack, &pianoRoll, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -79,21 +29,66 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     logView.setScrollbarsShown (true);
     logView.setFont (juce::FontOptions (13.0f));
     statusLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+    playingLabel.setColour (juce::Label::textColourId, accent);
 
-    for (auto* l : { &trackCaption, &gridCaption })
+    tempoSlider.setRange (40.0, 250.0, 1.0);
+    tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 50, 26);
+    tempoSlider.onDragStart = [this] { state.beginAction(); };
+    tempoSlider.onValueChange = [this]
     {
-        l->setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
-        l->setFont (juce::FontOptions (13.0f));
-        l->setBorderSize ({});
-    }
+        if (auto* edit = state.getEdit())
+            if (auto* tempo = edit->tempoSequence.getTempo (0))
+                if (std::abs (tempo->getBpm() - tempoSlider.getValue()) > 0.01)
+                    tempo->setBpm (tempoSlider.getValue());
+    };
 
-    grid.getEdit = [this] { return session.getEdit(); };
+    lengthBox.addItem ("1 bar", 1);
+    lengthBox.addItem ("2 bars", 2);
+    lengthBox.addItem ("4 bars", 4);
+    lengthBox.setTooltip ("Length of the viewed pattern");
+    lengthBox.onChange = [this]
+    {
+        auto pattern = state.getPattern();
+        auto* edit = state.getEdit();
+
+        if (edit != nullptr && pattern.isValid() && lengthBox.getSelectedId() != song::getBars (pattern))
+        {
+            state.beginAction();
+            song::setBars (*edit, pattern, lengthBox.getSelectedId());
+        }
+    };
+
+    patternBox.onChange = [this]
+    {
+        auto patterns = state.getEdit() != nullptr ? song::getPatterns (*state.getEdit()) : juce::Array<juce::ValueTree>();
+        auto index = patternBox.getSelectedItemIndex();
+
+        if (juce::isPositiveAndBelow (index, patterns.size()))
+            selectPattern (patterns[index][song::ids::sid].toString());
+    };
+
+    newPatternButton.setTooltip ("New pattern");
+    newPatternButton.onClick = [this]
+    {
+        if (auto* edit = state.getEdit())
+        {
+            state.beginAction();
+            auto p = song::addPattern (*edit, song::nextPatternName (*edit), song::getBars (state.getPattern()));
+            selectPattern (p[song::ids::sid].toString());
+        }
+    };
+
+    patternMenuButton.setTooltip ("Rename / clone / delete pattern");
+    patternMenuButton.onClick = [this] { showPatternMenu(); };
+
+    state.onSelectionChanged = [this] { refresh(); };
 
     session.onLog = [this] (const juce::String& s) { appendLog (s); };
-    session.onStatusChanged = [this] { refresh(); };
+    session.onStatusChanged = [this] { triggerAsyncUpdate(); };
     session.onRemoteChange = [this] { triggerAsyncUpdate(); };
+    session.onTransportChanged = [this] { triggerAsyncUpdate(); };
     session.onEditAboutToBeReplaced = [this] { unwatchEdit(); };
-    session.onEditReplaced = [this] { watchEdit(); refresh(); };
+    session.onEditReplaced = [this] { watchEdit(); triggerAsyncUpdate(); };
 
     hostButton.onClick = [this]
     {
@@ -112,29 +107,31 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
 
     playButton.onClick = [this]
     {
-        if (auto* edit = session.getEdit())
-            session.setPlaying (! edit->getTransport().isPlaying());
+        if (auto* edit = state.getEdit())
+        {
+            const bool play = ! edit->getTransport().isPlaying();
+
+            if (play)
+                session.setPlayingPattern (state.getPattern()[song::ids::sid].toString());
+
+            session.setPlaying (play);
+        }
 
         refresh();
     };
 
-    addTrackButton.onClick = [this]
-    {
-        if (auto* edit = session.getEdit())
-        {
-            song::addSynthTrack (*edit);
-            selectedTrack = te::getAudioTracks (*edit).size() - 1;
-        }
-    };
-
-    addPluginButton.onClick = [this] { showPluginMenu(); };
+    undoButton.onClick = [this] { undo (false); };
+    redoButton.onClick = [this] { undo (true); };
+    undoButton.setTooltip ("Undo your last change (Ctrl+Z)");
+    redoButton.setTooltip ("Redo (Ctrl+Y)");
     scanButton.onClick = [this] { showPluginScanner(); };
     audioButton.onClick = [this] { showAudioSettings(); };
 
+    setWantsKeyboardFocus (true);
     session.createLocalEdit();
     appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
                 + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
-    setSize (1100, 720);
+    setSize (1200, 820);
 }
 
 MainComponent::~MainComponent()
@@ -154,7 +151,6 @@ void MainComponent::watchEdit()
     {
         watchedState = edit->state;
         watchedState.addListener (this);
-        selectedTrack = juce::jlimit (0, juce::jmax (0, te::getAudioTracks (*edit).size() - 1), selectedTrack);
     }
 }
 
@@ -162,11 +158,45 @@ void MainComponent::unwatchEdit()
 {
     watchedState.removeListener (this);
     watchedState = {};
-    trackButtons.clear();
-    pluginButtons.clear();
 }
 
 //==============================================================================
+void MainComponent::selectPattern (const juce::String& sid)
+{
+    state.viewedPattern = sid;
+
+    // FL pattern mode: while playing, switching pattern switches what plays (for everyone).
+    if (auto* edit = state.getEdit())
+        if (edit->getTransport().isPlaying())
+            session.setPlayingPattern (sid);
+
+    refresh();
+}
+
+void MainComponent::refreshPatternControls()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    auto patterns = song::getPatterns (*edit);
+    auto viewed = state.getPattern();
+
+    patternBox.clear (juce::dontSendNotification);
+
+    for (int i = 0; i < patterns.size(); ++i)
+        patternBox.addItem (patterns[i][song::ids::name].toString(), i + 1);
+
+    patternBox.setSelectedItemIndex (patterns.indexOf (viewed), juce::dontSendNotification);
+    lengthBox.setSelectedId (song::getBars (viewed), juce::dontSendNotification);
+
+    const bool playing = edit->getTransport().isPlaying();
+    auto playingPattern = song::findPattern (*edit, session.getPlayingPattern());
+    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + playingPattern[song::ids::name].toString() : juce::String(),
+                          juce::dontSendNotification);
+}
+
 void MainComponent::refresh()
 {
     using Mode = collab::Session::Mode;
@@ -184,131 +214,102 @@ void MainComponent::refresh()
     addressEditor.setEnabled (mode == Mode::offline);
 
     if (auto* edit = session.getEdit())
+    {
         playButton.setButtonText (edit->getTransport().isPlaying() ? "Stop" : "Play");
 
-    rebuildTrackPanel();
-    grid.trackIndex = selectedTrack;
-    grid.repaint();
+        if (auto* tempo = edit->tempoSequence.getTempo (0))
+            if (! tempoSlider.isMouseButtonDown())
+                tempoSlider.setValue (tempo->getBpm(), juce::dontSendNotification);
+
+        undoButton.setEnabled (edit->getUndoManager().canUndo());
+        redoButton.setEnabled (edit->getUndoManager().canRedo());
+    }
+
+    refreshPatternControls();
+    rack.refresh();
+    pianoRoll.refresh();
 }
 
-void MainComponent::rebuildTrackPanel()
+void MainComponent::undo (bool redo)
 {
-    trackButtons.clear();
-    pluginButtons.clear();
+    if (auto* edit = state.getEdit())
+    {
+        if (redo)
+            edit->redo();
+        else
+            edit->undo();
+    }
 
-    auto* edit = session.getEdit();
+    refresh();
+}
 
-    if (edit == nullptr)
+bool MainComponent::keyPressed (const juce::KeyPress& key)
+{
+    const auto cmd = juce::ModifierKeys::commandModifier;
+
+    if (key == juce::KeyPress ('z', cmd, 0))                                        { undo (false); return true; }
+    if (key == juce::KeyPress ('y', cmd, 0)
+         || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
+    if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
+
+    return false;
+}
+
+void MainComponent::showPatternMenu()
+{
+    auto* edit = state.getEdit();
+    auto pattern = state.getPattern();
+
+    if (edit == nullptr || ! pattern.isValid())
         return;
-
-    auto tracks = te::getAudioTracks (*edit);
-
-    for (int i = 0; i < tracks.size(); ++i)
-    {
-        auto* track = tracks[i];
-        auto* b = trackButtons.add (new juce::TextButton (track->getName()));
-        b->setClickingTogglesState (false);
-        b->setToggleState (i == selectedTrack, juce::dontSendNotification);
-        b->setColour (juce::TextButton::buttonOnColourId, accent.darker (0.3f));
-        b->onClick = [this, i] { selectedTrack = i; refresh(); };
-        b->getProperties().set ("row", i);
-        trackPanel.addAndMakeVisible (b);
-
-        for (auto* plugin : track->pluginList.getPlugins())
-        {
-            if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin) != nullptr
-                 || dynamic_cast<te::LevelMeterPlugin*> (plugin) != nullptr)
-                continue;
-
-            auto* ext = dynamic_cast<te::ExternalPlugin*> (plugin);
-            const bool missing = ext != nullptr && ext->getAudioPluginInstance() == nullptr;
-            auto name = plugin->getName() + (missing ? " (not installed here)" : "");
-
-            auto* pb = pluginButtons.add (new juce::TextButton (name));
-            pb->getProperties().set ("row", i);
-            pb->setColour (juce::TextButton::buttonColourId, missing ? juce::Colours::darkred : panel.brighter (0.15f));
-            te::Plugin::Ptr ptr (plugin);
-            pb->onClick = [this, ptr]
-            {
-                if (juce::ModifierKeys::currentModifiers.isPopupMenu())
-                    showPluginOptions (*ptr);
-                else
-                    ptr->showWindowExplicitly();
-            };
-            pb->setTooltip ("Click: open. Right-click (or Ctrl+click): options");
-            trackPanel.addAndMakeVisible (pb);
-        }
-    }
-
-    layoutTrackPanel();
-}
-
-void MainComponent::layoutTrackPanel()
-{
-    const int rowH = 30;
-    std::map<int, int> x;
-
-    for (auto* b : trackButtons)
-    {
-        int row = b->getProperties()["row"];
-        b->setBounds (0, row * rowH + 2, 120, rowH - 4);
-        x[row] = 126;
-    }
-
-    for (auto* b : pluginButtons)
-    {
-        int row = b->getProperties()["row"];
-        int w = juce::jmin (220, juce::GlyphArrangement::getStringWidthInt (juce::Font (juce::FontOptions (14.0f)), b->getButtonText()) + 24);
-        b->setBounds (x[row], row * rowH + 2, w, rowH - 4);
-        x[row] += w + 4;
-    }
-}
-
-void MainComponent::showPluginOptions (te::Plugin& plugin)
-{
-    juce::PopupMenu m;
-    m.addItem (1, "Open window");
-    m.addItem (2, "Remove from track");
-    te::Plugin::Ptr ptr (&plugin);
-
-    m.showMenuAsync ({}, [ptr] (int r)
-    {
-        if (r == 1) ptr->showWindowExplicitly();
-        if (r == 2) ptr->deleteFromParent();
-    });
-}
-
-void MainComponent::showPluginMenu()
-{
-    auto* edit = session.getEdit();
-
-    if (edit == nullptr)
-        return;
-
-    auto& list = engine.getPluginManager().knownPluginList;
-    auto types = list.getTypes();
-
-    if (types.isEmpty())
-    {
-        appendLog ("No plugins known yet. Press 'Scan plugins...' first.");
-        return;
-    }
 
     juce::PopupMenu m;
-    juce::KnownPluginList::addToMenu (m, types, juce::KnownPluginList::sortByManufacturer);
+    m.addItem (1, "Rename...");
+    m.addItem (2, "Clone");
+    m.addItem (3, "Delete", song::getPatterns (*edit).size() > 1);
 
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addPluginButton),
-                     [this, types] (int result)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patternMenuButton), [this, pattern] (int r)
     {
-        auto index = juce::KnownPluginList::getIndexChosenByMenu (types, result);
+        auto* e = state.getEdit();
 
-        if (! juce::isPositiveAndBelow (index, types.size()))
+        if (e == nullptr || r == 0 || ! pattern.getParent().isValid())
             return;
 
-        if (auto* edit2 = session.getEdit())
-            if (auto* track = song::getTrack (*edit2, selectedTrack))
-                if (auto p = song::insertPlugin (*track, types[index]))
-                    appendLog ("Added " + types[index].name + " to " + track->getName());
+        if (r == 1)
+        {
+            auto* w = new juce::AlertWindow ("Rename pattern", {}, juce::MessageBoxIconType::NoIcon);
+            w->addTextEditor ("name", pattern[song::ids::name].toString());
+            w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            w->enterModalState (true, juce::ModalCallbackFunction::create ([this, pattern, w] (int res) mutable
+            {
+                if (res == 1 && state.getEdit() != nullptr && pattern.getParent().isValid())
+                {
+                    state.beginAction();
+                    pattern.setProperty (song::ids::name, w->getTextEditorContents ("name").trim().substring (0, 40),
+                                         &state.getEdit()->getUndoManager());
+                }
+            }), true);
+        }
+        else if (r == 2)
+        {
+            state.beginAction();
+            auto copy = song::addPattern (*e, pattern[song::ids::name].toString() + " copy", song::getBars (pattern));
+
+            for (auto n : pattern)
+                if (n.hasType (song::ids::PNOTE))
+                    song::addNote (*e, copy, n[song::ids::ch].toString(), n[song::ids::p], n[song::ids::b],
+                                   n[song::ids::l], n[song::ids::v]);
+
+            selectPattern (copy[song::ids::sid].toString());
+        }
+        else if (r == 3)
+        {
+            state.beginAction();
+            song::removePattern (*e, pattern);
+            state.viewedPattern = {};
+            refresh();
+        }
     });
 }
 
@@ -354,38 +355,54 @@ void MainComponent::paint (juce::Graphics& g)
 
 void MainComponent::resized()
 {
-    auto r = getLocalBounds().reduced (12);
+    auto r = getLocalBounds().reduced (10);
 
-    auto top = r.removeFromTop (30);
-    hostButton.setBounds (top.removeFromLeft (80));
+    auto top = r.removeFromTop (28);
+    hostButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (8);
     portLabel.setBounds (top.removeFromLeft (36));
-    portEditor.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (16);
+    portEditor.setBounds (top.removeFromLeft (64));
+    top.removeFromLeft (12);
     addressLabel.setBounds (top.removeFromLeft (92));
-    addressEditor.setBounds (top.removeFromLeft (160));
+    addressEditor.setBounds (top.removeFromLeft (150));
     top.removeFromLeft (8);
-    joinButton.setBounds (top.removeFromLeft (80));
+    joinButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (8);
-    leaveButton.setBounds (top.removeFromLeft (80));
+    leaveButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (16);
     statusLabel.setBounds (top);
 
-    r.removeFromTop (10);
-    auto row2 = r.removeFromTop (30);
-    for (auto* b : { &playButton, &addTrackButton, &addPluginButton, &scanButton, &audioButton })
-    {
-        b->setBounds (row2.removeFromLeft (b == &scanButton || b == &audioButton ? 130 : 90));
-        row2.removeFromLeft (8);
-    }
+    r.removeFromTop (8);
+    auto bar = r.removeFromTop (28);
+    playButton.setBounds (bar.removeFromLeft (70));
+    bar.removeFromLeft (12);
+    tempoLabel.setBounds (bar.removeFromLeft (36));
+    tempoSlider.setBounds (bar.removeFromLeft (110));
+    bar.removeFromLeft (16);
+    patternLabel.setBounds (bar.removeFromLeft (56));
+    patternBox.setBounds (bar.removeFromLeft (150));
+    bar.removeFromLeft (4);
+    newPatternButton.setBounds (bar.removeFromLeft (28));
+    bar.removeFromLeft (4);
+    patternMenuButton.setBounds (bar.removeFromLeft (32));
+    bar.removeFromLeft (8);
+    lengthBox.setBounds (bar.removeFromLeft (80));
+    bar.removeFromLeft (8);
+    playingLabel.setBounds (bar.removeFromLeft (130));
+    audioButton.setBounds (bar.removeFromRight (124));
+    bar.removeFromRight (6);
+    scanButton.setBounds (bar.removeFromRight (116));
+    bar.removeFromRight (12);
+    redoButton.setBounds (bar.removeFromRight (56));
+    bar.removeFromRight (4);
+    undoButton.setBounds (bar.removeFromRight (56));
 
     r.removeFromTop (8);
-    trackCaption.setBounds (r.removeFromTop (22));
-    trackPanel.setBounds (r.removeFromTop (150));
-    r.removeFromTop (6);
-    gridCaption.setBounds (r.removeFromTop (22));
-    logView.setBounds (r.removeFromBottom (130));
-    r.removeFromBottom (10);
-    grid.setBounds (r);
-    layoutTrackPanel();
+    logView.setBounds (r.removeFromBottom (90));
+    r.removeFromBottom (8);
+
+    const int rackHeight = juce::jlimit (150, r.getHeight() / 2, 6 * ChannelRack::rowHeight + 44);
+    rack.setBounds (r.removeFromTop (rackHeight));
+    r.removeFromTop (8);
+    pianoRoll.setBounds (r);
 }

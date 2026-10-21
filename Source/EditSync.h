@@ -42,6 +42,8 @@ namespace ids
     SYNC_DECLARE_ID (playing)
     SYNC_DECLARE_ID (position)
     SYNC_DECLARE_ID (reason)
+    SYNC_DECLARE_ID (pattern)
+    SYNC_DECLARE_ID (patternOnly)
     SYNC_DECLARE_ID (id)
     #undef SYNC_DECLARE_ID
 }
@@ -151,6 +153,7 @@ private:
     static juce::String stableKeyOf (const juce::ValueTree& child);   // empty if positional
     static bool needsSyncID (const juce::ValueTree& child);
     bool isAttachedAndShared (const juce::ValueTree&) const;
+    bool isInsideLocal (const juce::ValueTree&) const;
     juce::String pathOf (const juce::ValueTree&) const;
     juce::ValueTree resolve (const juce::String& path) const;
     static int depthOf (const juce::String& path);

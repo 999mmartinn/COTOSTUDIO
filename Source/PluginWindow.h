@@ -20,7 +20,13 @@ public:
             auto* row = rows.add (new Row());
             row->label.setText (ap->getParameterName(), juce::dontSendNotification);
             row->slider.setRange (0.0, 1.0);
+            row->slider.textFromValueFunction = [ap] (double v)
+            {
+                auto range = ap->getValueRange();
+                return ap->valueToString (range.getStart() + (float) v * range.getLength());
+            };
             row->slider.setValue (ap->getCurrentNormalisedValue(), juce::dontSendNotification);
+            row->slider.onDragStart = [&p = plugin] { p.edit.getUndoManager().beginNewTransaction(); };
             row->slider.onValueChange = [ap, s = &row->slider]
             {
                 ap->setNormalisedParameter ((float) s->getValue(), juce::sendNotification);
