@@ -14,6 +14,8 @@ namespace te = tracktion;
           PATTERNS
             PATTERN sid name bars colour
               PNOTE sid ch p b l v       <- channel (track ID), pitch, start beat, length beats, velocity
+          PLAYLIST
+            PCLIP sid pattern lane start length   <- a pattern placed in the song (beats)
 
     Patterns are the truth. What the engine actually plays is generated from
     them on each PC (see PatternCompiler) and never sent over the network.
@@ -39,6 +41,12 @@ namespace song
         SONG_DECLARE_ID (channel)
         SONG_DECLARE_ID (rootNote)
         SONG_DECLARE_ID (generated)
+        SONG_DECLARE_ID (PLAYLIST)
+        SONG_DECLARE_ID (PCLIP)
+        SONG_DECLARE_ID (pattern)
+        SONG_DECLARE_ID (lane)
+        SONG_DECLARE_ID (start)
+        SONG_DECLARE_ID (length)
         #undef SONG_DECLARE_ID
     }
 
@@ -88,6 +96,18 @@ namespace song
                              int pitch, double beat, double lengthBeats, int velocity = 100);
     void removeNote (te::Edit&, juce::ValueTree note);
     juce::ValueTree findNoteAt (const juce::ValueTree& pattern, const juce::String& channelID, int pitch, double beat);
+
+    //==============================================================================
+    // Playlist (song arrangement)
+    constexpr int numLanes = 16;
+
+    juce::Array<juce::ValueTree> getClips (te::Edit&);
+    juce::ValueTree addClip (te::Edit&, const juce::String& patternSid, int lane, double startBeat);
+    void removeClip (te::Edit&, juce::ValueTree clip);
+    /** Length in beats: the clip's own length if set, otherwise its pattern's length. */
+    double getClipLength (te::Edit&, const juce::ValueTree& clip);
+    /** End of the last clip, rounded up to a whole bar (at least one bar). */
+    double getSongLengthBeats (te::Edit&);
 
     //==============================================================================
     /** Fills an empty Edit with the default song: Kick, Clap, Hat, Snare, Synth and a beat. */

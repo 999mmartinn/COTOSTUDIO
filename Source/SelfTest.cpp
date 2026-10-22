@@ -427,6 +427,92 @@ private:
             [this] { return ! H().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
             4000 });
 
+        steps.push_back ({ "Playlist: host and peer 1 place clips at the same instant -> both everywhere",
+            [this]
+            {
+                song::addClip (H(),  pat (H(),  "Pattern 1")[song::ids::sid].toString(), 1, 4.0);   // lane 2, bar 2
+                song::addClip (P1(), pat (P1(), "Pattern 2")[song::ids::sid].toString(), 0, 8.0);   // lane 1, bar 3
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e) { return song::getClips (e).size() == 3; });
+            },
+            8000, 1600 });
+
+        steps.push_back ({ "Playlist: peer 2 moves the Pattern 2 clip to bar 5 / lane 3 and shortens it to 1 bar",
+            [this]
+            {
+                for (auto& c : song::getClips (P2()))
+                    if (c[song::ids::pattern].toString() == pat (P2(), "Pattern 2")[song::ids::sid].toString())
+                    {
+                        c.setProperty (song::ids::start, 16.0, &P2().getUndoManager());
+                        c.setProperty (song::ids::lane, 2, &P2().getUndoManager());
+                        c.setProperty (song::ids::length, 4.0, &P2().getUndoManager());
+                    }
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    for (auto& c : song::getClips (e))
+                        if (c[song::ids::pattern].toString() == pat (e, "Pattern 2")[song::ids::sid].toString())
+                            return (double) c[song::ids::start] == 16.0 && (int) c[song::ids::lane] == 2
+                                    && song::getClipLength (e, c) == 4.0;
+                    return false;
+                }) && std::abs (song::getSongLengthBeats (H()) - 20.0) < 1.0e-6;
+            } });
+
+        steps.push_back ({ "Peer 1 switches to SONG mode and plays -> everyone plays the arrangement",
+            [this]
+            {
+                peer1.setSongMode (true);
+                peer1.setPlaying (true, 0.0);
+            },
+            [this]
+            {
+                // Pattern 1 placed at bar 2 (beat 4): its Kick step 3 (beat 0.5) plays at beat 4.5.
+                return host.isSongMode() && peer2.isSongMode()
+                    && H().getTransport().isPlaying() && P2().getTransport().isPlaying()
+                    && compiled (host, "Kick").contains ("60@4.500+0.250*100")
+                    && compiledEqualEverywhere();
+            },
+            4000 });
+
+        steps.push_back ({ "SONG mode: the shortened Pattern 2 clip only plays its first bar",
+            {},
+            [this]
+            {
+                // Pattern 2's Hat step 21 (beat 5) is in its 2nd bar, cut off by the 1-bar clip.
+                for (auto& n : compiled (host, "Hat"))
+                    if (n.startsWith ("60@21.000"))
+                        return false;
+
+                return std::abs (H().getTransport().getLoopRange().getEnd().inSeconds()
+                                 - H().tempoSequence.toTime (te::BeatPosition::fromBeats (20.0)).inSeconds()) < 1.0e-6;
+            } });
+
+        steps.push_back ({ "Playlist: host deletes the lane-2 clip; peer 2 deletes Pattern 2 (its clip goes too)",
+            [this]
+            {
+                for (auto& c : song::getClips (H()))
+                    if ((int) c[song::ids::lane] == 1)
+                        song::removeClip (H(), c);
+
+                song::removePattern (P2(), pat (P2(), "Pattern 2"));
+            },
+            [this]
+            {
+                return hashesEqual()
+                    && everywhere ([] (te::Edit& e) { return song::getClips (e).size() == 1 && ! pat (e, "Pattern 2").isValid(); })
+                    && compiledEqualEverywhere();
+            },
+            8000, 1600 });
+
+        steps.push_back ({ "Host stops and switches back to PAT mode -> everyone",
+            [this] { host.setPlaying (false, 0.0); host.setSongMode (false); },
+            [this] { return ! peer1.isSongMode() && ! peer2.isSongMode() && ! P1().getTransport().isPlaying(); },
+            4000 });
+
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
             [this]
             {

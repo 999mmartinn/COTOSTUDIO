@@ -81,8 +81,79 @@ void removePattern (te::Edit& edit, const juce::ValueTree& pattern)
 {
     auto parent = pattern.getParent();
 
-    if (parent.isValid() && getPatterns (edit).size() > 1)   // always keep one
-        parent.removeChild (pattern, um (edit));
+    if (! parent.isValid() || getPatterns (edit).size() <= 1)   // always keep one
+        return;
+
+    // Its placements in the playlist go too.
+    for (auto& c : getClips (edit))
+        if (c[ids::pattern].toString() == pattern[ids::sid].toString())
+            removeClip (edit, c);
+
+    parent.removeChild (pattern, um (edit));
+}
+
+//==============================================================================
+static juce::ValueTree getPlaylist (te::Edit& edit, bool createIfMissing)
+{
+    auto model = getModel (edit);
+    auto playlist = model.getChildWithName (ids::PLAYLIST);
+
+    if (! playlist.isValid() && createIfMissing)
+    {
+        playlist = juce::ValueTree (ids::PLAYLIST);
+        model.appendChild (playlist, um (edit));
+    }
+
+    return playlist;
+}
+
+juce::Array<juce::ValueTree> getClips (te::Edit& edit)
+{
+    juce::Array<juce::ValueTree> result;
+
+    for (auto c : getPlaylist (edit, false))
+        if (c.hasType (ids::PCLIP))
+            result.add (c);
+
+    return result;
+}
+
+juce::ValueTree addClip (te::Edit& edit, const juce::String& patternSid, int lane, double startBeat)
+{
+    juce::ValueTree c (ids::PCLIP);
+    c.setProperty (ids::sid, newSyncID(), nullptr);
+    c.setProperty (ids::pattern, patternSid, nullptr);
+    c.setProperty (ids::lane, juce::jlimit (0, numLanes - 1, lane), nullptr);
+    c.setProperty (ids::start, juce::jmax (0.0, startBeat), nullptr);
+    getPlaylist (edit, true).appendChild (c, um (edit));
+    return c;
+}
+
+void removeClip (te::Edit& edit, juce::ValueTree clip)
+{
+    auto parent = clip.getParent();
+
+    if (parent.isValid())
+        parent.removeChild (clip, um (edit));
+}
+
+double getClipLength (te::Edit& edit, const juce::ValueTree& clip)
+{
+    if (clip.hasProperty (ids::length))
+        return juce::jmax (stepBeats, (double) clip[ids::length]);
+
+    auto pattern = findPattern (edit, clip[ids::pattern].toString());
+    return pattern.isValid() ? getLengthBeats (pattern) : 4.0;
+}
+
+double getSongLengthBeats (te::Edit& edit)
+{
+    double end = 0.0;
+
+    for (auto& c : getClips (edit))
+        end = juce::jmax (end, (double) c[ids::start] + getClipLength (edit, c));
+
+    return juce::jmax (4.0, std::ceil (end / 4.0 - 1.0e-9) * 4.0);
 }
 
 int getBars (const juce::ValueTree& pattern)               { return juce::jlimit (1, 8, (int) pattern.getProperty (ids::bars, 1)); }
@@ -341,6 +412,9 @@ void createDefaultSong (te::Edit& edit)
     for (int s : { 0, 4, 8, 12 })     setStep (edit, pattern, *kick, s, true);
     for (int s : { 4, 12 })           setStep (edit, pattern, *clap, s, true);
     for (int s : { 2, 6, 10, 14 })    setStep (edit, pattern, *hat, s, true);
+
+    // The song starts with Pattern 1 placed at bar 1, so SONG mode plays something.
+    addClip (edit, pattern[ids::sid].toString(), 0, 0.0);
 
     edit.getUndoManager().clearUndoHistory();
 }

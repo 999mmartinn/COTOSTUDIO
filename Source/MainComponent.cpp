@@ -19,9 +19,9 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
-             &playButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
+             &patModeButton, &songModeButton, &playButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
-             &rack, &pianoRoll, &logView })
+             &playlist, &divider1, &rack, &divider2, &pianoRoll, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -111,15 +111,35 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
         {
             const bool play = ! edit->getTransport().isPlaying();
 
-            if (play)
+            if (play && ! session.isSongMode())
                 session.setPlayingPattern (state.getPattern()[song::ids::sid].toString());
 
-            // Play starts from the marker on the piano-roll ruler; Stop returns to it (like FL).
-            session.setPlaying (play, state.beatsToSeconds (state.getStartBeat()));
+            // Play starts from the green marker (piano roll in PAT mode, playlist in SONG mode);
+            // Stop returns to it, like FL.
+            session.setPlaying (play, state.beatsToSeconds (state.getPlayStartBeat()));
         }
 
         refresh();
     };
+
+    // Panels: playlist, divider, rack, divider, piano roll (sizes are proportions or pixels).
+    panelLayout.setItemLayout (0, 110, -0.7, -0.30);
+    panelLayout.setItemLayout (1, 6, 6, 6);
+    panelLayout.setItemLayout (2, 110, -0.6, -0.31);
+    panelLayout.setItemLayout (3, 6, 6, 6);
+    panelLayout.setItemLayout (4, 120, -0.8, -0.39);
+
+    for (auto* b : { &patModeButton, &songModeButton })
+    {
+        b->setClickingTogglesState (false);
+        b->setColour (juce::TextButton::buttonOnColourId, accent.darker (0.2f));
+        b->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    }
+
+    patModeButton.setTooltip ("Pattern mode: Play loops the pattern you are editing");
+    songModeButton.setTooltip ("Song mode: Play plays the playlist");
+    patModeButton.onClick = [this] { session.setSongMode (false); refresh(); };
+    songModeButton.onClick = [this] { session.setSongMode (true); refresh(); };
 
     undoButton.onClick = [this] { undo (false); };
     redoButton.onClick = [this] { undo (true); };
@@ -132,7 +152,7 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     session.createLocalEdit();
     appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
                 + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
-    setSize (1200, 820);
+    setSize (1280, 900);
 }
 
 MainComponent::~MainComponent()
@@ -168,7 +188,7 @@ void MainComponent::selectPattern (const juce::String& sid)
 
     // FL pattern mode: while playing, switching pattern switches what plays (for everyone).
     if (auto* edit = state.getEdit())
-        if (edit->getTransport().isPlaying())
+        if (edit->getTransport().isPlaying() && ! session.isSongMode())
             session.setPlayingPattern (sid);
 
     refresh();
@@ -194,8 +214,12 @@ void MainComponent::refreshPatternControls()
 
     const bool playing = edit->getTransport().isPlaying();
     auto playingPattern = song::findPattern (*edit, session.getPlayingPattern());
-    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + playingPattern[song::ids::name].toString() : juce::String(),
+    const auto what = session.isSongMode() ? juce::String ("Song") : playingPattern[song::ids::name].toString();
+    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + what : juce::String(),
                           juce::dontSendNotification);
+
+    patModeButton.setToggleState (! session.isSongMode(), juce::dontSendNotification);
+    songModeButton.setToggleState (session.isSongMode(), juce::dontSendNotification);
 }
 
 void MainComponent::refresh()
@@ -227,6 +251,7 @@ void MainComponent::refresh()
     }
 
     refreshPatternControls();
+    playlist.refresh();
     rack.refresh();
     pianoRoll.refresh();
 }
@@ -375,6 +400,9 @@ void MainComponent::resized()
 
     r.removeFromTop (8);
     auto bar = r.removeFromTop (28);
+    patModeButton.setBounds (bar.removeFromLeft (48));
+    songModeButton.setBounds (bar.removeFromLeft (56));
+    bar.removeFromLeft (6);
     playButton.setBounds (bar.removeFromLeft (70));
     bar.removeFromLeft (12);
     tempoLabel.setBounds (bar.removeFromLeft (36));
@@ -399,11 +427,9 @@ void MainComponent::resized()
     undoButton.setBounds (bar.removeFromRight (56));
 
     r.removeFromTop (8);
-    logView.setBounds (r.removeFromBottom (90));
+    logView.setBounds (r.removeFromBottom (70));
     r.removeFromBottom (8);
 
-    const int rackHeight = juce::jlimit (150, r.getHeight() / 2, 6 * ChannelRack::rowHeight + 44);
-    rack.setBounds (r.removeFromTop (rackHeight));
-    r.removeFromTop (8);
-    pianoRoll.setBounds (r);
+    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, &pianoRoll };
+    panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
 }

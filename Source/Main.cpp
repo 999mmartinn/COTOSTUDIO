@@ -44,7 +44,7 @@ private:
     {
     public:
         explicit MainWindow (te::Engine& e)
-            : DocumentWindow ("SyncTest - multiplayer DAW (step 1: channel rack)", juce::Colour (0xff1e2227), DocumentWindow::allButtons)
+            : DocumentWindow ("SyncTest - multiplayer DAW", juce::Colour (0xff1e2227), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
             setContentOwned (new MainComponent (e), true);

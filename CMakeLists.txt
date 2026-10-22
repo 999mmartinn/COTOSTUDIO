@@ -41,7 +41,8 @@ target_sources(SyncTest PRIVATE
     Source/PatternCompiler.cpp
     Source/DrumSynthPlugin.cpp
     Source/ChannelRack.cpp
-    Source/PianoRoll.cpp)
+    Source/PianoRoll.cpp
+    Source/Playlist.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1

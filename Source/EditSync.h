@@ -44,6 +44,7 @@ namespace ids
     SYNC_DECLARE_ID (reason)
     SYNC_DECLARE_ID (pattern)
     SYNC_DECLARE_ID (patternOnly)
+    SYNC_DECLARE_ID (songMode)
     SYNC_DECLARE_ID (id)
     #undef SYNC_DECLARE_ID
 }

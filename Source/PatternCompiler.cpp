@@ -21,6 +21,15 @@ void PatternCompiler::setPattern (const juce::String& sid)
     }
 }
 
+void PatternCompiler::setSongMode (bool shouldBeSong)
+{
+    if (shouldBeSong != songMode)
+    {
+        songMode = shouldBeSong;
+        compileNow();
+    }
+}
+
 juce::String PatternCompiler::getPattern() const
 {
     if (song::findPattern (edit, patternSid).isValid())
@@ -83,21 +92,44 @@ void PatternCompiler::compileNow()
     if (! pattern.isValid())
         return;
 
-    const double lengthBeats = song::getLengthBeats (pattern);
+    const double lengthBeats = songMode ? song::getSongLengthBeats (edit) : song::getLengthBeats (pattern);
     const auto range = edit.tempoSequence.toTime ({ te::BeatPosition(), te::BeatPosition::fromBeats (lengthBeats) });
+
+    // Pattern mode: one "placement" of the pattern at 0. Song mode: every clip in the playlist.
+    struct Placement { juce::ValueTree pattern; double start, length; };
+    std::vector<Placement> placements;
+
+    if (songMode)
+    {
+        for (auto& c : song::getClips (edit))
+        {
+            auto p = song::findPattern (edit, c[song::ids::pattern].toString());
+
+            if (p.isValid())
+                placements.push_back ({ p, (double) c[song::ids::start],
+                                        juce::jmin (song::getClipLength (edit, c), song::getLengthBeats (p)) });
+        }
+    }
+    else
+    {
+        placements.push_back ({ pattern, 0.0, lengthBeats });
+    }
 
     for (auto* track : song::getChannels (edit))
     {
-        // What the pattern says this channel should play (notes cut at the pattern end).
+        // What the placements say this channel should play (notes cut at each clip's end).
         std::vector<NoteData> wanted;
 
-        for (auto& n : song::getNotes (pattern, song::getChannelID (*track)))
+        for (auto& pl : placements)
         {
-            const double b = n[song::ids::b];
+            for (auto& n : song::getNotes (pl.pattern, song::getChannelID (*track)))
+            {
+                const double b = n[song::ids::b];
 
-            if (b < lengthBeats - 1.0e-6)
-                wanted.push_back ({ (int) n[song::ids::p], (int) n[song::ids::v], b,
-                                    juce::jmin ((double) n[song::ids::l], lengthBeats - b) });
+                if (b < pl.length - 1.0e-6)
+                    wanted.push_back ({ (int) n[song::ids::p], (int) n[song::ids::v], pl.start + b,
+                                        juce::jmin ((double) n[song::ids::l], pl.length - b) });
+            }
         }
 
         std::sort (wanted.begin(), wanted.end());

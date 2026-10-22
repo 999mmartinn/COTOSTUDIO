@@ -3,6 +3,7 @@
 #include "EditorState.h"
 #include "ChannelRack.h"
 #include "PianoRoll.h"
+#include "Playlist.h"
 
 //==============================================================================
 class MainComponent  : public juce::Component,
@@ -30,6 +31,7 @@ private:
     juce::Label portLabel { {}, "Port" }, addressLabel { {}, "Host address" }, statusLabel;
 
     // Transport / pattern bar
+    juce::TextButton patModeButton { "PAT" }, songModeButton { "SONG" };
     juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
                      undoButton { "Undo" }, redoButton { "Redo" },
                      scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };
@@ -37,9 +39,14 @@ private:
     juce::Label tempoLabel { {}, "BPM" }, patternLabel { {}, "Pattern" }, playingLabel;
     juce::ComboBox patternBox, lengthBox;
 
+    Playlist playlist { state };
     ChannelRack rack { engine, state };
     PianoRoll pianoRoll { state };
     juce::TextEditor logView;
+
+    // Playlist / rack / piano roll, with draggable dividers between them.
+    juce::StretchableLayoutManager panelLayout;
+    juce::StretchableLayoutResizerBar divider1 { &panelLayout, 1, false }, divider2 { &panelLayout, 3, false };
 
     void appendLog (const juce::String&);
     void watchEdit();

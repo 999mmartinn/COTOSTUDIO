@@ -73,6 +73,10 @@ public:
     /** Pattern mode: which pattern plays. Shared too, so everyone hears the same thing. */
     void setPlayingPattern (const juce::String& patternSid);
     juce::String getPlayingPattern() const;
+
+    /** PAT / SONG mode, shared like play/stop. */
+    void setSongMode (bool shouldBeSong);
+    bool isSongMode() const;
     PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
 
     std::function<void()> onEditAboutToBeReplaced;
@@ -84,7 +88,7 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 2;
+    static constexpr int protocolVersion = 3;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 

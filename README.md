@@ -3,30 +3,21 @@
 Several people work on the **same song at the same time**, each on their own PC,
 each using their own native **VST3 plugins** (Waves, FabFilter...).
 
-Built step by step, with stability first. Current step:
+Built step by step, with stability first.
 
-**Step 1 – Channel rack + patterns (v0.2.1)**
-* **Channel rack**: one row per instrument with mute, volume and pan knobs and a
-  step sequencer. Click or drag across steps to paint them.
-* **Built-in drum synth** (Kick, Clap, Hat, Snare – pure synthesis, no sample
-  files) and the built-in **4OSC** synth. **+ Channel** also lists your own VST3
-  instruments.
-* **Patterns**: several patterns (1, 2 or 4 bars), **+** for a new one,
-  **...** to rename / clone / delete. Pattern mode: Play loops the pattern you
-  are viewing; switching pattern while playing switches it for everyone.
-* **Piano roll** for the selected channel: click to add a note, drag to move or
-  lengthen it, drag its right edge to resize, right-click to delete. You hear
-  the note while placing or dragging it, and clicking the piano keys plays them
-  (only on your PC).
-* **Play from anywhere**: click or drag the ruler above the piano roll to set
-  the green start marker. Play starts there and Stop returns there; clicking
-  the ruler while playing jumps there (for everyone).
-* **Effects per channel**: right-click a channel name → *Add effect* (Waves,
-  FabFilter...), *Effects* → open / remove. Also *Open instrument*, rename, delete.
-* **Tempo (BPM)**, **Undo/Redo** (Ctrl+Z / Ctrl+Y, your own changes),
-  **Space** = play/stop.
-* Everything above is shared live with everyone in the session.
+**Step 2 – Playlist (v0.3)**
+* **PAT / SONG** buttons next to Play (like FL). PAT loops the pattern you are
+  editing; SONG plays the arrangement. The mode is shared with everyone.
+* **Playlist** on top: lanes ("Track 1-16") where patterns are placed as clips.
+  Click to place the selected pattern, drag to move it, drag its right edge to
+  shorten or lengthen it, right-click to delete it, click a clip to edit its
+  pattern below. **Snap** to bar / beat / step; **Ctrl + mouse wheel** zooms.
+  Its ruler has its own green start marker for SONG mode.
+* The playlist, channel rack and piano roll are all visible; drag the bars
+  between them to resize.
+* Deleting a pattern also removes its clips from the playlist.
 
+**Step 1 – Channel rack + patterns (v0.2)**
 Built on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (GPLv3)
 and [JUCE](https://juce.com) (AGPLv3). This project is published under the
 **GNU AGPLv3** (see `LICENSE`).
@@ -106,8 +97,8 @@ Join `127.0.0.1` in the other.
   differently on two PCs (different version) will sound different.
 * What the engine plays is generated on each PC from the shared patterns
   (never sent), so every PC plays exactly the same notes.
-* Not yet: playlist/arrangement, mixer view, recording/audio clips, saving
-  projects, chat. Undo only undoes your own changes.
+* Not yet: mixer view, recording/audio clips, saving projects, chat.
+  Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test

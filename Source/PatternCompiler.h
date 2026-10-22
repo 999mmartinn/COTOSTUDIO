@@ -5,8 +5,9 @@
 /**
     Turns the song model into what the engine plays, on this PC only.
 
-    For the pattern being played it keeps one generated MIDI clip on every
-    channel track (marked generated="1", which the sync layer treats as
+    Pattern mode: for the pattern being played, song mode: for the whole
+    playlist (every placed pattern, shifted to its position), it keeps one
+    generated MIDI clip on every channel track (marked generated="1", which the sync layer treats as
     local, so it is never sent). When patterns, notes or channels change it
     updates those clips; if nothing differs it changes nothing.
 */
@@ -17,9 +18,13 @@ public:
     explicit PatternCompiler (te::Edit&);
     ~PatternCompiler() override;
 
-    /** Which pattern plays (empty = the first one). */
+    /** Which pattern plays in pattern mode (empty = the first one). */
     void setPattern (const juce::String& patternSid);
     juce::String getPattern() const;
+
+    /** Song mode plays the playlist; pattern mode loops one pattern. */
+    void setSongMode (bool);
+    bool isSongMode() const noexcept                    { return songMode; }
 
     /** Brings the generated clips up to date right away. */
     void compileNow();
@@ -32,7 +37,7 @@ public:
 private:
     te::Edit& edit;
     juce::String patternSid;
-    bool compiling = false;
+    bool compiling = false, songMode = false;
 
     void handleAsyncUpdate() override                       { compileNow(); }
     void changed (const juce::ValueTree&);

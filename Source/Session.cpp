@@ -423,6 +423,9 @@ void Session::applyTransport (const juce::ValueTree& msg)
     if (msg.hasProperty (ids::pattern) && compiler != nullptr)
         compiler->setPattern (msg[ids::pattern].toString());
 
+    if (msg.hasProperty (ids::songMode) && compiler != nullptr)
+        compiler->setSongMode ((bool) msg[ids::songMode]);
+
     auto& transport = edit->getTransport();
     const bool shouldPlay = (bool) msg[ids::playing];
 
@@ -458,6 +461,7 @@ void Session::sendTransport (bool patternOnly)
     msg.setProperty (ids::playing, transport.isPlaying(), nullptr);
     msg.setProperty (ids::position, transport.getPosition().inSeconds(), nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
+    msg.setProperty (ids::songMode, isSongMode(), nullptr);
     msg.setProperty (ids::patternOnly, patternOnly, nullptr);
 
     if (mode == Mode::hosting)
@@ -507,6 +511,23 @@ void Session::seek (double seconds)
         sendTransport (false);
 }
 
+bool Session::isSongMode() const
+{
+    return compiler != nullptr && compiler->isSongMode();
+}
+
+void Session::setSongMode (bool shouldBeSong)
+{
+    if (compiler == nullptr || shouldBeSong == compiler->isSongMode())
+        return;
+
+    compiler->setSongMode (shouldBeSong);
+    sendTransport (true);
+
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
 void Session::setPlayingPattern (const juce::String& patternSid)
 {
     if (compiler == nullptr || patternSid == compiler->getPattern())
@@ -539,6 +560,7 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
     msg.setProperty (ids::playing, edit->getTransport().isPlaying(), nullptr);
     msg.setProperty (ids::position, edit->getTransport().getPosition().inSeconds(), nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
+    msg.setProperty (ids::songMode, isSongMode(), nullptr);
     msg.appendChild (editSync->createSnapshot(), nullptr);
     c.sendTree (msg);
     flushOutgoing();   // plugin states written by the snapshot go to everyone else
@@ -581,6 +603,9 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
 
     if (msg.hasProperty (ids::pattern))
         compiler->setPattern (msg[ids::pattern].toString());
+
+    if (msg.hasProperty (ids::songMode))
+        compiler->setSongMode ((bool) msg[ids::songMode]);
 
     if ((bool) msg[ids::playing])
         applyTransport (msg);

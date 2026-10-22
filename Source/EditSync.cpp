@@ -88,7 +88,7 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
     // The order of notes inside a pattern (ours: PATTERN, the engine's: SEQUENCE) doesn't change the music, and two
     // people adding notes at the same moment can end up with them in a different
     // order: don't count that as a difference.
-    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN")))
+    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST")))
     {
         struct ByKey
         {
@@ -185,7 +185,7 @@ static int actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex)
 
 bool EditSync::needsSyncID (const juce::ValueTree& child)
 {
-    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX", "PATTERN", "PNOTE" };
+    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX", "PATTERN", "PNOTE", "PCLIP" };
 
     if (child.hasProperty (te::IDs::id) || child.hasProperty (ids::sid))
         return false;
@@ -606,7 +606,9 @@ bool EditSync::reconcileChildren (juce::ValueTree& local, const juce::ValueTree&
         }
         else if ((bool) inc[ids::stub])
         {
-            ok = false;     // the sender thinks we have it, but we don't
+            // The sender thinks we have it, but we don't: almost always because we
+            // deleted it at the same moment. Keep our deletion. If the copies really
+            // differ, the fingerprint check will catch it and fetch a fresh copy.
         }
         else
         {
