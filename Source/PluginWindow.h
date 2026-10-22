@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "EditSync.h"
 
 namespace te = tracktion;
 
@@ -113,8 +114,9 @@ public:
 
     ~PluginEditorWindow() override
     {
-        // Writes the plugin's full state (preset etc.) into the song, which is
-        // then sent to the other peers.
+        // Writes the plugin's full state (preset etc.) into the song and sends it
+        // to the other peers.
+        collab::EditSync::ScopedPluginStateCommit commit;
         plugin.edit.flushPluginStateIfNeeded (plugin);
         clearContentComponent();
         content.reset();

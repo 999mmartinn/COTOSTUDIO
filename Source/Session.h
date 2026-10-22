@@ -65,7 +65,10 @@ public:
     bool isInSync() const noexcept               { return lastHashMatched; }
 
     /** Play/stop is shared: each PC renders its own audio from the same song. */
-    void setPlaying (bool shouldPlay);
+    void setPlaying (bool shouldPlay, double startSeconds = 0.0);
+
+    /** Moves the playhead; while playing, everyone jumps there too. */
+    void seek (double seconds);
 
     /** Pattern mode: which pattern plays. Shared too, so everyone hears the same thing. */
     void setPlayingPattern (const juce::String& patternSid);

@@ -426,15 +426,13 @@ void Session::applyTransport (const juce::ValueTree& msg)
     auto& transport = edit->getTransport();
     const bool shouldPlay = (bool) msg[ids::playing];
 
-    if (shouldPlay != transport.isPlaying() || ! (bool) msg[ids::patternOnly])
-    {
+    if (! (bool) msg[ids::patternOnly])
         transport.setPosition (te::TimePosition::fromSeconds ((double) msg[ids::position]));
 
-        if (shouldPlay)
-            transport.play (false);
-        else
-            transport.stop (false, false);
-    }
+    if (shouldPlay && ! transport.isPlaying())
+        transport.play (false);
+    else if (! shouldPlay && transport.isPlaying())
+        transport.stop (false, false);
 
     if (onTransportChanged)
         onTransportChanged();
@@ -471,7 +469,7 @@ void Session::sendTransport (bool patternOnly)
     }
 }
 
-void Session::setPlaying (bool shouldPlay)
+void Session::setPlaying (bool shouldPlay, double startSeconds)
 {
     if (edit == nullptr)
         return;
@@ -483,18 +481,30 @@ void Session::setPlaying (bool shouldPlay)
         if (compiler != nullptr)
             compiler->compileNow();
 
-        transport.setPosition (te::TimePosition());
+        transport.setPosition (te::TimePosition::fromSeconds (startSeconds));
         transport.play (false);
     }
     else
     {
         transport.stop (false, false);
+        transport.setPosition (te::TimePosition::fromSeconds (startSeconds));
     }
 
     sendTransport (false);
 
     if (onTransportChanged)
         onTransportChanged();
+}
+
+void Session::seek (double seconds)
+{
+    if (edit == nullptr)
+        return;
+
+    edit->getTransport().setPosition (te::TimePosition::fromSeconds (seconds));
+
+    if (edit->getTransport().isPlaying())
+        sendTransport (false);
 }
 
 void Session::setPlayingPattern (const juce::String& patternSid)

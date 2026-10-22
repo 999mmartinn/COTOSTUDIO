@@ -88,6 +88,18 @@ public:
     std::function<void (const juce::ValueTree& op)> onLocalOp;
     std::function<void (const juce::String&)> onLog;
 
+    /** While one of these exists, a plugin state written into the song (e.g. when
+        its window closes after loading a preset) is sent to the other peers.
+        Other plugin-state writes (the engine saving in the background) are not
+        sent: live knob values travel separately, and a late background save
+        could otherwise overwrite a newer knob value on another PC. */
+    struct ScopedPluginStateCommit
+    {
+        ScopedPluginStateCommit()   { ++depth; }
+        ~ScopedPluginStateCommit()  { --depth; }
+        static inline std::atomic<int> depth { 0 };
+    };
+
     /** Applies an op from another peer. Returns false if it could not be
         applied (the copies have diverged and a fresh copy is needed). */
     bool applyRemote (const juce::ValueTree& op);
@@ -134,7 +146,7 @@ private:
     };
 
     // Changes collected during this message-loop turn
-    juce::Array<juce::ValueTree> propsDirty, childrenDirty, addedChildren;
+    juce::Array<juce::ValueTree> propsDirty, childrenDirty, addedChildren, stateDirty;
     std::vector<std::pair<juce::ValueTree, juce::StringArray>> removedKeys;
 
     // Parameter (knob) sync for external plugins

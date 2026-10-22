@@ -8,7 +8,9 @@
       - Drag a note: move it (time and pitch).
       - Drag a note's right edge: change its length.
       - Right-click a note: delete it.
-    Notes snap to 1/16 steps.
+      - Click the piano keys: play them.
+      - Click/drag the ruler on top: set where Play starts (jumps there while playing).
+    Notes snap to 1/16 steps. Notes are heard while placed or dragged (local only).
 */
 class PianoRoll  : public juce::Component,
                    private juce::Timer
@@ -25,8 +27,10 @@ public:
 
 private:
     class Grid;
+    class Ruler;
     EditorState& state;
     std::unique_ptr<Grid> grid;
+    std::unique_ptr<Ruler> ruler;
     juce::Viewport viewport;
     juce::Label title;
     int lastPlayhead = -2;

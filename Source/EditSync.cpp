@@ -309,6 +309,17 @@ void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identif
     if (applyingDepth > 0 || isLocalProperty (v, prop, false) || isInsideLocal (v))
         return;
 
+    if (prop == stateProperty)
+    {
+        if (ScopedPluginStateCommit::depth > 0)
+        {
+            stateDirty.addIfNotAlreadyThere (v);
+            triggerAsyncUpdate();
+        }
+
+        return;
+    }
+
     propsDirty.addIfNotAlreadyThere (v);
     triggerAsyncUpdate();
 }
@@ -405,7 +416,7 @@ juce::ValueTree EditSync::describeProps (const juce::ValueTree& node) const
     {
         auto name = node.getPropertyName (i);
 
-        if (! isLocalProperty (node, name, false))
+        if (! isLocalProperty (node, name, false) && name != stateProperty)
             desc.setProperty (name, node.getProperty (name), nullptr);
     }
 
@@ -416,7 +427,7 @@ void EditSync::flushNow()
 {
     cancelPendingUpdate();
 
-    if (propsDirty.isEmpty() && childrenDirty.isEmpty())
+    if (propsDirty.isEmpty() && childrenDirty.isEmpty() && stateDirty.isEmpty())
         return;
 
     struct Pending { juce::String path; int depth; juce::ValueTree op; };
@@ -470,13 +481,31 @@ void EditSync::flushNow()
     std::stable_sort (childOps.begin(), childOps.end(), byDepth);
     std::stable_sort (propOps.begin(), propOps.end(), byDepth);
 
+    std::vector<juce::ValueTree> stateOps;
+
+    for (auto& node : stateDirty)
+    {
+        auto path = pathOf (node);
+
+        if (path == "!" || ! node.hasProperty (stateProperty))
+            continue;
+
+        juce::ValueTree op (ids::OP);
+        op.setProperty (ids::kind, "pluginState", nullptr);
+        op.setProperty (ids::path, path, nullptr);
+        op.setProperty (ids::value, node[stateProperty], nullptr);
+        stateOps.push_back (op);
+    }
+
     propsDirty.clear();
     childrenDirty.clear();
     addedChildren.clear();
     removedKeys.clear();
+    stateDirty.clear();
 
     for (auto& p : childOps)  send (p.op);
     for (auto& p : propOps)   send (p.op);
+    for (auto& op : stateOps) send (op);
 }
 
 //==============================================================================
@@ -504,7 +533,7 @@ bool EditSync::reconcileProps (juce::ValueTree& local, const juce::ValueTree& in
     {
         auto name = local.getPropertyName (i);
 
-        if (! isLocalProperty (local, name, false) && ! incoming.hasProperty (name))
+        if (! isLocalProperty (local, name, false) && name != stateProperty && ! incoming.hasProperty (name))
             local.removeProperty (name, nullptr);
     }
 
@@ -650,7 +679,7 @@ bool EditSync::applyRemote (const juce::ValueTree& op)
     ScopedApplying sa (*this);
     auto target = resolve (op[ids::path].toString());
 
-    if (! target.isValid() || op.getNumChildren() != 1)
+    if (! target.isValid() || (kind != "pluginState" && op.getNumChildren() != 1))
     {
         ++stats.failed;
         log ("Could not find '" + op[ids::path].toString() + "' for a '" + kind + "' change");
@@ -658,6 +687,18 @@ bool EditSync::applyRemote (const juce::ValueTree& op)
     }
 
     bool ok = false;
+
+    if (kind == "pluginState")
+    {
+        if (target.getProperty (stateProperty) != op[ids::value])
+        {
+            target.setProperty (stateProperty, op[ids::value], nullptr);
+            restoreExternalPluginStateIfNeeded (target, stateProperty);
+        }
+
+        ++stats.applied;
+        return true;
+    }
 
     if (kind == "props")
         ok = reconcileProps (target, op.getChild (0));

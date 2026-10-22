@@ -230,6 +230,28 @@ private:
             [this] { peer1.join ("127.0.0.1", port); peer2.join ("127.0.0.1", port); },
             [this] { return allJoined() && hashesEqual() && compiledEqualEverywhere(); } });
 
+        steps.push_back ({ "Every drum channel plays its own sound on every PC (host included)",
+            {},
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    const char* names[] = { "Kick", "Clap", "Hat", "Snare" };
+
+                    for (int i = 0; i < 4; ++i)
+                    {
+                        auto* t = ch (e, names[i]);
+                        auto* drum = t != nullptr ? dynamic_cast<DrumSynthPlugin*> (song::getInstrument (*t)) : nullptr;
+
+                        if (drum == nullptr || juce::roundToInt (drum->soundParam->getCurrentValue()) != i
+                             || drum->soundValue.get() != i)
+                            return false;
+                    }
+
+                    return true;
+                });
+            } });
+
         steps.push_back ({ "Copies stay identical for 4 s with nobody editing (no resyncs needed)",
             [this] { dump ("host-after-join", H()); dump ("peer1-after-join", P1()); },
             [this] { return hashesEqual() && peer1.getResyncCount() == 0 && peer2.getResyncCount() == 0; },
@@ -329,6 +351,21 @@ private:
             [this] { return std::abs (effectKnob (H()) - 0.3f) < 1.0e-4f && std::abs (effectKnob (P1()) - 0.3f) < 1.0e-4f; },
             8000, 0, ! havePlugin });
 
+        steps.push_back ({ "Peer 2 sets a knob then closes the plugin window (full state sent) -> host has it",
+            [this]
+            {
+                setEffectKnob (P2(), 0.42f);
+
+                if (auto* t = ch (P2(), "Synth"))
+                    for (auto* p : song::getEffects (*t))
+                    {
+                        collab::EditSync::ScopedPluginStateCommit commit;
+                        p->edit.flushPluginStateIfNeeded (*p);
+                    }
+            },
+            [this] { return std::abs (effectKnob (H()) - 0.42f) < 1.0e-4f && std::abs (effectKnob (P1()) - 0.42f) < 1.0e-4f; },
+            8000, 0, ! havePlugin });
+
         steps.push_back ({ "All three edit at the same instant (two steps + a new channel) -> everyone converges",
             [this]
             {
@@ -352,7 +389,7 @@ private:
             [this]
             {
                 peer2.setPlayingPattern (pat (P2(), "Pattern 2")[song::ids::sid].toString());
-                peer2.setPlaying (true);
+                peer2.setPlaying (true, 0.0);
             },
             [this]
             {
@@ -367,8 +404,26 @@ private:
             {},
             [this] { return compiledEqualEverywhere(); } });
 
+        steps.push_back ({ "Peer 1 jumps to beat 3 while playing -> everyone jumps there",
+            [this] { peer1.seek (P1().tempoSequence.toTime (te::BeatPosition::fromBeats (3.0)).inSeconds()); },
+            [this]
+            {
+                auto beat = [] (te::Edit& e) { return e.tempoSequence.toBeats (e.getTransport().getPosition()).inBeats(); };
+                return beat (H()) >= 2.99 && beat (H()) < 4.5 && beat (P2()) >= 2.99 && beat (P2()) < 4.5;
+            },
+            4000 });
+
+        steps.push_back ({ "Note preview (guide note) plays and stops on the selected channel, locally only",
+            [this]
+            {
+                auto* synth = ch (P1(), "Synth");
+                synth->playGuideNote (64, te::MidiChannel (1), 100, true, true, false);
+                synth->turnOffGuideNotes();
+            },
+            [this] { return hashesEqual(); } });
+
         steps.push_back ({ "Peer 1 presses Stop -> everyone stops",
-            [this] { peer1.setPlaying (false); },
+            [this] { peer1.setPlaying (false, 0.0); },
             [this] { return ! H().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
             4000 });
 

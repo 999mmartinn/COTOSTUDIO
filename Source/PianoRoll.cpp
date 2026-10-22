@@ -70,20 +70,31 @@ public:
             g.drawVerticalLine ((int) x, 0.0f, (float) getHeight());
         }
 
-        if (playhead >= 0)
+        juce::ignoreUnused (playhead);
+
+        // Start marker (where Play starts)
+        g.setColour (juce::Colour (0xff6fd06f).withAlpha (0.5f));
+        g.drawVerticalLine ((int) xForBeat (state.getStartBeat()), 0.0f, (float) getHeight());
+
+        if (channel != nullptr && pattern.isValid())
+            paintNotes (g, pattern, *channel, length);
+
+        // Playhead
+        const double playBeat = state.getPlayheadBeat();
+
+        if (playBeat >= 0.0)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.07f));
-            g.fillRect (juce::Rectangle<float> (xForBeat (playhead * stepBeats), 0.0f,
-                                                xForBeat ((playhead + 1) * stepBeats) - xForBeat (playhead * stepBeats),
-                                                (float) getHeight()));
+            g.setColour (juce::Colours::white.withAlpha (0.8f));
+            g.drawVerticalLine ((int) xForBeat (playBeat), 0.0f, (float) getHeight());
         }
+    }
 
-        if (channel == nullptr || ! pattern.isValid())
-            return;
+    void paintNotes (juce::Graphics& g, const juce::ValueTree& pattern, te::AudioTrack& channel, double length)
+    {
 
-        const auto colour = EditorState::channelColour (getChannels (channel->edit).indexOf (channel));
+        const auto colour = EditorState::channelColour (getChannels (channel.edit).indexOf (&channel));
 
-        for (auto& n : getNotes (pattern, getChannelID (*channel)))
+        for (auto& n : getNotes (pattern, getChannelID (channel)))
         {
             auto r = noteBounds (n);
 
@@ -121,6 +132,29 @@ public:
         return {};
     }
 
+    //==============================================================================
+    // Note preview (local only, like FL): hear the note while you place or drag it.
+    void startPreview (int pitch)
+    {
+        if (pitch == previewPitch)
+            return;
+
+        if (auto* channel = state.getSelectedChannel())
+        {
+            channel->playGuideNote (pitch, te::MidiChannel (1), 100, true, true, false);
+            previewPitch = pitch;
+        }
+    }
+
+    void stopPreview()
+    {
+        if (previewPitch >= 0)
+            if (auto* channel = state.getSelectedChannel())
+                channel->turnOffGuideNotes();
+
+        previewPitch = -1;
+    }
+
     void mouseMove (const juce::MouseEvent& e) override
     {
         auto n = noteAt (e.position);
@@ -137,8 +171,15 @@ public:
         auto* channel = state.getSelectedChannel();
         dragNote = {};
 
-        if (edit == nullptr || channel == nullptr || ! pattern.isValid() || e.position.x < keyboardWidth)
+        if (edit == nullptr || channel == nullptr || ! pattern.isValid())
             return;
+
+        if (e.position.x < keyboardWidth)
+        {
+            // Clicking the keyboard just plays the key.
+            startPreview (pitchAtY (e.position.y));
+            return;
+        }
 
         state.beginAction();
         auto hit = noteAt (e.position);
@@ -159,6 +200,7 @@ public:
             dragStartBeat = hit[ids::b];
             dragStartPitch = hit[ids::p];
             dragGrabBeat = beatAtX (e.position.x);
+            startPreview (dragStartPitch);
         }
         else
         {
@@ -170,6 +212,7 @@ public:
             dragNote = addNote (*edit, pattern, getChannelID (*channel), pitchAtY (e.position.y), beat, stepBeats);
             dragMode = DragMode::resize;
             dragStartBeat = beat;
+            startPreview (pitchAtY (e.position.y));
         }
 
         repaint();
@@ -178,6 +221,12 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         auto* edit = state.getEdit();
+
+        if (e.mouseDownPosition.x < keyboardWidth && ! dragNote.isValid())
+        {
+            startPreview (pitchAtY (e.position.y));   // glide over the keys
+            return;
+        }
 
         if (! dragNote.isValid() || edit == nullptr)
             return;
@@ -205,7 +254,10 @@ public:
                 dragNote.setProperty (ids::b, newStart, um);
 
             if (newPitch != (int) dragNote[ids::p])
+            {
                 dragNote.setProperty (ids::p, newPitch, um);
+                startPreview (newPitch);
+            }
 
             juce::ignoreUnused (noteLength);
         }
@@ -216,19 +268,101 @@ public:
     void mouseUp (const juce::MouseEvent&) override
     {
         dragNote = {};
+        stopPreview();
     }
 
     EditorState& state;
     juce::ValueTree dragNote;
     enum class DragMode { move, resize } dragMode = DragMode::move;
     double dragStartBeat = 0.0, dragGrabBeat = 0.0;
-    int dragStartPitch = 60;
+    int dragStartPitch = 60, previewPitch = -1;
+};
+
+//==============================================================================
+/** Time ruler above the piano roll: click or drag to set where Play starts.
+    While playing, clicking jumps there (for everyone). */
+class PianoRoll::Ruler  : public juce::Component
+{
+public:
+    Ruler (EditorState& s, Grid& g) : state (s), grid (g) {}
+
+    void paint (juce::Graphics& g) override
+    {
+        auto pattern = state.getPattern();
+        const int numSteps = getNumSteps (pattern);
+
+        g.fillAll (juce::Colour (0xff1c2025));
+
+        for (int s = 0; s <= numSteps; ++s)
+        {
+            const float x = grid.xForBeat (s * stepBeats);
+
+            if (s % 4 == 0)
+            {
+                g.setColour (juce::Colour (s % 16 == 0 ? 0xffa0a8b4 : 0xff5a626d));
+                g.drawVerticalLine ((int) x, s % 16 == 0 ? 2.0f : 10.0f, (float) getHeight());
+
+                if (s < numSteps)
+                {
+                    g.setFont (11.0f);
+                    g.setColour (juce::Colours::white.withAlpha (s % 16 == 0 ? 0.9f : 0.45f));
+                    g.drawText (juce::String (s / 16 + 1) + (s % 16 == 0 ? juce::String() : "." + juce::String ((s % 16) / 4 + 1)),
+                                (int) x + 3, 0, 40, getHeight(), juce::Justification::centredLeft);
+                }
+            }
+        }
+
+        // Start marker
+        const float mx = grid.xForBeat (state.getStartBeat());
+        juce::Path tri;
+        tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
+        g.setColour (juce::Colour (0xff6fd06f));
+        g.fillPath (tri);
+
+        const double playBeat = state.getPlayheadBeat();
+
+        if (playBeat >= 0.0)
+        {
+            g.setColour (juce::Colours::white);
+            g.drawVerticalLine ((int) grid.xForBeat (playBeat), 0.0f, (float) getHeight());
+        }
+
+        g.setColour (juce::Colours::white.withAlpha (0.4f));
+        g.setFont (10.0f);
+        g.drawText ("start", 4, 0, keyboardWidth - 8, getHeight(), juce::Justification::centredLeft);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override    { setStart (e.position.x, true); }
+    void mouseDrag (const juce::MouseEvent& e) override    { setStart (e.position.x, false); }
+
+    void setStart (float x, bool seekIfPlaying)
+    {
+        if (x < keyboardWidth)
+            x = (float) keyboardWidth;
+
+        state.startBeat = Grid::snap (grid.beatAtX (x));
+        state.startBeat = state.getStartBeat();   // keep it inside the pattern
+
+        if (seekIfPlaying)
+            if (auto* edit = state.getEdit())
+                if (edit->getTransport().isPlaying())
+                    state.session.seek (state.beatsToSeconds (state.startBeat));
+
+        repaint();
+        grid.repaint();
+    }
+
+private:
+    EditorState& state;
+    Grid& grid;
 };
 
 //==============================================================================
 PianoRoll::PianoRoll (EditorState& s) : state (s)
 {
     grid = std::make_unique<Grid> (state);
+    ruler = std::make_unique<Ruler> (state, *grid);
+    addAndMakeVisible (*ruler);
     viewport.setViewedComponent (grid.get(), false);
     viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
@@ -251,9 +385,10 @@ void PianoRoll::refresh()
 
     title.setText ("Piano roll - " + (channel != nullptr ? channel->getName() : juce::String ("no channel"))
                      + " in " + pattern[ids::name].toString()
-                     + "   (click: add note, drag: move/longer, right-click: delete)",
+                     + "   (click: add note, drag: move/longer, right-click: delete, ruler: set play start)",
                    juce::dontSendNotification);
     grid->repaint();
+    ruler->repaint();
 }
 
 void PianoRoll::paint (juce::Graphics& g)
@@ -266,6 +401,7 @@ void PianoRoll::resized()
 {
     auto r = getLocalBounds().reduced (4);
     title.setBounds (r.removeFromTop (20));
+    ruler->setBounds (r.removeFromTop (18).withTrimmedRight (viewport.getScrollBarThickness()));
     viewport.setBounds (r);
     grid->setSize (viewport.getWidth() - viewport.getScrollBarThickness(), grid->getHeight());
 
@@ -279,11 +415,13 @@ void PianoRoll::resized()
 
 void PianoRoll::timerCallback()
 {
+    // Smooth playhead while playing; one last repaint when it stops.
     const int playhead = state.getPlayheadStep();
 
-    if (playhead != lastPlayhead)
+    if (playhead >= 0 || playhead != lastPlayhead)
     {
         lastPlayhead = playhead;
-        grid->repaint();
+        grid->repaint (viewport.getViewArea());
+        ruler->repaint();
     }
 }

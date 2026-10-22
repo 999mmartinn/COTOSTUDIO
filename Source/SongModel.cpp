@@ -154,8 +154,11 @@ te::AudioTrack* addChannel (te::Edit& edit, InstrumentKind kind)
     {
         if (auto p = edit.getPluginCache().createNewPlugin (DrumSynthPlugin::xmlTypeName, {}))
         {
+            // Go through the parameter (not the stored value directly): the engine only
+            // updates a parameter's live value when it is set this way. Setting the
+            // stored value alone left new drums playing the default sound (Kick).
             if (auto* drum = dynamic_cast<DrumSynthPlugin*> (p.get()))
-                drum->soundValue = sound;
+                drum->soundParam->setParameter ((float) sound, juce::sendNotification);
 
             track->pluginList.insertPlugin (p, 0, nullptr);
         }

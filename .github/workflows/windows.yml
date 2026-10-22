@@ -73,18 +73,25 @@ jobs:
           name: SyncTest-windows
           path: dist/
 
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION.txt -Raw).Trim()
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       # A public download link (no GitHub login needed) for every build of main.
       - name: Publish release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.${{ github.run_number }}
-          name: SyncTest 0.1.${{ github.run_number }} (test build)
+          tag_name: v${{ steps.version.outputs.version }}-build${{ github.run_number }}
+          name: SyncTest ${{ steps.version.outputs.version }} (build ${{ github.run_number }})
           prerelease: true
           make_latest: true
           body: |
-            Test build of the two-peer sync test. Download **SyncTest.exe** below and see README.md for how to test with a friend.
-            Self-test on Windows: passed (3 peers over TCP, VST3 plugin knob sync).
+            Test build of the multiplayer DAW. Download **SyncTest.exe** below; README.md explains how to use it and how to test with a friend.
+            Self-test on Windows: passed (3 peers over TCP).
           files: |
             dist/SyncTest.exe
             dist/README.md

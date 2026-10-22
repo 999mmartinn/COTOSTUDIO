@@ -114,7 +114,8 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
             if (play)
                 session.setPlayingPattern (state.getPattern()[song::ids::sid].toString());
 
-            session.setPlaying (play);
+            // Play starts from the marker on the piano-roll ruler; Stop returns to it (like FL).
+            session.setPlaying (play, state.beatsToSeconds (state.getStartBeat()));
         }
 
         refresh();

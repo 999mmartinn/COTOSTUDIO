@@ -5,7 +5,7 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first. Current step:
 
-**Step 1 – Channel rack + patterns (v0.2)**
+**Step 1 – Channel rack + patterns (v0.2.1)**
 * **Channel rack**: one row per instrument with mute, volume and pan knobs and a
   step sequencer. Click or drag across steps to paint them.
 * **Built-in drum synth** (Kick, Clap, Hat, Snare – pure synthesis, no sample
@@ -15,7 +15,12 @@ Built step by step, with stability first. Current step:
   **...** to rename / clone / delete. Pattern mode: Play loops the pattern you
   are viewing; switching pattern while playing switches it for everyone.
 * **Piano roll** for the selected channel: click to add a note, drag to move or
-  lengthen it, drag its right edge to resize, right-click to delete.
+  lengthen it, drag its right edge to resize, right-click to delete. You hear
+  the note while placing or dragging it, and clicking the piano keys plays them
+  (only on your PC).
+* **Play from anywhere**: click or drag the ruler above the piano roll to set
+  the green start marker. Play starts there and Stop returns there; clicking
+  the ruler while playing jumps there (for everyone).
 * **Effects per channel**: right-click a channel name → *Add effect* (Waves,
   FabFilter...), *Effects* → open / remove. Also *Open instrument*, rename, delete.
 * **Tempo (BPM)**, **Undo/Redo** (Ctrl+Z / Ctrl+Y, your own changes),
@@ -44,7 +49,8 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
      other's notes.
   2. **Plugin knobs** – when you turn a knob in a Waves/FabFilter window, the
      new value is sent (about 30 times a second while dragging).
-     When you **close** a plugin window, its full state (preset) is sent too.
+     When you **close** a plugin window, its full state (preset) is sent too;
+     that's the moment a preset you loaded reaches the others.
 * Every 1.5 s the host sends a fingerprint of the song. If a joiner's copy
   ever differs, it automatically asks for a fresh copy.
 * **Plugins are per person.** The song only says "FabFilter Pro-Q 3 with these

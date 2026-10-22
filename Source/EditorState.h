@@ -11,6 +11,7 @@ struct EditorState
     collab::Session& session;
     juce::String viewedPattern;     // pattern sid
     juce::String selectedChannel;   // channel (track) ID
+    double startBeat = 0.0;         // where Play starts (the marker on the piano-roll ruler)
 
     std::function<void()> onSelectionChanged;
 
@@ -55,19 +56,36 @@ struct EditorState
             edit->getUndoManager().beginNewTransaction();
     }
 
-    /** The step currently playing in the viewed pattern, or -1. */
-    int getPlayheadStep() const
+    /** The beat currently playing in the viewed pattern, or -1. */
+    double getPlayheadBeat() const
     {
         auto* edit = getEdit();
 
         if (edit == nullptr || ! edit->getTransport().isPlaying()
              || session.getPlayingPattern() != getPattern()[song::ids::sid].toString())
-            return -1;
+            return -1.0;
 
         auto beat = edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats();
-        auto len = song::getLengthBeats (getPattern());
-        beat = std::fmod (beat, len);
-        return (int) (beat / song::stepBeats);
+        return std::fmod (juce::jmax (0.0, beat), song::getLengthBeats (getPattern()));
+    }
+
+    /** The step currently playing in the viewed pattern, or -1. */
+    int getPlayheadStep() const
+    {
+        auto beat = getPlayheadBeat();
+        return beat < 0.0 ? -1 : (int) (beat / song::stepBeats);
+    }
+
+    /** Play start position, kept inside the viewed pattern. */
+    double getStartBeat() const
+    {
+        return juce::jlimit (0.0, juce::jmax (0.0, song::getLengthBeats (getPattern()) - song::stepBeats), startBeat);
+    }
+
+    double beatsToSeconds (double beats) const
+    {
+        auto* edit = getEdit();
+        return edit != nullptr ? edit->tempoSequence.toTime (te::BeatPosition::fromBeats (beats)).inSeconds() : 0.0;
     }
 
     static juce::Colour channelColour (int index)
