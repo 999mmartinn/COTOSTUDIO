@@ -393,6 +393,220 @@ void setStep (te::Edit& edit, juce::ValueTree pattern, const te::AudioTrack& cha
 }
 
 //==============================================================================
+//==============================================================================
+juce::Array<te::AudioTrack*> getInserts (te::Edit& edit)
+{
+    juce::Array<te::AudioTrack*> result;
+
+    for (auto* t : te::getAudioTracks (edit))
+        if ((bool) t->state[ids::insert])
+            result.add (t);
+
+    return result;
+}
+
+te::AudioTrack* findInsert (te::Edit& edit, const juce::String& insertID)
+{
+    if (insertID.isEmpty())
+        return nullptr;
+
+    for (auto* t : getInserts (edit))
+        if (t->itemID.toString() == insertID)
+            return t;
+
+    return nullptr;
+}
+
+int getInsertNumber (te::Edit& edit, const te::AudioTrack& track)
+{
+    return getInserts (edit).indexOf (const_cast<te::AudioTrack*> (&track)) + 1;
+}
+
+te::AudioTrack* addInsert (te::Edit& edit, const juce::String& name)
+{
+    auto track = edit.insertNewAudioTrack (te::TrackInsertPoint (nullptr, te::getAudioTracks (edit).getLast()), nullptr);
+
+    if (track == nullptr)
+        return nullptr;
+
+    track->state.setProperty (ids::insert, true, um (edit));
+    track->setName (name.isNotEmpty() ? name : "Insert " + juce::String (getInserts (edit).size()));
+    return track.get();
+}
+
+void removeInsert (te::Edit& edit, te::AudioTrack& insert)
+{
+    const auto id = insert.itemID.toString();
+
+    // Anything routed into it goes to the master instead.
+    for (auto* t : te::getAudioTracks (edit))
+        if (t->state[ids::routeTo].toString() == id)
+            t->state.setProperty (ids::routeTo, juce::String(), um (edit));
+
+    edit.deleteTrack (&insert);
+}
+
+juce::String getRoute (const te::AudioTrack& track)
+{
+    return track.state[ids::routeTo].toString();
+}
+
+bool canRouteTo (te::Edit& edit, const te::AudioTrack& source, const juce::String& targetID)
+{
+    if (targetID.isEmpty())
+        return true;    // master is always fine
+
+    // Follow the chain from the target; reaching the source would make a loop.
+    auto* t = findInsert (edit, targetID);
+
+    for (int guard = 0; t != nullptr && guard < 1000; ++guard)
+    {
+        if (t == &source)
+            return false;
+
+        t = findInsert (edit, getRoute (*t));
+    }
+
+    return findInsert (edit, targetID) != nullptr;
+}
+
+te::AudioTrack* resolveRoute (te::Edit& edit, const te::AudioTrack& track)
+{
+    auto target = getRoute (track);
+    return canRouteTo (edit, track, target) ? findInsert (edit, target) : nullptr;
+}
+
+bool setRoute (te::Edit& edit, te::AudioTrack& source, const juce::String& targetID)
+{
+    if (! canRouteTo (edit, source, targetID))
+        return false;
+
+    source.state.setProperty (ids::routeTo, targetID, um (edit));
+    return true;
+}
+
+juce::Array<te::Plugin*> getInsertEffects (te::AudioTrack& track)
+{
+    juce::Array<te::Plugin*> result;
+
+    for (auto* p : track.pluginList.getPlugins())
+        if (! isMixerUtility (p))
+            result.add (p);
+
+    return result;
+}
+
+te::Plugin::Ptr addInsertEffect (te::AudioTrack& track, const juce::PluginDescription& desc)
+{
+    auto plugin = track.edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, desc);
+
+    if (plugin == nullptr)
+        return {};
+
+    int index = 0;
+    auto plugins = track.pluginList.getPlugins();
+
+    while (index < plugins.size() && ! isMixerUtility (plugins[index].get()))
+        ++index;
+
+    track.pluginList.insertPlugin (plugin, index, nullptr);
+    return plugin;
+}
+
+juce::Array<te::Plugin*> getMasterEffects (te::Edit& edit)
+{
+    juce::Array<te::Plugin*> result;
+
+    for (auto* p : edit.getMasterPluginList().getPlugins())
+        if (! isMixerUtility (p))
+            result.add (p);
+
+    return result;
+}
+
+te::Plugin::Ptr addMasterEffect (te::Edit& edit, const juce::PluginDescription& desc)
+{
+    auto plugin = edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, desc);
+
+    if (plugin != nullptr)
+        edit.getMasterPluginList().insertPlugin (plugin, -1, nullptr);
+
+    return plugin;
+}
+
+juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
+{
+    juce::Array<std::pair<juce::String, juce::String>> list;
+    list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
+    list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor" });
+    list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb" });
+    list.add ({ te::DelayPlugin::xmlTypeName,      "Delay" });
+    list.add ({ te::ChorusPlugin::xmlTypeName,     "Chorus" });
+    list.add ({ te::PhaserPlugin::xmlTypeName,     "Phaser" });
+    list.add ({ te::LowPassPlugin::xmlTypeName,    "Low / high pass filter" });
+    return list;
+}
+
+te::Plugin::Ptr createEffect (te::Edit& edit, const juce::String& builtInType, const juce::PluginDescription* external)
+{
+    if (external != nullptr)
+        return edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, *external);
+
+    return edit.getPluginCache().createNewPlugin (builtInType, {});
+}
+
+void putEffect (te::Edit& edit, te::AudioTrack* insert, te::Plugin::Ptr plugin, int slot)
+{
+    if (plugin == nullptr)
+        return;
+
+    auto& list = insert != nullptr ? insert->pluginList : edit.getMasterPluginList();
+    auto effects = insert != nullptr ? getInsertEffects (*insert) : getMasterEffects (edit);
+    auto all = list.getPlugins();
+    int index = -1;
+
+    if (juce::isPositiveAndBelow (slot, effects.size()))
+    {
+        index = all.indexOf (effects[slot]);
+    }
+    else
+    {
+        // After the last effect, before volume/meter.
+        for (int i = 0; i < all.size(); ++i)
+            if (isMixerUtility (all[i].get()))
+                { index = i; break; }
+    }
+
+    list.insertPlugin (plugin, index, nullptr);
+}
+
+void moveEffect (te::Plugin& plugin, int direction)
+{
+    auto node = plugin.state;
+    auto parent = node.getParent();
+
+    if (! parent.isValid())
+        return;
+
+    // Find the neighbouring PLUGIN node (skipping other kinds of children).
+    const int from = parent.indexOf (node);
+
+    for (int i = from + direction; i >= 0 && i < parent.getNumChildren(); i += direction)
+    {
+        auto other = parent.getChild (i);
+
+        if (! other.hasType (te::IDs::PLUGIN))
+            continue;
+
+        if (auto otherPlugin = te::findPluginForID (plugin.edit, te::EditItemID::fromVar (other[te::IDs::id])))
+            if (isMixerUtility (otherPlugin.get()))
+                return;     // never move past volume/meter
+
+        parent.moveChild (from, i, &plugin.edit.getUndoManager());
+        return;
+    }
+}
+
 void createDefaultSong (te::Edit& edit)
 {
     // Tracktion creates one empty audio track in a new Edit; we use our own channels.

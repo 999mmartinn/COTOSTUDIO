@@ -13,6 +13,7 @@ static const juce::Identifier localNodeTypes[] =
     "INPUTDEVICES",                 // which audio/MIDI inputs this PC has
     "VIEWSTATE",
     "TRANSPORT",                    // playhead, loop markers etc. (transport is synced separately)
+    "OUTPUTDEVICES",                // a track's output device/route: per PC (applied from routeTo by MixerRouter)
 };
 
 // Properties that are per-machine wherever they appear.

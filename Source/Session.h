@@ -3,6 +3,7 @@
 #include "EditSync.h"
 
 class PatternCompiler;
+class MixerRouter;
 
 namespace collab
 {
@@ -78,6 +79,7 @@ public:
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
     PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
+    MixerRouter* getRouter() const noexcept        { return router.get(); }
 
     std::function<void()> onEditAboutToBeReplaced;
     std::function<void()> onEditReplaced;
@@ -88,7 +90,7 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 3;
+    static constexpr int protocolVersion = 4;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -105,6 +107,7 @@ private:
     std::unique_ptr<te::Edit> edit;
     std::unique_ptr<EditSync> editSync;
     std::unique_ptr<PatternCompiler> compiler;
+    std::unique_ptr<MixerRouter> router;
     std::unique_ptr<Server> server;
     juce::OwnedArray<PeerConnection, juce::CriticalSection> clients;   // host side (added from the server thread)
     std::unique_ptr<PeerConnection> hostLink;     // joining side

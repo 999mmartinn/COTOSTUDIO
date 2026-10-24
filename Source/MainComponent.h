@@ -4,6 +4,7 @@
 #include "ChannelRack.h"
 #include "PianoRoll.h"
 #include "Playlist.h"
+#include "Mixer.h"
 
 //==============================================================================
 class MainComponent  : public juce::Component,
@@ -42,6 +43,8 @@ private:
     Playlist playlist { state };
     ChannelRack rack { engine, state };
     PianoRoll pianoRoll { state };
+    Mixer mixer { engine, state };
+    juce::TabbedComponent bottomTabs { juce::TabbedButtonBar::TabsAtTop };   // Piano roll (F7) / Mixer (F9)
     juce::TextEditor logView;
 
     // Playlist / rack / piano roll, with draggable dividers between them.

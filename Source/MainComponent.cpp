@@ -21,7 +21,7 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
              &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
              &patModeButton, &songModeButton, &playButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
-             &playlist, &divider1, &rack, &divider2, &pianoRoll, &logView })
+             &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -122,7 +122,13 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
         refresh();
     };
 
-    // Panels: playlist, divider, rack, divider, piano roll (sizes are proportions or pixels).
+    const auto tabColour = juce::Colour (0xff2a2f36);
+    bottomTabs.addTab ("Piano roll  (F7)", tabColour, &pianoRoll, false);
+    bottomTabs.addTab ("Mixer  (F9)", tabColour, &mixer, false);
+    bottomTabs.setTabBarDepth (26);
+    bottomTabs.setOutline (0);
+
+    // Panels: playlist, divider, rack, divider, piano roll / mixer tabs (sizes are proportions or pixels).
     panelLayout.setItemLayout (0, 110, -0.7, -0.30);
     panelLayout.setItemLayout (1, 6, 6, 6);
     panelLayout.setItemLayout (2, 110, -0.6, -0.31);
@@ -150,6 +156,27 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
 
     setWantsKeyboardFocus (true);
     session.createLocalEdit();
+
+    // Developer option for screenshots: SyncTest --demo-mixer
+    if (juce::JUCEApplication::getCommandLineParameterArray().contains ("--demo-mixer"))
+    {
+        auto& edit = *session.getEdit();
+
+        if (auto* ins = song::addInsert (edit, "Drums"))
+        {
+            for (auto* name : { "Kick", "Clap" })
+                for (auto* t : song::getChannels (edit))
+                    if (t->getName() == name)
+                        song::setRoute (edit, *t, ins->itemID.toString());
+
+            song::putEffect (edit, ins, song::createEffect (edit, te::CompressorPlugin::xmlTypeName, nullptr), -1);
+            song::putEffect (edit, ins, song::createEffect (edit, te::EqualiserPlugin::xmlTypeName, nullptr), -1);
+            state.selectedInsert = ins->itemID.toString();
+        }
+
+        song::addInsert (edit, "Vocals");
+        bottomTabs.setCurrentTabIndex (1);
+    }
     appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
                 + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
     setSize (1280, 900);
@@ -254,6 +281,7 @@ void MainComponent::refresh()
     playlist.refresh();
     rack.refresh();
     pianoRoll.refresh();
+    mixer.refresh();
 }
 
 void MainComponent::undo (bool redo)
@@ -277,6 +305,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('y', cmd, 0)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
+    if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
+    if (key == juce::KeyPress::F9Key)                                               { bottomTabs.setCurrentTabIndex (1); return true; }
 
     return false;
 }
@@ -430,6 +460,6 @@ void MainComponent::resized()
     logView.setBounds (r.removeFromBottom (70));
     r.removeFromBottom (8);
 
-    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, &pianoRoll };
+    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, &bottomTabs };
     panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
 }

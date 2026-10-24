@@ -1,42 +1,10 @@
 #include "ChannelRack.h"
 #include "DrumSynthPlugin.h"
+#include "Look.h"
+#include "Mixer.h"
 
 static const juce::Colour rackBackground (0xff2a2f36), stepOff (0xff3a414a), stepOffAlt (0xff464e59);
 
-/** Small, readable knobs for the rack (FL-style). */
-struct KnobLook  : public juce::LookAndFeel_V4
-{
-    void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
-                           float startAngle, float endAngle, juce::Slider& s) override
-    {
-        auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (2.0f);
-        auto size = juce::jmin (r.getWidth(), r.getHeight());
-        r = r.withSizeKeepingCentre (size, size);
-        const auto centre = r.getCentre();
-        const float radius = size * 0.5f;
-        const float angle = startAngle + pos * (endAngle - startAngle);
-
-        g.setColour (juce::Colour (0xff20242a));
-        g.fillEllipse (r);
-
-        juce::Path arc;
-        arc.addCentredArc (centre.x, centre.y, radius - 1.5f, radius - 1.5f, 0.0f, startAngle, angle, true);
-        g.setColour (s.findColour (juce::Slider::rotarySliderFillColourId));
-        g.strokePath (arc, juce::PathStrokeType (2.5f));
-
-        juce::Path pointer;
-        pointer.startNewSubPath (centre);
-        pointer.lineTo (centre.getPointOnCircumference (radius - 3.0f, angle));
-        g.setColour (juce::Colours::white);
-        g.strokePath (pointer, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    }
-};
-
-static KnobLook& knobLook()
-{
-    static KnobLook look;
-    return look;
-}
 
 //==============================================================================
 class ChannelRack::Row  : public juce::Component
@@ -94,6 +62,14 @@ public:
         name.setTooltip ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete");
         addAndMakeVisible (mute);
         addAndMakeVisible (name);
+
+        route.setTooltip ("Mixer insert this channel plays into (M = master). Click to change, or make a new insert");
+        route.onClick = [this]
+        {
+            if (auto* t = getTrack())
+                Mixer::showRouteMenu (rack.state, *t, &route);
+        };
+        addAndMakeVisible (route);
     }
 
     te::AudioTrack* getTrack() const
@@ -129,6 +105,13 @@ public:
                         selected ? EditorState::channelColour (index).darker (0.2f) : juce::Colour (0xff3a414a));
         name.setColour (juce::TextButton::textColourOffId, selected ? juce::Colours::black : juce::Colours::white);
 
+        if (auto* edit = rack.state.getEdit())
+        {
+            auto* dest = song::resolveRoute (*edit, *t);
+            route.setButtonText (dest != nullptr ? juce::String (song::getInsertNumber (*edit, *dest)) : juce::String ("M"));
+            route.setColour (juce::TextButton::buttonColourId, dest != nullptr ? juce::Colour (0xff5a4a2a) : juce::Colour (0xff3a414a));
+        }
+
         const bool muted = t->isMuted (false);
         mute.setButtonText (muted ? "" : "");
         mute.setColour (juce::TextButton::buttonColourId, muted ? juce::Colour (0xff555555) : juce::Colour (0xff6fd06f));
@@ -156,7 +139,9 @@ public:
         volume.setBounds (r.removeFromLeft (28));
         pan.setBounds (r.removeFromLeft (28));
         r.removeFromLeft (6);
-        name.setBounds (r.removeFromLeft (stepsX - 6 - 14 - 6 - 56 - 6 - 4));
+        route.setBounds (r.removeFromLeft (30));
+        r.removeFromLeft (4);
+        name.setBounds (r.removeFromLeft (stepsX - 6 - 14 - 6 - 56 - 6 - 30 - 4 - 4));
     }
 
     juce::Rectangle<float> stepBounds (int step, int numSteps) const
@@ -240,7 +225,7 @@ public:
     ChannelRack& rack;
     const juce::String channelID;
     const int index;
-    juce::TextButton mute, name;
+    juce::TextButton mute, name, route;
     juce::Slider volume, pan;
     bool paintValue = true;
     int lastStep = -1;

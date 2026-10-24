@@ -1,6 +1,7 @@
 #include "Session.h"
 #include "SongModel.h"
 #include "PatternCompiler.h"
+#include "MixerRouter.h"
 
 namespace collab
 {
@@ -68,6 +69,7 @@ Session::~Session()
 {
     stopTimer();
     leave();
+    router.reset();
     compiler.reset();
     editSync.reset();
     edit.reset();
@@ -138,6 +140,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     if (onEditAboutToBeReplaced)
         onEditAboutToBeReplaced();
 
+    router.reset();
     compiler.reset();
     editSync.reset();
     edit.reset();
@@ -150,6 +153,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     setUpLocalTransport (*edit);
     attachSync();
     compiler = std::make_unique<PatternCompiler> (*edit);
+    router = std::make_unique<MixerRouter> (*edit);
 
     if (onEditReplaced)
         onEditReplaced();

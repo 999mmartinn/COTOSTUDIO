@@ -8,6 +8,7 @@
 #include "SongModel.h"
 #include "PatternCompiler.h"
 #include "DrumSynthPlugin.h"
+#include "MixerRouter.h"
 
 namespace
 {
@@ -57,6 +58,7 @@ private:
     int passed = 0, failed = 0, skipped = 0;
     juce::StringArray failures;
     juce::String deletedChannelID;
+    bool loopRefused = false;
     static constexpr int port = 47811;
 
     te::Edit& H()  { return *host.getEdit(); }
@@ -181,6 +183,75 @@ private:
         dumpDir.createDirectory();
         dumpDir.getChildFile (name + "-full.xml").replaceWithText (e.state.toXmlString());
         dumpDir.getChildFile (name + "-shared.xml").replaceWithText (collab::EditSync::filteredCopy (e.state, true).toXmlString());
+    }
+
+    static te::AudioTrack* insert (te::Edit& e, const juce::String& name)
+    {
+        for (auto* t : song::getInserts (e))
+            if (t->getName() == name)
+                return t;
+
+        return nullptr;
+    }
+
+    /** Where the engine on this PC actually sends a track: the insert's name or "Master". */
+    static juce::String engineDest (te::Edit& e, te::AudioTrack* t)
+    {
+        if (t == nullptr)
+            return "?";
+
+        auto* d = t->getOutput().getDestinationTrack();
+        return d != nullptr ? d->getName() : juce::String ("Master");
+    }
+
+    bool engineRoutingMatchesEverywhere()
+    {
+        for (auto* t : te::getAudioTracks (H()))
+        {
+            auto find = [t] (te::Edit& e) -> te::AudioTrack*
+            {
+                for (auto* o : te::getAudioTracks (e))
+                    if (o->itemID == t->itemID)
+                        return o;
+                return nullptr;
+            };
+
+            auto a = engineDest (H(), t);
+
+            if (a != engineDest (P1(), find (P1())) || a != engineDest (P2(), find (P2())))
+                return false;
+        }
+
+        return true;
+    }
+
+    /** Renders only the named tracks (by name) over the loop range; returns the peak. */
+    float renderPeakOf (te::Edit& e, juce::StringArray trackNames)
+    {
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("synctest-render", ".wav");
+        juce::BigInteger tracks;
+        auto all = te::getAllTracks (e);
+
+        for (int i = 0; i < all.size(); ++i)
+            if (trackNames.contains (all[i]->getName()))
+                tracks.setBit (i);
+
+        if (! te::Renderer::renderToFile ("test", file, e, e.getTransport().getLoopRange(), tracks, true, true, {}, false))
+            return -1.0f;
+
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        float peak = 0.0f;
+
+        if (std::unique_ptr<juce::AudioFormatReader> reader { fm.createReaderFor (file) })
+        {
+            juce::AudioBuffer<float> buffer ((int) reader->numChannels, (int) reader->lengthInSamples);
+            reader->read (&buffer, 0, (int) reader->lengthInSamples, 0, true, true);
+            peak = buffer.getMagnitude (0, buffer.getNumSamples());
+        }
+
+        file.deleteFile();
+        return peak;
     }
 
     float renderPeak (te::Edit& e)
@@ -513,6 +584,115 @@ private:
             [this] { return ! peer1.isSongMode() && ! peer2.isSongMode() && ! P1().getTransport().isPlaying(); },
             4000 });
 
+        steps.push_back ({ "Mixer: host makes insert 'Drums' and routes Kick + Clap into it -> applied on every PC",
+            [this]
+            {
+                auto* ins = song::addInsert (H(), "Drums");
+                song::setRoute (H(), *ch (H(), "Kick"), ins->itemID.toString());
+                song::setRoute (H(), *ch (H(), "Clap"), ins->itemID.toString());
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return song::getInserts (e).size() == 1 && insert (e, "Drums") != nullptr
+                        && engineDest (e, ch (e, "Kick")) == "Drums" && engineDest (e, ch (e, "Clap")) == "Drums"
+                        && engineDest (e, ch (e, "Hat")) == "Master";
+                }) && hashesEqual();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Mixer: the Kick really plays through the insert (insert fader down = Kick silent)",
+            [this] { host.getRouter()->applyNow(); },
+            [this]
+            {
+                // Rendering specific tracks ignores mute on purpose (like freezing),
+                // so use the insert's volume fader, which the render does respect.
+                auto vol = song::getVolumePlugin (*insert (H(), "Drums"))->volParam;
+                const float original = vol->getCurrentValue();
+                const float open = renderPeakOf (H(), { "Kick", "Drums" });
+                vol->setNormalisedParameter (0.0f, juce::dontSendNotification);
+                const float closed = renderPeakOf (H(), { "Kick", "Drums" });
+                vol->setParameter (original, juce::dontSendNotification);
+                std::cout << "    kick through insert: peak " << open << ", insert fader down: " << closed << std::endl;
+                return open > 0.05f && closed < 0.001f;
+            } });
+
+        steps.push_back ({ "Mixer: peer 1 adds a built-in Compressor to 'Drums' and a VST3 effect to the master",
+            [this]
+            {
+                auto* ins = insert (P1(), "Drums");
+                song::putEffect (P1(), ins, song::createEffect (P1(), te::CompressorPlugin::xmlTypeName, nullptr), -1);
+
+                auto types = engine.getPluginManager().knownPluginList.getTypes();
+
+                for (auto& d : types)
+                    if (d.name == "SyncTestGain")
+                        song::putEffect (P1(), nullptr, song::createEffect (P1(), {}, &d), -1);
+            },
+            [this]
+            {
+                const bool vst = pluginFile.exists();
+
+                return everywhere ([vst] (te::Edit& e)
+                {
+                    auto fx = song::getInsertEffects (*insert (e, "Drums"));
+                    auto master = song::getMasterEffects (e);
+                    return fx.size() == 1 && dynamic_cast<te::CompressorPlugin*> (fx[0]) != nullptr
+                        && (! vst || (master.size() == 1 && master[0]->getName() == "SyncTestGain"));
+                });
+            },
+            15000, 600 });
+
+        steps.push_back ({ "Mixer: master volume (host) and the insert's pan (peer 2) -> same everywhere",
+            [this]
+            {
+                H().getMasterVolumePlugin()->volParam->setNormalisedParameter (0.6f, juce::sendNotification);
+                song::getVolumePlugin (*insert (P2(), "Drums"))->panParam->setNormalisedParameter (0.2f, juce::sendNotification);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return std::abs (e.getMasterVolumePlugin()->volParam->getCurrentNormalisedValue() - 0.6f) < 1.0e-4f
+                        && std::abs (song::getVolumePlugin (*insert (e, "Drums"))->panParam->getCurrentNormalisedValue() - 0.2f) < 1.0e-4f;
+                });
+            } });
+
+        steps.push_back ({ "Mixer: a routing loop is refused (Drums -> Bus is fine, Bus -> Drums is not)",
+            [this]
+            {
+                auto* bus = song::addInsert (H(), "Bus");
+                song::setRoute (H(), *insert (H(), "Drums"), bus->itemID.toString());
+                loopRefused = ! song::setRoute (H(), *bus, insert (H(), "Drums")->itemID.toString());
+            },
+            [this]
+            {
+                return loopRefused
+                    && everywhere ([] (te::Edit& e) { return engineDest (e, insert (e, "Drums")) == "Bus"
+                                                             && engineDest (e, insert (e, "Bus")) == "Master"; });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Mixer: peer 1 deletes 'Bus' while the host routes Snare into it -> all end up on master",
+            [this]
+            {
+                song::setRoute (H(), *ch (H(), "Snare"), insert (H(), "Bus")->itemID.toString());
+                song::removeInsert (P1(), *insert (P1(), "Bus"));
+            },
+            [this]
+            {
+                return hashesEqual()
+                    && everywhere ([] (te::Edit& e)
+                       {
+                           return insert (e, "Bus") == nullptr
+                               && engineDest (e, ch (e, "Snare")) == "Master" && engineDest (e, insert (e, "Drums")) == "Master"
+                               && engineDest (e, ch (e, "Kick")) == "Drums";
+                       })
+                    && engineRoutingMatchesEverywhere();
+            },
+            8000, 1600 });
+
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
             [this]
             {
@@ -551,7 +731,7 @@ private:
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },
-            [this] { return hashesEqual() && compiledEqualEverywhere(); }, 4000, 1600 });
+            [this] { return hashesEqual() && compiledEqualEverywhere() && engineRoutingMatchesEverywhere(); }, 4000, 1600 });
     }
 
     void timerCallback() override

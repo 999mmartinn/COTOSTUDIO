@@ -5,6 +5,20 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 3 – Mixer (v0.4)**
+* Bottom panel has two tabs: **Piano roll (F7)** and **Mixer (F9)**.
+* **Master** strip plus **inserts** (+ Insert): volume fader, dB readout, pan,
+  on/mute, level meter, and where the insert sends its sound (Master or another
+  insert; loops are prevented). Right-click an insert's name to rename or delete it.
+* **Effect slots** (10 per strip, master included): click a strip, then click an
+  empty slot to add an effect – your VST3s (Waves, FabFilter…) or built-ins
+  (EQ, compressor, reverb, delay, chorus, phaser, filter). Click a filled slot to
+  open it; right-click to bypass, move up/down, replace or remove.
+* **Routing channels**: the small box on each channel-rack row shows its insert
+  (M = master). Click it to pick an insert or make a **new insert** named after
+  the channel (like FL's "route to free insert").
+* Everything syncs except the level meters (each PC measures its own audio).
+
 **Step 2 – Playlist (v0.3)**
 * **PAT / SONG** buttons next to Play (like FL). PAT loops the pattern you are
   editing; SONG plays the arrangement. The mode is shared with everyone.
@@ -97,7 +111,9 @@ Join `127.0.0.1` in the other.
   differently on two PCs (different version) will sound different.
 * What the engine plays is generated on each PC from the shared patterns
   (never sent), so every PC plays exactly the same notes.
-* Not yet: mixer view, recording/audio clips, saving projects, chat.
+* Routing is stored by each insert's permanent ID and applied on every PC, so
+  adding or deleting tracks never sends audio to the wrong insert.
+* Not yet: solo and send knobs, recording/audio clips, saving projects, chat.
   Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 

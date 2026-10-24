@@ -14,6 +14,7 @@ struct EditorState
     double startBeat = 0.0;         // where Play starts in PAT mode (marker on the piano-roll ruler)
     double songStartBeat = 0.0;     // where Play starts in SONG mode (marker on the playlist ruler)
     double playlistSnapBeats = 4.0; // playlist snap: bar / beat / step
+    juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
 
     std::function<void()> onSelectionChanged;
 

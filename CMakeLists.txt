@@ -42,7 +42,9 @@ target_sources(SyncTest PRIVATE
     Source/DrumSynthPlugin.cpp
     Source/ChannelRack.cpp
     Source/PianoRoll.cpp
-    Source/Playlist.cpp)
+    Source/Playlist.cpp
+    Source/MixerRouter.cpp
+    Source/Mixer.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1
