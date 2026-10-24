@@ -155,6 +155,30 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     audioButton.onClick = [this] { showAudioSettings(); };
 
     setWantsKeyboardFocus (true);
+
+    // Two copies on one PC (testing alone) each get their own folder of audio
+    // files, so the second copy really receives files like a second PC would.
+    {
+        auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("SyncTest");
+
+        for (int i = 1; i <= 8; ++i)
+        {
+            auto lock = std::make_unique<juce::InterProcessLock> ("SyncTest-assets-" + juce::String (i));
+
+            if (lock->enter (0))
+            {
+                assetFolderLock = std::move (lock);
+                auto folder = base.getChildFile (i == 1 ? juce::String ("Assets") : "Assets-" + juce::String (i));
+                session.setAssetFolder (folder);
+
+                if (i > 1)
+                    appendLog ("Copy " + juce::String (i) + " running on this PC: its audio files are kept apart in "
+                                + folder.getFullPathName() + ", like a separate PC");
+                break;
+            }
+        }
+    }
+
     session.createLocalEdit();
 
     // Developer option for screenshots: SyncTest --demo-mixer

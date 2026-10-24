@@ -23,6 +23,7 @@ private:
     te::Engine& engine;
     collab::Session session { engine };
     EditorState state { session };
+    std::unique_ptr<juce::InterProcessLock> assetFolderLock;   // which copy on this PC we are
     juce::ApplicationProperties appProperties;
     juce::ValueTree watchedState;
 

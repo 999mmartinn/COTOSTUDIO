@@ -116,7 +116,8 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
   allow it on private networks.
 
 You can also run **two copies on one PC** to try it alone: Host in one,
-Join `127.0.0.1` in the other.
+Join `127.0.0.1` in the other. The second copy keeps its audio files in its own
+folder (`Assets-2`), so file sharing really happens, like with a second PC.
 
 ## Known limits of this test (on purpose)
 

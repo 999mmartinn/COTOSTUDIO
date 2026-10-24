@@ -39,9 +39,10 @@ jobs:
           $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest","--plugin=$($vst.FullName)" `
                  -NoNewWindow -Wait -PassThru -RedirectStandardOutput selftest.txt
           Get-Content selftest.txt
-          # Summary lines also go to the run's public annotations.
-          Get-Content selftest.txt | Select-String -Pattern "PASS|FAIL|SKIPPED|passed,|resyncs|: sent|^      [0-9]+x" |
-            ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          # The key lines also go to the run's public annotations (GitHub shows only
+          # about 10 per step, so just failures, totals and measurements).
+          Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|big file|peak" |
+            ForEach-Object { Write-Output "::notice::$($_.Line.Trim())" }
           exit $p.ExitCode
 
       # Makes the important error lines readable without downloading logs.
