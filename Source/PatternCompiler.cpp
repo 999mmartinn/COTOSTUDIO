@@ -1,6 +1,6 @@
 #include "PatternCompiler.h"
 
-PatternCompiler::PatternCompiler (te::Edit& e) : edit (e)
+PatternCompiler::PatternCompiler (te::Edit& e, AssetStore& a) : edit (e), assets (a)
 {
     edit.state.addListener (this);
     compileNow();
@@ -117,6 +117,12 @@ void PatternCompiler::compileNow()
 
     for (auto* track : song::getChannels (edit))
     {
+        if (song::isAudioChannel (*track))
+        {
+            compileAudio (*track);
+            continue;
+        }
+
         // What the placements say this channel should play (notes cut at each clip's end).
         std::vector<NoteData> wanted;
 
@@ -175,6 +181,90 @@ void PatternCompiler::compileNow()
         transport.setLoopRange (range);
 
     transport.looping = true;
+}
+
+void PatternCompiler::compileAudio (te::AudioTrack& track)
+{
+    // Which audio clips should play on this channel (song mode only, file present here).
+    struct Wanted { juce::String sid, hash; te::TimeRange time; te::TimeDuration offset; };
+    std::vector<Wanted> wanted;
+    const auto channelID = song::getChannelID (track);
+
+    if (songMode)
+    {
+        for (auto& c : song::getClips (edit))
+        {
+            if (! song::isAudioClip (c) || c[song::ids::ch].toString() != channelID)
+                continue;
+
+            const auto hash = c[song::ids::asset].toString();
+
+            if (! assets.has (hash))
+                continue;   // not arrived yet: added as soon as it does
+
+            const double startSeconds = song::beatsToSeconds (edit, c[song::ids::start]);
+            wanted.push_back ({ c[song::ids::sid].toString(), hash,
+                                te::TimeRange (te::TimePosition::fromSeconds (startSeconds),
+                                               te::TimeDuration::fromSeconds ((double) c[song::ids::duration])),
+                                te::TimeDuration::fromSeconds ((double) c[song::ids::offset]) });
+        }
+    }
+
+    // Existing generated audio clips, by the playlist clip they come from.
+    std::map<juce::String, te::WaveAudioClip*> existing;
+
+    for (auto* c : track.getClips())
+        if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+            if ((bool) wc->state[song::ids::generated])
+                existing[wc->state["srcSid"].toString()] = wc;
+
+    for (auto& w : wanted)
+    {
+        auto it = existing.find (w.sid);
+        const te::ClipPosition position { w.time, w.offset };
+
+        if (it != existing.end() && it->second->state["srcHash"].toString() == w.hash)
+        {
+            auto* clip = it->second;
+            existing.erase (it);
+
+            const auto now = clip->getPosition();
+
+            if (now.time != position.time || std::abs (now.offset.inSeconds() - position.offset.inSeconds()) > 1.0e-6)
+                clip->setPosition (position);
+
+            continue;
+        }
+
+        auto clip = track.insertWaveClip (song::getAssetName (edit, w.hash), assets.getFile (w.hash), position, false);
+
+        if (clip != nullptr)
+        {
+            clip->state.setProperty (song::ids::generated, true, nullptr);
+            clip->state.setProperty ("srcSid", w.sid, nullptr);
+            clip->state.setProperty ("srcHash", w.hash, nullptr);
+            clip->setAutoTempo (false);
+        }
+    }
+
+    // Anything left is no longer wanted.
+    for (auto& [sid, clip] : existing)
+        clip->removeFromParent();
+}
+
+juce::StringArray PatternCompiler::describeCompiledAudio (te::AudioTrack& track) const
+{
+    juce::StringArray out;
+
+    for (auto* c : track.getClips())
+        if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+            if ((bool) wc->state[song::ids::generated])
+                out.add (wc->state["srcHash"].toString().substring (0, 8) + "@" + juce::String (wc->getPosition().getStart().inSeconds(), 3)
+                          + "+" + juce::String (wc->getPosition().getLength().inSeconds(), 3)
+                          + ">" + juce::String (wc->getPosition().offset.inSeconds(), 3));
+
+    out.sort (false);
+    return out;
 }
 
 juce::StringArray PatternCompiler::describeCompiledNotes (te::AudioTrack& track) const

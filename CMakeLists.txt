@@ -44,7 +44,8 @@ target_sources(SyncTest PRIVATE
     Source/PianoRoll.cpp
     Source/Playlist.cpp
     Source/MixerRouter.cpp
-    Source/Mixer.cpp)
+    Source/Mixer.cpp
+    Source/AssetStore.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1
@@ -54,6 +55,7 @@ target_compile_definitions(SyncTest PRIVATE
     JUCE_STRICT_REFCOUNTEDPOINTER=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
+    JUCE_USE_MP3AUDIOFORMAT=1
     JUCE_DISPLAY_SPLASH_SCREEN=0)
 
 # The Linux build only exists so the sync logic can be tested on a headless
@@ -72,6 +74,7 @@ target_link_libraries(SyncTest PRIVATE
     juce::juce_audio_devices
     juce::juce_audio_processors
     juce::juce_audio_utils
+    juce::juce_cryptography
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags)
 

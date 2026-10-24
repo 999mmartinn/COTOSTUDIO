@@ -10,6 +10,8 @@
       - Right-click a clip: delete it.
       - Click a clip: open its pattern in the channel rack and piano roll.
       - Ctrl + mouse wheel: zoom.  Ruler: set where SONG mode starts.
+      - Drop audio files (or "Import audio...") to add audio clips; each file gets
+        its own audio channel. Audio clips can be trimmed from both edges.
 */
 class Playlist  : public juce::Component,
                   private juce::Timer
@@ -19,6 +21,8 @@ public:
     ~Playlist() override;
 
     void refresh();
+    /** Imports audio files in the background and places them from a lane/beat on. */
+    void importFiles (const juce::Array<juce::File>& files, int lane, double startBeat);
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -37,6 +41,15 @@ private:
     std::unique_ptr<ScrollViewport> viewport;
     juce::Label title;
     juce::ComboBox snapBox;
+    juce::TextButton importButton { "Import audio..." };
+    std::unique_ptr<juce::FileChooser> chooser;
+    juce::ThreadPool importPool { 1 };
+
+    // Waveforms of audio files, shared by every clip that uses the file.
+    juce::AudioFormatManager formats;
+    juce::AudioThumbnailCache thumbCache { 32 };
+    std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbnails;
+    juce::AudioThumbnail* getThumbnail (const juce::String& hash);
     float pixelsPerBeat = 22.0f;
     bool wasPlaying = false;
 

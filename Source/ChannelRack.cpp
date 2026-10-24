@@ -159,9 +159,28 @@ public:
         return juce::jlimit (0, numSteps - 1, (int) ((p.x - stepsX) / w));
     }
 
+    bool isAudio() const
+    {
+        auto* t = getTrack();
+        return t != nullptr && song::isAudioChannel (*t);
+    }
+
     void paint (juce::Graphics& g) override
     {
         auto pattern = rack.state.getPattern();
+
+        if (isAudio())
+        {
+            // Audio channels play their clips from the playlist, not from patterns.
+            auto r = getLocalBounds().withTrimmedLeft (stepsX).reduced (2, 3).toFloat();
+            g.setColour (EditorState::channelColour (index).withAlpha (0.18f));
+            g.fillRoundedRectangle (r, 3.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.6f));
+            g.setFont (12.0f);
+            g.drawText ("Audio channel - its clips are in the playlist (SONG mode)", r.reduced (8.0f, 0.0f).toNearestInt(),
+                        juce::Justification::centredLeft, true);
+            return;
+        }
 
         if (! pattern.isValid())
             return;
@@ -190,9 +209,16 @@ public:
         auto pattern = rack.state.getPattern();
         const int step = stepAt (e.position, song::getNumSteps (pattern));
         auto* t = getTrack();
+        lastStep = -1;
 
         if (step < 0 || t == nullptr || ! pattern.isValid())
             return;
+
+        if (song::isAudioChannel (*t))
+        {
+            select();
+            return;
+        }
 
         rack.state.beginAction();
         paintValue = ! song::hasStep (pattern, channelID, step);
@@ -208,7 +234,7 @@ public:
         const int step = stepAt (e.position, song::getNumSteps (pattern));
         auto* t = getTrack();
 
-        if (step < 0 || step == lastStep || t == nullptr || ! pattern.isValid())
+        if (step < 0 || step == lastStep || lastStep < 0 || t == nullptr || ! pattern.isValid() || song::isAudioChannel (*t))
             return;
 
         lastStep = step;
@@ -390,7 +416,7 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
     }();
 
     m.addItem (1, instrument != nullptr ? "Open instrument (" + instrument->getName() + (missing ? ", not installed here)" : ")")
-                                        : juce::String ("No instrument"),
+                                        : juce::String (song::isAudioChannel (*track) ? "Audio channel (no instrument)" : "No instrument"),
                instrument != nullptr && ! missing);
 
     auto effects = song::getEffects (*track);

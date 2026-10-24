@@ -177,6 +177,31 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
         song::addInsert (edit, "Vocals");
         bottomTabs.setCurrentTabIndex (1);
     }
+
+    // Developer option for screenshots: SyncTest --demo-audio=<file>
+    // (one real audio clip, plus one whose file "hasn't arrived yet").
+    for (auto& a : juce::JUCEApplication::getCommandLineParameterArray())
+    {
+        if (! a.startsWith ("--demo-audio="))
+            continue;
+
+        auto& edit = *session.getEdit();
+        const juce::File file (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
+        auto r = session.getAssetStore().importAudioFile (file);
+
+        if (r.ok())
+        {
+            auto clip = song::addImportedAudio (edit, r, file.getFileName(), 1, 4.0);
+            state.selectedChannel = clip[song::ids::ch].toString();
+        }
+
+        AssetStore::ImportResult missing;
+        missing.hash = "00000000000000000000000000000000";
+        missing.lengthSeconds = 6.0;
+        song::addImportedAudio (edit, missing, "friend-vocal.wav", 2, 8.0);
+        session.setSongMode (true);
+    }
+
     appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
                 + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
     setSize (1280, 900);

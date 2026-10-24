@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "AssetStore.h"
 
 namespace te = tracktion;
 
@@ -17,6 +18,10 @@ namespace te = tracktion;
               PNOTE sid ch p b l v       <- channel (track ID), pitch, start beat, length beats, velocity
           PLAYLIST
             PCLIP sid pattern lane start length   <- a pattern placed in the song (beats)
+            PCLIP sid kind="audio" asset ch lane start offset duration
+                                                  <- an audio clip: start in beats, offset/duration in seconds
+          ASSETS
+            ASSET sid=<fingerprint> name seconds rate numChannels bytes   <- shared audio files (the bytes travel separately)
 
     Patterns are the truth. What the engine actually plays is generated from
     them on each PC (see PatternCompiler) and never sent over the network.
@@ -50,6 +55,16 @@ namespace song
         SONG_DECLARE_ID (length)
         SONG_DECLARE_ID (insert)
         SONG_DECLARE_ID (routeTo)
+        SONG_DECLARE_ID (kind)
+        SONG_DECLARE_ID (ASSETS)
+        SONG_DECLARE_ID (ASSET)
+        SONG_DECLARE_ID (asset)
+        SONG_DECLARE_ID (offset)
+        SONG_DECLARE_ID (duration)
+        SONG_DECLARE_ID (seconds)
+        SONG_DECLARE_ID (rate)
+        SONG_DECLARE_ID (numChannels)
+        SONG_DECLARE_ID (bytes)
         #undef SONG_DECLARE_ID
     }
 
@@ -142,6 +157,29 @@ namespace song
 
     /** Moves an effect one slot up (-1) or down (+1) within its chain. */
     void moveEffect (te::Plugin&, int direction);
+
+    //==============================================================================
+    // Audio: audio channels (no instrument, their clips live in the playlist),
+    // shared audio files ("assets", identified by their content fingerprint)
+    // and audio clips.
+    bool isAudioChannel (const te::AudioTrack&);
+    te::AudioTrack* addAudioChannel (te::Edit&, const juce::String& name);
+
+    void addAsset (te::Edit&, const AssetStore::ImportResult&, const juce::String& name);
+    juce::String getAssetName (te::Edit&, const juce::String& hash);
+    double getAssetSeconds (te::Edit&, const juce::String& hash);
+    /** Every file the song needs (from the asset list and the clips). */
+    juce::StringArray getAssetHashes (te::Edit&);
+
+    bool isAudioClip (const juce::ValueTree& clip);
+    juce::ValueTree addAudioClip (te::Edit&, const juce::String& hash, const juce::String& channelID,
+                                  int lane, double startBeat, double offsetSeconds, double durationSeconds);
+    /** Adds an imported file to the song: its asset entry, a new audio channel and a clip. */
+    juce::ValueTree addImportedAudio (te::Edit&, const AssetStore::ImportResult&, const juce::String& name,
+                                      int lane, double startBeat);
+
+    double beatsToSeconds (te::Edit&, double beats);
+    double secondsToBeats (te::Edit&, double seconds);
 
     //==============================================================================
     /** Fills an empty Edit with the default song: Kick, Clap, Hat, Snare, Synth and a beat. */

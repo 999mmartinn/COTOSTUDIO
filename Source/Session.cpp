@@ -14,20 +14,166 @@ static juce::MemoryBlock toBlock (const juce::ValueTree& v)
     return out.getMemoryBlock();
 }
 
+static std::atomic<int> nextConnectionTag { 1 };
+
 PeerConnection::PeerConnection (Session& s)
-    : InterprocessConnection (true, Session::magicNumber), session (s)
+    : InterprocessConnection (true, Session::magicNumber),
+      juce::Thread ("SyncTest sender"),
+      session (s), tag (nextConnectionTag++)
 {
+    startThread();
 }
 
 PeerConnection::~PeerConnection()
 {
+    dead = true;
+    signalThreadShouldExit();
+    notify();
+    stopThread (4000);
     disconnect();
 }
 
 void PeerConnection::sendTree (const juce::ValueTree& msg)
 {
-    if (! dead)
-        sendMessage (toBlock (msg));
+    if (dead)
+        return;
+
+    {
+        const juce::ScopedLock sl (queueLock);
+        messages.push_back (toBlock (msg));
+    }
+
+    notify();
+}
+
+void PeerConnection::queueAssetSend (const juce::String& hash, const juce::File& file)
+{
+    if (dead || ! file.existsAsFile())
+        return;
+
+    {
+        const juce::ScopedLock sl (queueLock);
+
+        for (auto& j : assetJobs)
+            if (j.hash == hash)
+                return;     // already queued
+
+        assetJobs.push_back ({ hash, file, 0, file.getSize() });
+    }
+
+    notify();
+}
+
+void PeerConnection::run()
+{
+    while (! threadShouldExit())
+    {
+        bool didSomething = false;
+
+        // 1. All waiting messages first (song edits, transport, hashes...).
+        for (;;)
+        {
+            juce::MemoryBlock next;
+
+            {
+                const juce::ScopedLock sl (queueLock);
+
+                if (messages.empty())
+                    break;
+
+                next = std::move (messages.front());
+                messages.pop_front();
+            }
+
+            if (! dead && isConnected())
+                sendMessage (next);
+
+            didSomething = true;
+        }
+
+        // 2. Then one chunk of a file, and check the message queue again.
+        //    With an upload limit, chunks are spaced out; messages never wait for that.
+        const int limit = session.getUploadLimit();
+        const auto now = juce::Time::getMillisecondCounter();
+        const bool chunkAllowed = limit <= 0 || (int) (nextChunkTime - now) <= 0;
+
+        if (chunkAllowed && ! dead && isConnected() && sendNextAssetChunk())
+        {
+            didSomething = true;
+
+            if (limit > 0)
+                nextChunkTime = juce::Time::getMillisecondCounter() + (juce::uint32) ((juce::int64) assetChunkBytes * 1000 / limit);
+        }
+
+        if (! didSomething)
+            wait (chunkAllowed ? 50 : juce::jlimit (1, 50, (int) (nextChunkTime - now)));
+    }
+}
+
+bool PeerConnection::sendNextAssetChunk()
+{
+    AssetJob job;
+
+    {
+        const juce::ScopedLock sl (queueLock);
+
+        if (assetJobs.empty())
+            return false;
+
+        job = assetJobs.front();
+    }
+
+    if (currentAsset == nullptr)
+    {
+        currentAsset = std::make_unique<juce::FileInputStream> (job.file);
+
+        if (currentAsset->failedToOpen())
+        {
+            currentAsset.reset();
+            const juce::ScopedLock sl (queueLock);
+            assetJobs.pop_front();
+            return true;
+        }
+    }
+
+    juce::MemoryBlock data ((size_t) juce::jmin ((juce::int64) assetChunkBytes, job.total - job.sent));
+    const auto offset = job.sent;
+    const auto read = currentAsset->read (data.getData(), (int) data.getSize());
+
+    if (read <= 0)
+    {
+        currentAsset.reset();
+        const juce::ScopedLock sl (queueLock);
+        assetJobs.pop_front();
+        return true;
+    }
+
+    data.setSize ((size_t) read);
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "asset", nullptr);
+    msg.setProperty (ids::hash, job.hash, nullptr);
+    msg.setProperty ("offset", offset, nullptr);
+    msg.setProperty ("total", job.total, nullptr);
+    msg.setProperty ("data", data, nullptr);
+    sendMessage (toBlock (msg));
+
+    {
+        const juce::ScopedLock sl (queueLock);
+
+        if (! assetJobs.empty())
+        {
+            assetJobs.front().sent += read;
+
+            if (assetJobs.front().sent >= assetJobs.front().total)
+            {
+                assetJobs.pop_front();
+                currentAsset.reset();
+            }
+        }
+    }
+
+    return true;
 }
 
 void PeerConnection::connectionMade()    { session.handleConnectionMade (*this); }
@@ -60,9 +206,16 @@ public:
 };
 
 //==============================================================================
-Session::Session (te::Engine& e) : engine (e)
+static juce::File defaultAssetFolder()
 {
-    startTimer (1500);
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+             .getChildFile ("SyncTest").getChildFile ("Assets");
+}
+
+Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
+{
+    assets.onAssetAdded = [this] (const juce::String& hash) { handleAssetAdded (hash); };
+    startTimer (500);
 }
 
 Session::~Session()
@@ -152,7 +305,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
 
     setUpLocalTransport (*edit);
     attachSync();
-    compiler = std::make_unique<PatternCompiler> (*edit);
+    compiler = std::make_unique<PatternCompiler> (*edit, assets);
     router = std::make_unique<MixerRouter> (*edit);
 
     if (onEditReplaced)
@@ -220,6 +373,18 @@ void Session::leave()
 
     {
         const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            assets.cancelDownloadsFrom (c->tag);
+    }
+
+    if (hostLink != nullptr)
+        assets.cancelDownloadsFrom (hostLink->tag);
+
+    assetWantedBy.clear();
+
+    {
+        const juce::ScopedLock sl (clients.getLock());
         clients.clear();
     }
 
@@ -249,6 +414,8 @@ void Session::handleConnectionMade (PeerConnection& c)
 
 void Session::handleConnectionLost (PeerConnection& c)
 {
+    assets.cancelDownloadsFrom (c.tag);
+
     if (&c == hostLink.get())
     {
         log ("Lost the connection to the host. You keep your copy of the song.");
@@ -267,6 +434,12 @@ void Session::handleConnectionLost (PeerConnection& c)
 void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
 {
     const auto type = msg[ids::type].toString();
+
+    if (type == "assetGet" || type == "asset")
+    {
+        handleAssetMessage (from, msg);
+        return;
+    }
 
     if (mode == Mode::hosting)
     {
@@ -623,16 +796,28 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
 //==============================================================================
 void Session::timerCallback()
 {
+    ++tick;
+
     // Drop connections that went away.
     {
         const juce::ScopedLock sl (clients.getLock());
 
         for (int i = clients.size(); --i >= 0;)
+        {
             if (clients[i]->dead)
+            {
+                for (auto& [hash, tags] : assetWantedBy)
+                    tags.removeAllInstancesOf (clients[i]->tag);
+
                 clients.remove (i);
+            }
+        }
     }
 
-    if (mode != Mode::hosting || editSync == nullptr)
+    if (tick % 2 == 0)
+        checkAssets();
+
+    if (tick % 3 != 0 || mode != Mode::hosting || editSync == nullptr)
         return;
 
     flushOutgoing();
@@ -651,6 +836,143 @@ void Session::timerCallback()
         msg.setProperty (ids::ack, c->lastSeqApplied, nullptr);
         c->sendTree (msg);
     }
+}
+
+//==============================================================================
+// Audio files: anyone missing a file asks (joiners ask the host, the host asks
+// the joiners one by one); whoever has it sends it in chunks.
+
+PeerConnection* Session::findLink (int tag) const
+{
+    if (hostLink != nullptr && hostLink->tag == tag)
+        return hostLink.get();
+
+    const juce::ScopedLock sl (clients.getLock());
+
+    for (auto* c : clients)
+        if (c->tag == tag && ! c->dead)
+            return c;
+
+    return nullptr;
+}
+
+juce::String Session::assetName (const juce::String& hash) const
+{
+    if (edit != nullptr)
+    {
+        auto name = song::getAssetName (*edit, hash);
+
+        if (name.isNotEmpty())
+            return name;
+    }
+
+    return "an audio file";
+}
+
+void Session::checkAssets()
+{
+    if (edit == nullptr || (mode != Mode::hosting && mode != Mode::joined))
+        return;
+
+    assets.dropStalledDownloads (15000);
+    const auto now = juce::Time::getMillisecondCounter();
+
+    for (auto& hash : song::getAssetHashes (*edit))
+    {
+        if (assets.has (hash) || assets.isDownloading (hash))
+            continue;
+
+        auto& last = lastAssetRequest[hash];
+
+        if (last != 0 && now - last < 3000)
+            continue;
+
+        last = now;
+
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "assetGet", nullptr);
+        msg.setProperty (ids::hash, hash, nullptr);
+
+        if (mode == Mode::joined && hostLink != nullptr)
+        {
+            hostLink->sendTree (msg);
+        }
+        else if (mode == Mode::hosting)
+        {
+            juce::Array<PeerConnection*> candidates;
+
+            {
+                const juce::ScopedLock sl (clients.getLock());
+
+                for (auto* c : clients)
+                    if (c->welcomed && ! c->dead)
+                        candidates.add (c);
+            }
+
+            if (! candidates.isEmpty())
+                candidates[assetRequestRound++ % candidates.size()]->sendTree (msg);
+        }
+    }
+}
+
+void Session::handleAssetMessage (PeerConnection& from, const juce::ValueTree& msg)
+{
+    const auto hash = msg[ids::hash].toString();
+
+    if (msg[ids::type].toString() == "assetGet")
+    {
+        if (assets.has (hash))
+            from.queueAssetSend (hash, assets.getFile (hash));
+        else if (mode == Mode::hosting)
+            assetWantedBy[hash].addIfNotAlreadyThere (from.tag);   // served once it arrives here
+
+        return;
+    }
+
+    const juce::int64 offset = msg["offset"], total = msg["total"];
+    const auto* data = msg["data"].getBinaryData();
+
+    if (data == nullptr)
+        return;
+
+    if (offset == 0 && ! assets.has (hash) && ! assets.isDownloading (hash))
+        log ("Receiving " + assetName (hash) + " (" + juce::File::descriptionOfSizeInBytes (total) + ")");
+
+    auto result = assets.receiveChunk (hash, offset, total, *data, from.tag);
+
+    if (result == AssetStore::ChunkResult::failed)
+    {
+        log (assetName (hash) + " arrived damaged; asking for it again");
+        lastAssetRequest[hash] = 0;
+    }
+    else if (result == AssetStore::ChunkResult::accepted && onRemoteChange
+              && (offset / PeerConnection::assetChunkBytes) % 16 == 0)
+    {
+        onRemoteChange();   // let the UI show progress now and then
+    }
+}
+
+void Session::handleAssetAdded (const juce::String& hash)
+{
+    log ("Received " + assetName (hash));
+
+    // Serve anyone who asked the host before it had the file.
+    auto it = assetWantedBy.find (hash);
+
+    if (it != assetWantedBy.end())
+    {
+        for (auto tag : it->second)
+            if (auto* link = findLink (tag))
+                link->queueAssetSend (hash, assets.getFile (hash));
+
+        assetWantedBy.erase (it);
+    }
+
+    if (compiler != nullptr)
+        compiler->compileNow();
+
+    if (onRemoteChange)
+        onRemoteChange();
 }
 
 } // namespace collab

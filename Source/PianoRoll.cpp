@@ -24,6 +24,13 @@ public:
     float xForBeat (double beat) const  { return keyboardWidth + (float) (beat / beatsPerPixel()); }
     static double snap (double beat)    { return std::floor (beat / stepBeats + 1.0e-6) * stepBeats; }
 
+    /** The selected channel, if it plays notes (audio channels have none). */
+    te::AudioTrack* getNoteChannel() const
+    {
+        auto* c = state.getSelectedChannel();
+        return c != nullptr && ! isAudioChannel (*c) ? c : nullptr;
+    }
+
     static bool isBlackKey (int pitch)
     {
         const int n = pitch % 12;
@@ -33,7 +40,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto pattern = state.getPattern();
-        auto* channel = state.getSelectedChannel();
+        auto* channel = getNoteChannel();
         const double length = getLengthBeats (pattern);
         const int numSteps = getNumSteps (pattern);
         const int playhead = state.getPlayheadStep();
@@ -118,7 +125,7 @@ public:
     juce::ValueTree noteAt (juce::Point<float> p) const
     {
         auto pattern = state.getPattern();
-        auto* channel = state.getSelectedChannel();
+        auto* channel = getNoteChannel();
 
         if (channel == nullptr || ! pattern.isValid())
             return {};
@@ -139,7 +146,7 @@ public:
         if (pitch == previewPitch)
             return;
 
-        if (auto* channel = state.getSelectedChannel())
+        if (auto* channel = getNoteChannel())
         {
             channel->playGuideNote (pitch, te::MidiChannel (1), 100, true, true, false);
             previewPitch = pitch;
@@ -149,7 +156,7 @@ public:
     void stopPreview()
     {
         if (previewPitch >= 0)
-            if (auto* channel = state.getSelectedChannel())
+            if (auto* channel = getNoteChannel())
                 channel->turnOffGuideNotes();
 
         previewPitch = -1;
@@ -168,7 +175,7 @@ public:
     {
         auto* edit = state.getEdit();
         auto pattern = state.getPattern();
-        auto* channel = state.getSelectedChannel();
+        auto* channel = getNoteChannel();
         dragNote = {};
 
         if (edit == nullptr || channel == nullptr || ! pattern.isValid())
@@ -383,10 +390,14 @@ void PianoRoll::refresh()
     auto* channel = state.getSelectedChannel();
     auto pattern = state.getPattern();
 
-    title.setText ("Piano roll - " + (channel != nullptr ? channel->getName() : juce::String ("no channel"))
-                     + " in " + pattern[ids::name].toString()
-                     + "   (click: add note, drag: move/longer, right-click: delete, ruler: set play start)",
-                   juce::dontSendNotification);
+    if (channel != nullptr && song::isAudioChannel (*channel))
+        title.setText ("Piano roll - " + channel->getName() + " is an audio channel: move and trim its clips in the playlist",
+                       juce::dontSendNotification);
+    else
+        title.setText ("Piano roll - " + (channel != nullptr ? channel->getName() : juce::String ("no channel"))
+                         + " in " + pattern[ids::name].toString()
+                         + "   (click: add note, drag: move/longer, right-click: delete, ruler: set play start)",
+                       juce::dontSendNotification);
     grid->repaint();
     ruler->repaint();
 }

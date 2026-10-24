@@ -8,14 +8,15 @@
     Pattern mode: for the pattern being played, song mode: for the whole
     playlist (every placed pattern, shifted to its position), it keeps one
     generated MIDI clip on every channel track (marked generated="1", which the sync layer treats as
-    local, so it is never sent). When patterns, notes or channels change it
+    local, so it is never sent). In song mode, audio channels get one generated
+    audio clip per audio clip in the playlist, reading this PC's copy of the file. When patterns, notes or channels change it
     updates those clips; if nothing differs it changes nothing.
 */
 class PatternCompiler  : private juce::ValueTree::Listener,
                          private juce::AsyncUpdater
 {
 public:
-    explicit PatternCompiler (te::Edit&);
+    PatternCompiler (te::Edit&, AssetStore&);
     ~PatternCompiler() override;
 
     /** Which pattern plays in pattern mode (empty = the first one). */
@@ -34,12 +35,17 @@ public:
 
     static te::MidiClip* findGeneratedClip (te::AudioTrack&);
 
+    /** The audio this PC plays for an audio channel, as "asset@start+duration>offset" strings (for tests). */
+    juce::StringArray describeCompiledAudio (te::AudioTrack&) const;
+
 private:
     te::Edit& edit;
+    AssetStore& assets;
     juce::String patternSid;
     bool compiling = false, songMode = false;
 
     void handleAsyncUpdate() override                       { compileNow(); }
+    void compileAudio (te::AudioTrack&);
     void changed (const juce::ValueTree&);
 
     void valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier&) override   { changed (v); }

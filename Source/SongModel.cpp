@@ -139,6 +139,13 @@ void removeClip (te::Edit& edit, juce::ValueTree clip)
 
 double getClipLength (te::Edit& edit, const juce::ValueTree& clip)
 {
+    if (isAudioClip (clip))
+    {
+        const double start = clip[ids::start];
+        const double endSeconds = beatsToSeconds (edit, start) + (double) clip[ids::duration];
+        return juce::jmax (stepBeats / 4.0, secondsToBeats (edit, endSeconds) - start);
+    }
+
     if (clip.hasProperty (ids::length))
         return juce::jmax (stepBeats, (double) clip[ids::length]);
 
@@ -253,10 +260,14 @@ void removeChannel (te::Edit& edit, te::AudioTrack& track)
 {
     auto id = getChannelID (track);
 
-    // Remove its notes from every pattern first.
+    // Remove its notes from every pattern, and its audio clips, first.
     for (auto& pattern : getPatterns (edit))
         for (auto& n : getNotes (pattern, id))
             pattern.removeChild (n, um (edit));
+
+    for (auto& c : getClips (edit))
+        if (c[ids::ch].toString() == id)
+            removeClip (edit, c);
 
     edit.deleteTrack (&track);
 }
@@ -268,6 +279,9 @@ static bool isMixerUtility (te::Plugin* p)
 
 te::Plugin* getInstrument (te::AudioTrack& track)
 {
+    if (isAudioChannel (track))
+        return nullptr;     // audio channels play their clips, they have no instrument
+
     for (auto* p : track.pluginList.getPlugins())
         if (! isMixerUtility (p))
             return p;
@@ -605,6 +619,130 @@ void moveEffect (te::Plugin& plugin, int direction)
         parent.moveChild (from, i, &plugin.edit.getUndoManager());
         return;
     }
+}
+
+//==============================================================================
+static const juce::String audioKind ("audio");
+
+bool isAudioChannel (const te::AudioTrack& track)
+{
+    return track.state[ids::kind].toString() == audioKind;
+}
+
+te::AudioTrack* addAudioChannel (te::Edit& edit, const juce::String& name)
+{
+    auto* track = addEmptyChannel (edit, name.isNotEmpty() ? name : juce::String ("Audio"));
+
+    if (track != nullptr)
+        track->state.setProperty (ids::kind, audioKind, um (edit));
+
+    return track;
+}
+
+static juce::ValueTree getAssetsTree (te::Edit& edit, bool create)
+{
+    auto model = getModel (edit);
+    auto assets = model.getChildWithName (ids::ASSETS);
+
+    if (! assets.isValid() && create)
+    {
+        assets = juce::ValueTree (ids::ASSETS);
+        model.appendChild (assets, um (edit));
+    }
+
+    return assets;
+}
+
+static juce::ValueTree findAsset (te::Edit& edit, const juce::String& hash)
+{
+    for (auto a : getAssetsTree (edit, false))
+        if (a[ids::sid].toString() == hash)
+            return a;
+
+    return {};
+}
+
+void addAsset (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& name)
+{
+    if (findAsset (edit, r.hash).isValid())
+        return;     // the same file is already in the song
+
+    juce::ValueTree a (ids::ASSET);
+    a.setProperty (ids::sid, r.hash, nullptr);
+    a.setProperty (ids::name, name, nullptr);
+    a.setProperty (ids::seconds, r.lengthSeconds, nullptr);
+    a.setProperty (ids::rate, r.sampleRate, nullptr);
+    a.setProperty (ids::numChannels, r.numChannels, nullptr);
+    a.setProperty (ids::bytes, r.bytes, nullptr);
+    getAssetsTree (edit, true).appendChild (a, um (edit));
+}
+
+juce::String getAssetName (te::Edit& edit, const juce::String& hash)
+{
+    return findAsset (edit, hash)[ids::name].toString();
+}
+
+double getAssetSeconds (te::Edit& edit, const juce::String& hash)
+{
+    return (double) findAsset (edit, hash).getProperty (ids::seconds, 0.0);
+}
+
+juce::StringArray getAssetHashes (te::Edit& edit)
+{
+    juce::StringArray hashes;
+
+    for (auto a : getAssetsTree (edit, false))
+        hashes.addIfNotAlreadyThere (a[ids::sid].toString());
+
+    for (auto& c : getClips (edit))
+        if (isAudioClip (c))
+            hashes.addIfNotAlreadyThere (c[ids::asset].toString());
+
+    hashes.removeEmptyStrings();
+    return hashes;
+}
+
+bool isAudioClip (const juce::ValueTree& clip)
+{
+    return clip[ids::kind].toString() == audioKind;
+}
+
+juce::ValueTree addAudioClip (te::Edit& edit, const juce::String& hash, const juce::String& channelID,
+                              int lane, double startBeat, double offsetSeconds, double durationSeconds)
+{
+    juce::ValueTree c (ids::PCLIP);
+    c.setProperty (ids::sid, newSyncID(), nullptr);
+    c.setProperty (ids::kind, audioKind, nullptr);
+    c.setProperty (ids::asset, hash, nullptr);
+    c.setProperty (ids::ch, channelID, nullptr);
+    c.setProperty (ids::lane, juce::jlimit (0, numLanes - 1, lane), nullptr);
+    c.setProperty (ids::start, juce::jmax (0.0, startBeat), nullptr);
+    c.setProperty (ids::offset, juce::jmax (0.0, offsetSeconds), nullptr);
+    c.setProperty (ids::duration, juce::jmax (0.01, durationSeconds), nullptr);
+    getPlaylist (edit, true).appendChild (c, um (edit));
+    return c;
+}
+
+juce::ValueTree addImportedAudio (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& name,
+                                  int lane, double startBeat)
+{
+    addAsset (edit, r, name);
+    auto* channel = addAudioChannel (edit, name.upToLastOccurrenceOf (".", false, false).substring (0, 40));
+
+    if (channel == nullptr)
+        return {};
+
+    return addAudioClip (edit, r.hash, getChannelID (*channel), lane, startBeat, 0.0, r.lengthSeconds);
+}
+
+double beatsToSeconds (te::Edit& edit, double beats)
+{
+    return edit.tempoSequence.toTime (te::BeatPosition::fromBeats (beats)).inSeconds();
+}
+
+double secondsToBeats (te::Edit& edit, double seconds)
+{
+    return edit.tempoSequence.toBeats (te::TimePosition::fromSeconds (seconds)).inBeats();
 }
 
 void createDefaultSong (te::Edit& edit)

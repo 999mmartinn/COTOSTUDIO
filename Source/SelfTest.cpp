@@ -35,12 +35,22 @@ public:
             if (a.startsWith ("--dump="))     dumpDir = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
         }
 
+        // Each simulated PC gets its own folder of audio files, like separate computers.
+        testRoot = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("synctest-selftest");
+        testRoot.deleteRecursively();   // leftovers from an earlier run (ignored if locked)
+        testRoot.createDirectory();
+
         for (auto* s : { &host, &peer1, &peer2 })
         {
             auto* label = s == &host ? "host" : (s == &peer1 ? "peer1" : "peer2");
             s->peerName = label;
             s->onLog = [label] (const juce::String& m) { std::cout << "    [" << label << "] " << m << std::endl; };
+            s->setAssetFolder (testRoot.getChildFile (juce::String (label) + "-assets"));
         }
+
+        toneFile  = writeTestWav (testRoot.getChildFile ("tone.wav"), 2.0, 440.0, false);
+        voiceFile = writeTestWav (testRoot.getChildFile ("voice.wav"), 1.0, 220.0, false);
+        bigFile   = writeTestWav (testRoot.getChildFile ("big.wav"), 60.0, 0.0, true);   // ~10 MB as FLAC
 
         buildSteps();
         startTimer (20);
@@ -59,6 +69,11 @@ private:
     juce::StringArray failures;
     juce::String deletedChannelID;
     bool loopRefused = false;
+
+    // Audio file sharing
+    juce::File testRoot, toneFile, voiceFile, bigFile;
+    juce::String toneHash, voiceHash, bigHash;
+    bool bigStillTransferring = false;
     static constexpr int port = 47811;
 
     te::Edit& H()  { return *host.getEdit(); }
@@ -138,6 +153,59 @@ private:
         return {};
     }
 
+    /** A 16-bit stereo WAV: a sine tone, or noise (noise hardly compresses, so it makes a big transfer). */
+    static juce::File writeTestWav (juce::File f, double seconds, double freq, bool noise)
+    {
+        f.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> out (f.createOutputStream());
+        auto writer = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}
+                                                    .withSampleRate (44100.0).withNumChannels (2).withBitsPerSample (16));
+
+        if (writer == nullptr)
+            return f;
+
+        const int n = (int) (seconds * 44100.0);
+        juce::AudioBuffer<float> buffer (2, n);
+        juce::Random random (1234);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float v = noise ? (random.nextFloat() * 2.0f - 1.0f) * 0.3f
+                                  : 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * freq * i / 44100.0);
+            buffer.setSample (0, i, v);
+            buffer.setSample (1, i, noise ? (random.nextFloat() * 2.0f - 1.0f) * 0.3f : v);   // noise: different per side
+        }
+
+        writer->writeFromAudioSampleBuffer (buffer, 0, n);
+        return f;
+    }
+
+    /** True if this PC has the file and its content matches the fingerprint. */
+    static bool hasVerified (collab::Session& s, const juce::String& hash)
+    {
+        auto& store = s.getAssetStore();
+        return hash.isNotEmpty() && store.has (hash) && AssetStore::fingerprint (store.getFile (hash)) == hash;
+    }
+
+    static juce::ValueTree audioClipOf (te::Edit& e, const juce::String& hash)
+    {
+        for (auto& c : song::getClips (e))
+            if (song::isAudioClip (c) && c[song::ids::asset].toString() == hash)
+                return c;
+
+        return {};
+    }
+
+    juce::StringArray compiledAudio (collab::Session& s, const juce::String& channelName)
+    {
+        if (auto* t = ch (*s.getEdit(), channelName))
+            if (auto* c = s.getCompiler())
+                return c->describeCompiledAudio (*t);
+
+        return {};
+    }
+
     bool allJoined() const
     {
         return peer1.getMode() == collab::Session::Mode::joined && peer2.getMode() == collab::Session::Mode::joined;
@@ -162,6 +230,11 @@ private:
             auto a = compiled (host, t->getName());
 
             if (a != compiled (peer1, t->getName()) || a != compiled (peer2, t->getName()))
+                return false;
+
+            auto au = compiledAudio (host, t->getName());
+
+            if (au != compiledAudio (peer1, t->getName()) || au != compiledAudio (peer2, t->getName()))
                 return false;
         }
 
@@ -693,6 +766,160 @@ private:
             },
             8000, 1600 });
 
+        //==============================================================================
+        // Audio clips and file sharing
+        steps.push_back ({ "Audio: host imports a 2 s WAV -> new audio channel + clip; the file reaches both peers (fingerprint checked)",
+            [this]
+            {
+                auto r = host.getAssetStore().importAudioFile (toneFile);
+                toneHash = r.hash;
+                std::cout << "    imported: " << r.hash << " " << r.bytes << " bytes, " << r.lengthSeconds << " s "
+                          << (r.error.isNotEmpty() ? r.error : juce::String()) << std::endl;
+
+                if (r.ok())
+                    song::addImportedAudio (H(), r, "tone.wav", 2, 0.0);
+            },
+            [this]
+            {
+                return toneHash.isNotEmpty()
+                    && everywhere ([this] (te::Edit& e)
+                       {
+                           auto* t = ch (e, "tone");
+                           return t != nullptr && song::isAudioChannel (*t) && audioClipOf (e, toneHash).isValid()
+                               && std::abs (song::getAssetSeconds (e, toneHash) - 2.0) < 0.01;
+                       })
+                    && hasVerified (peer1, toneHash) && hasVerified (peer2, toneHash) && hashesEqual();
+            },
+            15000 });
+
+        steps.push_back ({ "Audio: host switches to SONG mode -> the audio clip is put into playback the same way on every PC",
+            [this] { host.setSongMode (true); },
+            [this]
+            {
+                auto a = compiledAudio (host, "tone");
+                return peer1.isSongMode() && peer2.isSongMode() && a.size() == 1 && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Audio: the received file really plays (offline render of peer 1's audio channel)",
+            {},
+            [this]
+            {
+                const float peak = renderPeakOf (P1(), { "tone" });
+                std::cout << "    peer 1 audio channel peak " << peak << std::endl;
+                return peak > 0.2f;
+            } });
+
+        steps.push_back ({ "Audio: peer 2 imports a file -> the host fetches it from peer 2 and passes it on to peer 1",
+            [this]
+            {
+                auto r = peer2.getAssetStore().importAudioFile (voiceFile);
+                voiceHash = r.hash;
+
+                if (r.ok())
+                    song::addImportedAudio (P2(), r, "voice.wav", 3, 4.0);
+            },
+            [this]
+            {
+                return voiceHash.isNotEmpty()
+                    && everywhere ([this] (te::Edit& e) { return ch (e, "voice") != nullptr && audioClipOf (e, voiceHash).isValid(); })
+                    && hasVerified (host, voiceHash) && hasVerified (peer1, voiceHash)
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
+            15000 });
+
+        steps.push_back ({ "Audio: host imports a 60 s file (about 10 MB) with its upload capped at 3 MB/s; the peers start receiving it",
+            [this]
+            {
+                host.setUploadLimit (3 * 1024 * 1024);   // like a home internet upload
+
+                auto r = host.getAssetStore().importAudioFile (bigFile);
+                bigHash = r.hash;
+                std::cout << "    big file: " << juce::File::descriptionOfSizeInBytes (r.bytes) << " as FLAC" << std::endl;
+
+                if (r.ok())
+                    song::addImportedAudio (H(), r, "big.wav", 4, 8.0);
+            },
+            [this]
+            {
+                auto receiving = [this] (collab::Session& s) { return s.getAssetStore().isDownloading (bigHash); };
+                return bigHash.isNotEmpty() && receiving (peer1) && receiving (peer2);
+            },
+            15000 });
+
+        steps.push_back ({ "Audio: in the middle of that transfer, a step click still reaches both peers within 1.5 s",
+            [this]
+            {
+                bigStillTransferring = peer1.getAssetStore().isDownloading (bigHash) && peer2.getAssetStore().isDownloading (bigHash);
+                song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Hat"), 9, true);
+            },
+            [this]
+            {
+                if (! (hasStep (P1(), "Pattern 1", "Hat", 9) && hasStep (P2(), "Pattern 1", "Hat", 9)))
+                    return false;
+
+                // The step must have overtaken the file: both are still receiving it.
+                const double p1 = peer1.getAssetStore().getProgress (bigHash), p2 = peer2.getAssetStore().getProgress (bigHash);
+                std::cout << "    step arrived while the file was at " << juce::roundToInt (p1 * 100) << "% / "
+                          << juce::roundToInt (p2 * 100) << "% on the peers" << std::endl;
+                return bigStillTransferring && p1 < 1.0 && p2 < 1.0;
+            },
+            1500 });
+
+        steps.push_back ({ "Audio: the 60 s file arrives complete and verified on both peers",
+            {},
+            [this] { return hasVerified (peer1, bigHash) && hasVerified (peer2, bigHash) && compiledEqualEverywhere(); },
+            40000 });
+
+        steps.push_back ({ "Audio: peer 1 moves + trims the start of the tone clip, host trims the end of the voice clip -> same everywhere",
+            [this]
+            {
+                host.setUploadLimit (0);
+                auto* um1 = &P1().getUndoManager();
+                auto tone = audioClipOf (P1(), toneHash);
+                tone.setProperty (song::ids::start, 2.0, um1);
+                tone.setProperty (song::ids::offset, 0.5, um1);
+                tone.setProperty (song::ids::duration, 1.0, um1);
+
+                audioClipOf (H(), voiceHash).setProperty (song::ids::duration, 0.5, &H().getUndoManager());
+            },
+            [this]
+            {
+                return hashesEqual() && compiledEqualEverywhere()
+                    && everywhere ([this] (te::Edit& e)
+                       {
+                           auto tone = audioClipOf (e, toneHash);
+                           auto voice = audioClipOf (e, voiceHash);
+                           return std::abs ((double) tone[song::ids::start] - 2.0) < 1.0e-9
+                               && std::abs ((double) tone[song::ids::offset] - 0.5) < 1.0e-9
+                               && std::abs ((double) tone[song::ids::duration] - 1.0) < 1.0e-9
+                               && std::abs ((double) voice[song::ids::duration] - 0.5) < 1.0e-9;
+                       })
+                    && compiledAudio (peer2, "tone").joinIntoString (",").contains (">0.500");
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Audio: a damaged transfer is rejected (fingerprint check) and never used",
+            {},
+            [this]
+            {
+                auto& store = peer1.getAssetStore();
+                const juce::String fake ("0123456789abcdef0123456789abcdef");
+                juce::MemoryBlock junk ("not the right audio", 19);
+                const bool ignoredMidway = store.receiveChunk (fake, 5, 19, junk, 999) == AssetStore::ChunkResult::ignored;
+                const bool rejected = store.receiveChunk (fake, 0, 19, junk, 999) == AssetStore::ChunkResult::failed;
+                return ignoredMidway && rejected && ! store.has (fake) && ! store.isDownloading (fake);
+            } });
+
+        steps.push_back ({ "Audio: host deletes the voice channel -> it and its clip are gone everywhere",
+            [this] { song::removeChannel (H(), *ch (H(), "voice")); },
+            [this]
+            {
+                return hashesEqual() && compiledEqualEverywhere()
+                    && everywhere ([this] (te::Edit& e) { return ch (e, "voice") == nullptr && ! audioClipOf (e, voiceHash).isValid(); });
+            },
+            8000, 600 });
+
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
             [this]
             {
@@ -720,14 +947,31 @@ private:
             },
             8000, 1600 });
 
-        steps.push_back ({ "Peer 1 leaves; host keeps editing with peer 2",
-            [this] { peer1.leave(); song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Hat"), 15, true); },
+        steps.push_back ({ "Peer 1 leaves (and loses its audio files); host keeps editing with peer 2",
+            [this]
+            {
+                peer1.leave();
+                peer1.setAssetFolder (testRoot.getChildFile ("peer1-new-pc-assets"));   // like a different PC
+                song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Hat"), 15, true);
+            },
             [this] { return hasStep (P2(), "Pattern 1", "Hat", 15) && host.getNumConnectedPeers() == 1; },
             8000, 1600 });
 
         steps.push_back ({ "Peer 1 rejoins and gets the latest song",
             [this] { peer1.join ("127.0.0.1", port); },
             [this] { return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15); } });
+
+        steps.push_back ({ "Audio: the rejoined peer (no files) receives every audio file in the song",
+            {},
+            [this]
+            {
+                for (auto& h : song::getAssetHashes (P1()))
+                    if (! hasVerified (peer1, h))
+                        return false;
+
+                return hasVerified (peer1, toneHash) && hasVerified (peer1, bigHash) && compiledEqualEverywhere();
+            },
+            40000 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

@@ -17,10 +17,35 @@ public:
 };
 
 //==============================================================================
-class Playlist::Lanes  : public juce::Component
+class Playlist::Lanes  : public juce::Component,
+                        public juce::FileDragAndDropTarget,
+                        public juce::ChangeListener
 {
 public:
     Lanes (Playlist& p) : owner (p), state (p.state) {}
+
+    // Audio files dragged in from Explorer
+    bool isInterestedInFileDrag (const juce::StringArray& files) override
+    {
+        for (auto& f : files)
+            if (juce::File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;ogg"))
+                return true;
+
+        return false;
+    }
+
+    void filesDropped (const juce::StringArray& files, int x, int y) override
+    {
+        juce::Array<juce::File> list;
+
+        for (auto& f : files)
+            if (juce::File (f).hasFileExtension ("wav;aif;aiff;flac;mp3;ogg"))
+                list.add (juce::File (f));
+
+        owner.importFiles (list, laneAtY ((float) y), snap (beatAtX ((float) x)));
+    }
+
+    void changeListenerCallback (juce::ChangeBroadcaster*) override   { repaint(); }   // a waveform finished loading
 
     float xForBeat (double beat) const   { return (float) (beat * owner.pixelsPerBeat); }
     double beatAtX (float x) const       { return juce::jmax (0.0, (double) x / owner.pixelsPerBeat); }
@@ -87,11 +112,18 @@ public:
 
         for (auto& clip : getClips (*edit))
         {
-            auto pattern = findPattern (*edit, clip[ids::pattern].toString());
             auto r = clipBounds (clip).reduced (0.5f, 1.5f);
 
             if (! r.intersects (visible.toFloat()))
                 continue;
+
+            if (isAudioClip (clip))
+            {
+                paintAudioClip (g, *edit, clip, r);
+                continue;
+            }
+
+            auto pattern = findPattern (*edit, clip[ids::pattern].toString());
 
             const auto colour = pattern.isValid() ? patternColour (pattern) : juce::Colours::grey;
             g.setColour (colour.withAlpha (0.35f));
@@ -151,10 +183,65 @@ public:
         }
     }
 
+    void paintAudioClip (juce::Graphics& g, te::Edit& edit, const juce::ValueTree& clip, juce::Rectangle<float> r)
+    {
+        const auto hash = clip[ids::asset].toString();
+        const auto channelID = clip[ids::ch].toString();
+        auto channels = getChannels (edit);
+        int index = 0;
+
+        for (int i = 0; i < channels.size(); ++i)
+            if (getChannelID (*channels[i]) == channelID)
+                index = i;
+
+        const auto colour = EditorState::channelColour (index);
+        const bool selected = state.selectedChannel == channelID;
+
+        g.setColour (colour.withAlpha (0.25f));
+        g.fillRoundedRectangle (r, 3.0f);
+        g.setColour (colour);
+        g.drawRoundedRectangle (r, 3.0f, selected ? 2.0f : 1.0f);
+
+        auto& store = state.session.getAssetStore();
+        auto body = r.reduced (2.0f, 2.0f);
+
+        if (store.has (hash))
+        {
+            if (auto* thumb = owner.getThumbnail (hash))
+            {
+                // Left channel at full clip height: easier to read than two thin strips.
+                const double offset = clip[ids::offset], duration = clip[ids::duration];
+                g.setColour (colour.brighter (0.4f).withAlpha (0.9f));
+                thumb->drawChannel (g, body.toNearestInt(), offset, offset + duration, 0, 1.0f);
+            }
+        }
+        else
+        {
+            const double progress = store.getProgress (hash);
+            g.setColour (juce::Colours::white.withAlpha (0.7f));
+            g.setFont (11.0f);
+            g.drawText (progress >= 0.0 ? "receiving " + juce::String (juce::roundToInt (progress * 100.0)) + "%"
+                                        : juce::String ("waiting for the file..."),
+                        body.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredLeft, true);
+        }
+
+        // Name on a small dark tab so it stays readable over the waveform.
+        const auto name = getAssetName (edit, hash);
+        juce::Font font (juce::FontOptions (11.0f));
+        const float tabWidth = juce::jmin (r.getWidth() - 2.0f, juce::GlyphArrangement::getStringWidth (font, name) + 12.0f);
+        auto tab = juce::Rectangle<float> (r.getX() + 1.0f, r.getY() + 1.0f, tabWidth, 12.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.45f));
+        g.fillRoundedRectangle (tab, 2.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (font);
+        g.drawText (name, tab.reduced (4.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, true);
+    }
+
     void mouseMove (const juce::MouseEvent& e) override
     {
         auto c = clipAt (e.position);
-        const bool onEdge = c.isValid() && e.position.x > clipBounds (c).getRight() - 6.0f;
+        const bool onEdge = c.isValid() && (e.position.x > clipBounds (c).getRight() - 6.0f
+                                             || (isAudioClip (c) && e.position.x < clipBounds (c).getX() + 6.0f));
         setMouseCursor (onEdge ? juce::MouseCursor::LeftRightResizeCursor
                                : c.isValid() ? juce::MouseCursor::DraggingHandCursor
                                              : juce::MouseCursor::NormalCursor);
@@ -184,9 +271,14 @@ public:
         if (hit.isValid())
         {
             dragClip = hit;
-            dragMode = e.position.x > clipBounds (hit).getRight() - 6.0f ? DragMode::resize : DragMode::move;
+            const auto bounds = clipBounds (hit);
+            dragMode = e.position.x > bounds.getRight() - 6.0f ? DragMode::resize
+                     : (isAudioClip (hit) && e.position.x < bounds.getX() + 6.0f) ? DragMode::trimStart
+                     : DragMode::move;
             grabStart = hit[ids::start];
             grabBeat = beatAtX (e.position.x);
+            grabOffset = hit[ids::offset];
+            grabDuration = hit[ids::duration];
             clickedExisting = true;
         }
         else
@@ -227,6 +319,38 @@ public:
             if (newLane != (int) dragClip[ids::lane])
                 dragClip.setProperty (ids::lane, newLane, um);
         }
+        else if (isAudioClip (dragClip))
+        {
+            // Audio clips are trimmed in seconds, so tempo changes never stretch them.
+            const double fileSeconds = juce::jmax (0.05, getAssetSeconds (*edit, dragClip[ids::asset].toString()));
+            const double startSeconds = beatsToSeconds (*edit, grabStart);
+
+            if (dragMode == DragMode::resize)
+            {
+                const double endBeat = snap (beatAtX (e.position.x) + state.playlistSnapBeats * 0.5);
+                const double duration = juce::jlimit (0.05, juce::jmax (0.05, fileSeconds - grabOffset), beatsToSeconds (*edit, endBeat) - startSeconds);
+
+                if (std::abs (duration - (double) dragClip[ids::duration]) > 1.0e-6)
+                    dragClip.setProperty (ids::duration, duration, um);
+            }
+            else   // trimStart: move the left edge, keeping the right edge where it is
+            {
+                const double endSeconds = startSeconds + grabDuration;
+                double newStartSeconds = beatsToSeconds (*edit, snap (beatAtX (e.position.x) + state.playlistSnapBeats * 0.5));
+                newStartSeconds = juce::jlimit (startSeconds - grabOffset, endSeconds - 0.05, newStartSeconds);
+                newStartSeconds = juce::jmax (0.0, newStartSeconds);
+
+                const double newOffset = grabOffset + (newStartSeconds - startSeconds);
+                const double newStart = secondsToBeats (*edit, newStartSeconds);
+
+                if (std::abs (newStart - (double) dragClip[ids::start]) > 1.0e-6)
+                {
+                    dragClip.setProperty (ids::start, newStart, um);
+                    dragClip.setProperty (ids::offset, juce::jmax (0.0, newOffset), um);
+                    dragClip.setProperty (ids::duration, endSeconds - newStartSeconds, um);
+                }
+            }
+        }
         else
         {
             const double start = dragClip[ids::start];
@@ -241,10 +365,14 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
-        // A click (no drag) on a clip opens its pattern for editing.
+        // A click (no drag) on a clip opens its pattern for editing, or selects
+        // an audio clip's channel.
         if (dragClip.isValid() && clickedExisting && ! moved)
         {
-            state.viewedPattern = dragClip[ids::pattern].toString();
+            if (isAudioClip (dragClip))
+                state.selectedChannel = dragClip[ids::ch].toString();
+            else
+                state.viewedPattern = dragClip[ids::pattern].toString();
 
             if (state.onSelectionChanged)
                 state.onSelectionChanged();
@@ -265,8 +393,8 @@ private:
     Playlist& owner;
     EditorState& state;
     juce::ValueTree dragClip;
-    enum class DragMode { move, resize } dragMode = DragMode::move;
-    double grabStart = 0.0, grabBeat = 0.0;
+    enum class DragMode { move, resize, trimStart } dragMode = DragMode::move;
+    double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0;
     bool moved = false, clickedExisting = false;
 };
 
@@ -382,6 +510,42 @@ Playlist::Playlist (EditorState& s) : state (s)
     title.setFont (juce::FontOptions (13.0f));
     addAndMakeVisible (title);
 
+    formats.registerBasicFormats();
+
+    importButton.setTooltip ("Add audio files (WAV, MP3, FLAC...) to the song. You can also drag them onto a lane");
+    importButton.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::canSelectMultipleItems,
+                              [this] (const juce::FileChooser& fc)
+        {
+            auto* edit = state.getEdit();
+
+            if (edit == nullptr || fc.getResults().isEmpty())
+                return;
+
+            // First lane that is free at the song start marker.
+            int lane = 0;
+
+            for (; lane < numLanes - 1; ++lane)
+            {
+                bool busy = false;
+
+                for (auto& c : getClips (*edit))
+                    if ((int) c[ids::lane] == lane && (double) c[ids::start] <= state.songStartBeat
+                         && (double) c[ids::start] + getClipLength (*edit, c) > state.songStartBeat)
+                        busy = true;
+
+                if (! busy)
+                    break;
+            }
+
+            importFiles (fc.getResults(), lane, state.songStartBeat);
+        });
+    };
+    addAndMakeVisible (importButton);
+
     snapBox.addItem ("Snap: bar", 1);
     snapBox.addItem ("Snap: beat", 2);
     snapBox.addItem ("Snap: step", 3);
@@ -398,12 +562,79 @@ Playlist::Playlist (EditorState& s) : state (s)
 Playlist::~Playlist()
 {
     stopTimer();
+    importPool.removeAllJobs (true, 30000);
+
+    for (auto& [hash, thumb] : thumbnails)
+        thumb->removeAllChangeListeners();
+}
+
+juce::AudioThumbnail* Playlist::getThumbnail (const juce::String& hash)
+{
+    auto it = thumbnails.find (hash);
+
+    if (it != thumbnails.end())
+        return it->second.get();
+
+    auto& store = state.session.getAssetStore();
+
+    if (! store.has (hash))
+        return nullptr;
+
+    auto thumb = std::make_unique<juce::AudioThumbnail> (256, formats, thumbCache);
+    thumb->setSource (new juce::FileInputSource (store.getFile (hash)));
+    thumb->addChangeListener (lanes.get());
+    return thumbnails.emplace (hash, std::move (thumb)).first->second.get();
+}
+
+void Playlist::importFiles (const juce::Array<juce::File>& files, int lane, double startBeat)
+{
+    for (int i = 0; i < files.size(); ++i)
+    {
+        const auto file = files[i];
+        const int targetLane = juce::jmin (numLanes - 1, lane + i);
+        auto* store = &state.session.getAssetStore();
+        state.session.logMessage ("Importing " + file.getFileName() + "...");
+
+        juce::Component::SafePointer<Playlist> safePlaylist (this);   // made here, on the message thread
+
+        importPool.addJob ([safePlaylist, file, targetLane, startBeat, store]
+        {
+            auto result = store->importAudioFile (file);   // converts to FLAC (background thread)
+
+            juce::MessageManager::callAsync ([safe = safePlaylist, result, file, targetLane, startBeat]
+            {
+                if (safe == nullptr)
+                    return;
+
+                auto* edit = safe->state.getEdit();
+
+                if (! result.ok() || edit == nullptr)
+                {
+                    safe->state.session.logMessage (result.error.isNotEmpty() ? result.error : "Import failed");
+                    return;
+                }
+
+                safe->state.beginAction();
+                auto clip = addImportedAudio (*edit, result, file.getFileName(), targetLane, startBeat);
+
+                if (clip.isValid())
+                {
+                    safe->state.selectedChannel = clip[ids::ch].toString();
+                    safe->state.session.logMessage ("Added " + file.getFileName() + " ("
+                                                     + juce::String (result.lengthSeconds, 1) + " s) - it is being sent to the others");
+
+                    if (safe->state.onSelectionChanged)
+                        safe->state.onSelectionChanged();
+                }
+            });
+        });
+    }
 }
 
 void Playlist::refresh()
 {
     title.setText ("Playlist - click to place \"" + state.getPattern()[ids::name].toString()
-                     + "\", drag to move, drag right edge to resize, right-click to delete, click a clip to edit it, Ctrl+wheel to zoom",
+                     + "\", drag to move, drag edges to resize, right-click to delete, drop audio files here, Ctrl+wheel to zoom",
                    juce::dontSendNotification);
     layoutContent();
     lanes->repaint();
@@ -421,6 +652,8 @@ void Playlist::resized()
     auto r = getLocalBounds().reduced (4);
     auto top = r.removeFromTop (22);
     snapBox.setBounds (top.removeFromRight (110));
+    top.removeFromRight (6);
+    importButton.setBounds (top.removeFromRight (120));
     title.setBounds (top);
     r.removeFromTop (2);
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "EditSync.h"
+#include "AssetStore.h"
+#include <deque>
 
 class PatternCompiler;
 class MixerRouter;
@@ -11,23 +13,48 @@ namespace collab
 class Session;
 
 //==============================================================================
-/** One TCP link to another peer (length-prefixed binary ValueTree messages). */
-class PeerConnection  : public juce::InterprocessConnection
+/**
+    One TCP link to another peer (length-prefixed binary ValueTree messages).
+
+    Everything is sent from a background thread with two queues: song edits
+    and other small messages always go first, audio-file chunks (64 KB) fill
+    the gaps. So a big upload never delays edits or blocks the window.
+*/
+class PeerConnection  : public juce::InterprocessConnection,
+                        private juce::Thread
 {
 public:
     explicit PeerConnection (Session& s);
     ~PeerConnection() override;
 
+    /** Queues a message (any thread). */
     void sendTree (const juce::ValueTree& msg);
+
+    /** Queues an audio file to be sent in chunks (once per hash). */
+    void queueAssetSend (const juce::String& hash, const juce::File& file);
 
     Session& session;
     int peerIndex = -1;          // assigned by the host
     juce::String peerName;
     int lastSeqApplied = 0;      // host side: last op batch received from this peer
     bool welcomed = false;
-    bool dead = false;
+    std::atomic<bool> dead { false };
+    const int tag;               // identifies this link for transfers
+
+    static constexpr int assetChunkBytes = 64 * 1024;
 
 private:
+    struct AssetJob { juce::String hash; juce::File file; juce::int64 sent = 0, total = 0; };
+
+    juce::CriticalSection queueLock;
+    std::deque<juce::MemoryBlock> messages;
+    std::deque<AssetJob> assetJobs;
+    std::unique_ptr<juce::FileInputStream> currentAsset;
+    juce::uint32 nextChunkTime = 0;   // for the upload speed limit
+
+    void run() override;
+    bool sendNextAssetChunk();
+
     void connectionMade() override;
     void connectionLost() override;
     void messageReceived (const juce::MemoryBlock&) override;
@@ -79,6 +106,16 @@ public:
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
     PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
+
+    /** This PC's shared audio files. Missing ones are fetched automatically. */
+    AssetStore& getAssetStore() noexcept           { return assets; }
+    void setAssetFolder (const juce::File& folder) { assets.setFolder (folder); }
+
+    /** Caps how fast each link uploads audio files (bytes per second, 0 = no limit).
+        The self-test uses it to imitate a home internet upload. */
+    void setUploadLimit (int bytesPerSecond)       { uploadLimit = juce::jmax (0, bytesPerSecond); }
+    int getUploadLimit() const noexcept            { return uploadLimit; }
+    void logMessage (const juce::String& s)        { log (s); }
     MixerRouter* getRouter() const noexcept        { return router.get(); }
 
     std::function<void()> onEditAboutToBeReplaced;
@@ -90,7 +127,7 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 4;
+    static constexpr int protocolVersion = 5;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -104,6 +141,8 @@ private:
     class Server;
 
     te::Engine& engine;
+    AssetStore assets;
+    std::atomic<int> uploadLimit { 0 };
     std::unique_ptr<te::Edit> edit;
     std::unique_ptr<EditSync> editSync;
     std::unique_ptr<PatternCompiler> compiler;
@@ -120,6 +159,9 @@ private:
     bool lastHashMatched = true;
     juce::uint32 lastResyncRequestTime = 0;
     juce::ValueTree pendingOps { ids::MSG };
+    int tick = 0, assetRequestRound = 0;
+    std::map<juce::String, juce::uint32> lastAssetRequest;
+    std::map<juce::String, juce::Array<int>> assetWantedBy;   // host: links waiting for a file it doesn't have yet
 
     void installEdit (std::unique_ptr<te::Edit>);
     void attachSync();
@@ -133,6 +175,11 @@ private:
     void loadSnapshot (const juce::ValueTree& msg);
     void log (const juce::String&);
     void statusChanged();
+    void checkAssets();
+    void handleAssetAdded (const juce::String& hash);
+    void handleAssetMessage (PeerConnection&, const juce::ValueTree&);
+    PeerConnection* findLink (int tag) const;
+    juce::String assetName (const juce::String& hash) const;
     void timerCallback() override;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (Session)

@@ -5,6 +5,25 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 4a – Audio clips + file sharing (v0.5)**
+* **Drop audio files** (WAV, MP3, FLAC, AIFF, OGG) from Explorer onto a playlist
+  lane, or press **Import audio...**. Each file gets its own **audio channel**
+  (in the channel rack, routable to a mixer insert like any channel) and a clip
+  in the playlist showing its waveform. Audio clips play in **SONG** mode.
+* Drag an audio clip to move it; drag its **left or right edge to trim** it.
+  Right-click deletes it. Clicking it selects its channel. Trimming is in
+  seconds, so changing the tempo never stretches your audio.
+* **The file is sent to everyone automatically** in the background (as FLAC,
+  lossless and about half the size of WAV). Until it arrives, others see
+  "receiving NN%" or "waiting for the file..." on the clip; it starts playing
+  as soon as it's there. Song edits keep flowing while a big file transfers.
+* Every file is identified by a fingerprint of its content, and checked when
+  it arrives, so a broken transfer is never used (it's simply asked for again).
+  Someone who joins later receives all the song's files.
+* Files are kept in `%APPDATA%\SyncTest\Assets` on each PC.
+* Copies from v0.4 and older can't join a v0.5 host (and vice versa): everyone
+  needs the same version.
+
 **Step 3 – Mixer (v0.4)**
 * Bottom panel has two tabs: **Piano roll (F7)** and **Mixer (F9)**.
 * **Master** strip plus **inserts** (+ Insert): volume fader, dB readout, pan,
@@ -113,7 +132,10 @@ Join `127.0.0.1` in the other.
   (never sent), so every PC plays exactly the same notes.
 * Routing is stored by each insert's permanent ID and applied on every PC, so
   adding or deleting tracks never sends audio to the wrong insert.
-* Not yet: solo and send knobs, recording/audio clips, saving projects, chat.
+* Audio files are sent person to person through the host. A joiner's file goes
+  to the host first, then to the others, so the host's upload speed matters for
+  big files (a 3-minute stereo recording is roughly 15-30 MB as FLAC).
+* Not yet: recording (next step), solo and send knobs, saving projects, chat.
   Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 
@@ -123,7 +145,9 @@ Join `127.0.0.1` in the other.
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, Play/Stop,
-leaving and rejoining. The Windows build on GitHub runs this automatically.
+the playlist, the mixer, audio file sharing (each simulated PC has its own
+folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no
+files), leaving and rejoining. The Windows build on GitHub runs this automatically.
 
 ## Building
 

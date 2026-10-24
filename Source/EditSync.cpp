@@ -14,6 +14,7 @@ static const juce::Identifier localNodeTypes[] =
     "VIEWSTATE",
     "TRANSPORT",                    // playhead, loop markers etc. (transport is synced separately)
     "OUTPUTDEVICES",                // a track's output device/route: per PC (applied from routeTo by MixerRouter)
+    "AUDIOCLIP",                    // engine audio clips: built on each PC from the playlist (PatternCompiler)
 };
 
 // Properties that are per-machine wherever they appear.
@@ -89,7 +90,7 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
     // The order of notes inside a pattern (ours: PATTERN, the engine's: SEQUENCE) doesn't change the music, and two
     // people adding notes at the same moment can end up with them in a different
     // order: don't count that as a difference.
-    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST")))
+    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")))
     {
         struct ByKey
         {
@@ -186,7 +187,7 @@ static int actualIndexForSynced (const juce::ValueTree& parent, int syncedIndex)
 
 bool EditSync::needsSyncID (const juce::ValueTree& child)
 {
-    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX", "PATTERN", "PNOTE", "PCLIP" };
+    static const juce::Identifier listItems[] = { "NOTE", "CONTROL", "SYSEX", "PATTERN", "PNOTE", "PCLIP", "ASSET" };
 
     if (child.hasProperty (te::IDs::id) || child.hasProperty (ids::sid))
         return false;
