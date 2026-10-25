@@ -331,7 +331,17 @@ public:
         }
         else
         {
-            info << (uses == 0 ? juce::String ("not in the playlist") : juce::String (uses) + (uses == 1 ? " clip" : " clips"));
+            // Where it's used: playlist clips, and sampler channels in the rack.
+            const auto samplers = getSamplerChannelsUsing (*edit, hash);
+            juce::StringArray where;
+
+            if (uses > 0)
+                where.add (juce::String (uses) + (uses == 1 ? " clip" : " clips"));
+
+            if (! samplers.isEmpty())
+                where.add ("rack: " + samplers.joinIntoString (", "));
+
+            info << (where.isEmpty() ? juce::String ("not used") : where.joinIntoString (", "));
         }
 
         g.setColour (juce::Colours::white.withAlpha (0.5f));
@@ -421,8 +431,16 @@ private:
         juce::PopupMenu m;
         m.addItem (1, "Rename...");
         m.addSeparator();
-        m.addItem (2, "Delete from project" + (uses > 0 ? " (and its " + juce::String (uses) + (uses == 1 ? " clip)" : " clips)")
-                                                        : juce::String()));
+        const int samplers = getSamplerChannelsUsing (*edit, hash).size();
+        juce::StringArray what;
+
+        if (uses > 0)
+            what.add (juce::String (uses) + (uses == 1 ? " clip" : " clips"));
+
+        if (samplers > 0)
+            what.add (juce::String (samplers) + (samplers == 1 ? " sampler channel" : " sampler channels"));
+
+        m.addItem (2, "Delete from project" + (what.isEmpty() ? juce::String() : " (and its " + what.joinIntoString (", ") + ")"));
 
         m.showMenuAsync (juce::PopupMenu::Options(),
                          [this, hash, safe = juce::Component::SafePointer<AudioList> (this)] (int r)

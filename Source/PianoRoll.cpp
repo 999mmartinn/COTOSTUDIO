@@ -1,9 +1,12 @@
 #include "PianoRoll.h"
+#include "FileImport.h"
 
 using namespace song;
 
 //==============================================================================
-class PianoRoll::Grid  : public juce::Component
+class PianoRoll::Grid  : public juce::Component,
+                        public juce::DragAndDropTarget,
+                        public juce::FileDragAndDropTarget
 {
 public:
     explicit Grid (EditorState& s) : state (s)
@@ -277,6 +280,101 @@ public:
         dragNote = {};
         stopPreview();
     }
+
+    //==============================================================================
+    // A MIDI file dropped here (sound browser or Explorer): its notes replace the
+    // selected channel's notes in this pattern.
+    bool isInterestedInDragSource (const SourceDetails& d) override
+    {
+        return fileimport::isMidiFile (fileimport::draggedFile (d.description));
+    }
+
+    void itemDragEnter (const SourceDetails& d) override   { setMidiDrop (fileimport::draggedFile (d.description)); }
+    void itemDragExit (const SourceDetails&) override      { setMidiDrop ({}); }
+
+    void itemDropped (const SourceDetails& d) override
+    {
+        setMidiDrop ({});
+        importMidi (fileimport::draggedFile (d.description));
+    }
+
+    bool isInterestedInFileDrag (const juce::StringArray& files) override
+    {
+        for (auto& f : files)
+            if (fileimport::isMidiFile (juce::File (f)))
+                return true;
+
+        return false;
+    }
+
+    void fileDragEnter (const juce::StringArray& files, int, int) override
+    {
+        for (auto& f : files)
+            if (fileimport::isMidiFile (juce::File (f)))
+                setMidiDrop (juce::File (f));
+    }
+
+    void fileDragExit (const juce::StringArray&) override  { setMidiDrop ({}); }
+
+    void filesDropped (const juce::StringArray& files, int, int) override
+    {
+        setMidiDrop ({});
+
+        for (auto& f : files)
+            if (fileimport::isMidiFile (juce::File (f)))
+            {
+                importMidi (juce::File (f));
+                return;   // one file per channel
+            }
+    }
+
+    void setMidiDrop (const juce::File& f)
+    {
+        midiDrop = f;
+        repaint();
+    }
+
+    void importMidi (const juce::File& f)
+    {
+        auto* edit = state.getEdit();
+        auto* channel = getNoteChannel();
+
+        if (edit == nullptr)
+            return;
+
+        state.beginAction();
+        auto channelID = channel != nullptr ? getChannelID (*channel) : juce::String();
+        state.session.logMessage (fileimport::applyMidiFile (*edit, state.getPattern(), f, channelID));
+        state.selectedChannel = channelID;
+
+        if (state.onSelectionChanged)
+            state.onSelectionChanged();
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (midiDrop == juce::File())
+            return;
+
+        auto area = getLocalBounds();
+
+        if (auto* vp = findParentComponentOfClass<juce::Viewport>())
+            area = vp->getViewArea();
+
+        auto* channel = getNoteChannel();
+        const auto text = "Notes from " + midiDrop.getFileName() + " into "
+                           + (channel != nullptr ? channel->getName() : juce::String ("a new Synth channel"));
+        const auto colour = juce::Colour (0xff4fb0f0);
+        g.setColour (colour.withAlpha (0.12f));
+        g.fillRect (area);
+        g.setColour (colour);
+        g.drawRect (area, 2);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.drawText (text, area.reduced (12), juce::Justification::centred, true);
+    }
+
+    juce::File midiDrop;
 
     EditorState& state;
     juce::ValueTree dragNote;

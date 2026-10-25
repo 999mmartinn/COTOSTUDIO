@@ -5,6 +5,42 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 9 – Your sounds: your own folders of kits, loops and MIDI (v0.12)**
+* A new column on the far left, **Sounds** (button in the top bar, or
+  **Alt+F8**), like FL's browser. **+ Folder** adds your Beats folder, a sample
+  pack, anything: open folders, scroll through your kits.
+* It is **yours only**: the list of folders is saved on your PC, nobody else
+  sees it, and browsing or listening never changes the song.
+* **Click a sound to hear it** (only you hear it, through your sound card, even
+  while the song plays). The arrow keys move to the next sound and play it. The
+  bottom of the column shows its waveform, length and format, with a play/stop
+  button and a preview volume.
+* **Search** finds sounds and MIDI by name in all your folders.
+* **Drag a sound into the song** and only then is it shared (sent to everyone
+  as before):
+  * onto the **channel rack** → a new **sampler channel** named after the file.
+    It plays the sound on its steps and piano-roll notes, like FL's sampler: the
+    whole sound plays however short the step is; C5 is its normal pitch.
+    Right-click the channel for **Cut itself** (a new hit stops the last one -
+    for 808s), Tune/Level (Open instrument) and **Replace the sound**;
+  * onto a **sampler channel** → that channel gets the new sound (same steps);
+  * onto the **playlist** → an audio clip, as with Import audio;
+  * a **MIDI file** onto a channel or the piano roll → its notes replace that
+    channel's notes in the pattern you're viewing (the pattern grows to fit, up
+    to 8 bars); onto empty rack space → a new Synth channel with the notes.
+  * Dragging files from Windows Explorer works the same way.
+* Right-click a sound for the same actions without dragging, or **Show in
+  Explorer**; right-click a folder you added to **Refresh** it or remove it from
+  the list (the folder itself stays on your PC).
+* **+ Channel → Sampler: choose a sound file...** makes a sampler channel too.
+* Deleting a file from the project (Audio tab) also removes the sampler
+  channels that play it (Ctrl+Z brings them back).
+* Fixed: two people changing *different* things of the same channel or plugin
+  at the same moment (one renames a channel while another mutes it, one moves
+  a channel's volume while another moves its pan) could undo one of the two
+  changes. Now only what changed travels, so both stay.
+* Everyone needs v0.12 (v0.11 copies can't join a v0.12 host).
+
 **Step 8b – Automation clips (v0.11)**
 * **Right-click a volume or pan knob** (channel rack or mixer, master too) and
   choose **Create automation clip**, like FL. For any other knob - instrument
@@ -278,7 +314,7 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 ## Known limits of this test (on purpose)
 
 * If two people change the *same thing* at the same moment (both move the
-  same knob, or reorder tracks), the last change wins. Rarely the copies can
+  same knob, rename the same channel, or reorder tracks), the last change wins. Rarely the copies can
   briefly differ; the fingerprint check catches it and the joiner gets a fresh
   copy within a few seconds.
 * A knob turned in the very first instant after a plugin finishes loading
@@ -308,6 +344,10 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
   starts fresh after opening a song.
 * Saving or opening a very big song (many long takes) can take a few seconds;
   the app keeps working meanwhile.
+* Sounds: a sampler channel plays one sound (no multi-sample kits, loops don't
+  follow the tempo, sounds longer than 5 minutes are cut). A MIDI file's notes
+  all go to one channel and its tempo changes are ignored. Previews go straight
+  to your speakers, not through the mixer.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -332,7 +372,14 @@ project, recording from a simulated sound card (the take must
 line up with the song to the exact sample, and survive other people's edits),
 audio file sharing (each simulated PC has its own
 folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no
-files), leaving and rejoining. The Windows build on GitHub runs this automatically.
+files), leaving and rejoining, and your sounds (a preview reaches the speakers
+and changes nothing in the song; a sound dropped on the rack becomes a sampler
+channel on every PC, its file arrives and plays exactly on its steps in a render;
+replacing its sound; Cut itself; an export copy loading it; MIDI files onto a
+channel and onto empty space; deleting the file removes its channel), and two
+people changing different things of the same channel at the same moment (all
+four changes kept).
+The Windows build on GitHub runs this automatically.
 
 ## Building
 

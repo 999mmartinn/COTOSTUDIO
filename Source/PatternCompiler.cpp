@@ -1,4 +1,5 @@
 #include "PatternCompiler.h"
+#include "SamplerPlugin.h"
 
 PatternCompiler::PatternCompiler (te::Edit& e, AssetStore& a) : edit (e), assets (a)
 {
@@ -95,6 +96,7 @@ void PatternCompiler::compileNow()
     const juce::ScopedValueSetter<bool> svs (compiling, true);
 
     compileAutomation();
+    compileSamplers();
 
     auto pattern = song::findPattern (edit, getPattern());
 
@@ -260,6 +262,38 @@ void PatternCompiler::compileAudio (te::AudioTrack& track)
     // Anything left is no longer wanted.
     for (auto& [sid, clip] : existing)
         clip->removeFromParent();
+}
+
+//==============================================================================
+juce::String PatternCompiler::describeLoadedSample (te::AudioTrack& track)
+{
+    auto* sampler = dynamic_cast<SamplerPlugin*> (song::getInstrument (track));
+    return sampler != nullptr ? sampler->getLoadedHash() : juce::String();
+}
+
+void PatternCompiler::compileSamplers()
+{
+    // Each sampler channel plays this PC's copy of its file (silent until it arrives).
+    for (auto* track : song::getChannels (edit))
+        if (auto* sampler = dynamic_cast<SamplerPlugin*> (song::getInstrument (*track)))
+        {
+            const auto hash = sampler->getAsset();
+            sampler->loadSample (hash, assets.has (hash) ? assets.getFile (hash) : juce::File());
+        }
+}
+
+void PatternCompiler::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& id)
+{
+    // A sampler got a new sound: that's inside a plugin, which changed() ignores.
+    if (id == SamplerPlugin::assetID && v.hasType (te::IDs::PLUGIN))
+    {
+        if (! compiling)
+            triggerAsyncUpdate();
+
+        return;
+    }
+
+    changed (v);
 }
 
 //==============================================================================

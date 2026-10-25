@@ -1,4 +1,5 @@
 #include "Playlist.h"
+#include "FileImport.h"
 
 using namespace song;
 
@@ -33,14 +34,42 @@ public:
     {
         const auto text = d.description.toString();
 
-        for (auto* kind : { "audioChannel", "pattern", "asset" })
+        for (auto* kind : { "audioChannel", "pattern", "asset", "file" })
             if (text.startsWith (juce::String (kind) + ":"))
                 return { kind, text.fromFirstOccurrenceOf (":", false, false) };
 
         return {};
     }
 
-    bool isInterestedInDragSource (const SourceDetails& d) override   { return dragged (d).kind.isNotEmpty(); }
+    bool isInterestedInDragSource (const SourceDetails& d) override
+    {
+        const auto what = dragged (d);
+
+        // From the sound browser: sound files become audio clips (MIDI goes on the channel rack).
+        if (what.kind == "file")
+            return fileimport::isAudioFile (juce::File (what.id));
+
+        return what.kind.isNotEmpty();
+    }
+
+    /** Length of a sound file not in the song yet (read once per file while dragging). */
+    double secondsOfFile (const juce::String& path)
+    {
+        if (path != lengthCachePath)
+        {
+            lengthCachePath = path;
+            lengthCacheSeconds = 0.0;
+
+            if (std::unique_ptr<juce::AudioFormatReader> r { owner.formats.createReaderFor (juce::File (path)) })
+                if (r->sampleRate > 0.0)
+                    lengthCacheSeconds = (double) r->lengthInSamples / r->sampleRate;
+        }
+
+        return lengthCacheSeconds;
+    }
+
+    juce::String lengthCachePath;
+    double lengthCacheSeconds = 0.0;
 
     void itemDragMove (const SourceDetails& d) override
     {
@@ -52,7 +81,7 @@ public:
     void itemDragExit (const SourceDetails&) override   { dropPreview = {}; repaint(); }
 
     /** How long (in beats) the dragged thing would be at this spot, or 0. */
-    double previewLength (te::Edit& edit) const
+    double previewLength (te::Edit& edit)
     {
         const double beat = dropPreview.beat;
 
@@ -68,6 +97,12 @@ public:
 
         if (dropPreview.kind == "asset")
             return lengthOfFile (dropPreview.id);
+
+        if (dropPreview.kind == "file")
+        {
+            const double seconds = juce::jmax (0.05, secondsOfFile (dropPreview.id));
+            return secondsToBeats (edit, beatsToSeconds (edit, beat) + seconds) - beat;
+        }
 
         if (dropPreview.kind == "pattern")
         {
@@ -88,6 +123,14 @@ public:
 
         if (edit == nullptr)
             return;
+
+        if (what.kind == "file")
+        {
+            // A sound from your folders: it joins the song (and is sent to the others) now.
+            owner.importFiles ({ juce::File (what.id) }, lane, beat);
+            repaint();
+            return;
+        }
 
         if (what.kind == "pattern")
         {

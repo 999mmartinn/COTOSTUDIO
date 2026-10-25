@@ -35,6 +35,9 @@ public:
 
     static te::MidiClip* findGeneratedClip (te::AudioTrack&);
 
+    /** The sound a sampler channel has loaded on this PC ("" = none yet), for tests. */
+    static juce::String describeLoadedSample (te::AudioTrack&);
+
     /** The audio this PC plays for an audio channel, as "asset@start+duration>offset" strings (for tests). */
     juce::StringArray describeCompiledAudio (te::AudioTrack&) const;
 
@@ -50,10 +53,11 @@ private:
     void handleAsyncUpdate() override                       { compileNow(); }
     void compileAudio (te::AudioTrack&);
     void compileAutomation();
+    void compileSamplers();
     std::map<juce::String, juce::String> compiledCurves;   // "plugin|param" -> what its curve holds now
     void changed (const juce::ValueTree&);
 
-    void valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier&) override   { changed (v); }
+    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
     void valueTreeChildAdded (juce::ValueTree& p, juce::ValueTree&) override               { changed (p); }
     void valueTreeChildRemoved (juce::ValueTree& p, juce::ValueTree&, int) override        { changed (p); }
     void valueTreeChildOrderChanged (juce::ValueTree& p, int, int) override                { changed (p); }

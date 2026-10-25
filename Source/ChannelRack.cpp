@@ -1,5 +1,7 @@
 #include "ChannelRack.h"
 #include "DrumSynthPlugin.h"
+#include "SamplerPlugin.h"
+#include "FileImport.h"
 #include "Look.h"
 #include "Mixer.h"
 
@@ -77,7 +79,8 @@ public:
         };
 
         name.setTooltip ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete."
-                         " Audio channels: drag onto the playlist to place the file");
+                         " Audio channels: drag onto the playlist to place the file."
+                         " Drop a sound from your folders here to give a sampler channel a new sound");
         name.addMouseListener (this, false);   // to start dragging audio channels
         addAndMakeVisible (mute);
         addAndMakeVisible (name);
@@ -334,6 +337,7 @@ ChannelRack::ChannelRack (te::Engine& e, EditorState& s) : engine (e), state (s)
 ChannelRack::~ChannelRack()
 {
     stopTimer();
+    importPool.removeAllJobs (true, 10000);
 }
 
 void ChannelRack::refresh()
@@ -369,6 +373,23 @@ void ChannelRack::refresh()
             content.addAndMakeVisible (rows.add (new Row (*this, ids[i], colourIndexes[i])));
 
         layoutRows();
+    }
+
+    // A channel just added from a file: bring it into view.
+    if (scrollToChannel.isNotEmpty())
+    {
+        const int index = rowIDs.indexOf (scrollToChannel);
+
+        if (index >= 0)
+        {
+            const int top = index * rowHeight;
+            const int viewTop = viewport.getViewPositionY();
+
+            if (top < viewTop || top + rowHeight > viewTop + viewport.getViewHeight())
+                viewport.setViewPosition (0, juce::jmax (0, top + rowHeight - viewport.getViewHeight()));
+
+            scrollToChannel = {};
+        }
     }
 
     for (auto* r : rows)
@@ -416,6 +437,245 @@ void ChannelRack::timerCallback()
             r->refresh();
 }
 
+void ChannelRack::paintOverChildren (juce::Graphics& g)
+{
+    if (! drop.active)
+        return;
+
+    // Where the dragged file would go: onto a channel, or a new channel at the end.
+    const bool midi = fileimport::isMidiFile (drop.file);
+    juce::Rectangle<int> area;
+    juce::String text;
+    auto* edit = state.getEdit();
+    auto* target = edit != nullptr && drop.channelID.isNotEmpty() ? song::findChannel (*edit, drop.channelID) : nullptr;
+
+    if (target != nullptr)
+    {
+        for (auto* row : rows)
+            if (row->channelID == drop.channelID)
+                area = getLocalArea (&content, row->getBounds()).getIntersection (viewport.getBounds());
+
+        text = midi ? "Notes into " + target->getName() + " (this pattern)" : "New sound for " + target->getName();
+    }
+    else
+    {
+        // A new channel: the whole rack lights up, the label sits at the bottom.
+        area = viewport.getBounds().reduced (1);
+        text = midi ? "New Synth channel: " + song::channelNameForFile (drop.file.getFileName())
+                    : "New channel: " + song::channelNameForFile (drop.file.getFileName());
+    }
+
+    if (area.isEmpty())
+        return;
+
+    const auto colour = juce::Colour (0xff4fb0f0);
+    g.setColour (colour.withAlpha (target != nullptr ? 0.18f : 0.08f));
+    g.fillRoundedRectangle (area.toFloat(), 4.0f);
+    g.setColour (colour);
+    g.drawRoundedRectangle (area.toFloat().reduced (1.0f), 4.0f, 2.0f);
+
+    auto label = target != nullptr ? area.withTrimmedLeft (stepsX).reduced (8, 0)
+                                   : area.removeFromBottom (rowHeight).withTrimmedLeft (stepsX).reduced (8, 0);
+
+    if (label.getWidth() < 120)
+        label = area.reduced (8, 0);
+
+    g.setColour (juce::Colours::black.withAlpha (0.65f));
+    const auto textWidth = juce::jmin (label.getWidth(), juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (13.0f, juce::Font::bold), text) + 16);
+    g.fillRoundedRectangle (label.withWidth (textWidth).withSizeKeepingCentre (textWidth, 20).toFloat(), 4.0f);
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    g.drawText (text, label.withWidth (textWidth), juce::Justification::centred, true);
+}
+
+ChannelRack::DropTarget ChannelRack::dropTargetAt (const juce::File& file, juce::Point<int> pos) const
+{
+    DropTarget t;
+    t.file = file;
+    t.active = fileimport::isAudioFile (file) || fileimport::isMidiFile (file);
+    auto* edit = state.getEdit();
+
+    if (! t.active || edit == nullptr || ! viewport.getBounds().contains (pos))
+        return t;
+
+    const auto inContent = content.getLocalPoint (this, pos);
+    const int index = inContent.y / rowHeight;
+
+    if (! juce::isPositiveAndBelow (index, rows.size()))
+        return t;   // below the last channel: a new one
+
+    auto* track = song::findChannel (*edit, rows[index]->channelID);
+
+    if (track == nullptr)
+        return t;
+
+    // A sound replaces a sampler channel's sound; MIDI goes onto any channel that plays notes.
+    // Anything else makes a new channel.
+    if (fileimport::isMidiFile (file) ? ! song::isAudioChannel (*track) : song::isSamplerChannel (*track))
+        t.channelID = rows[index]->channelID;
+
+    return t;
+}
+
+void ChannelRack::setDrop (DropTarget t)
+{
+    if (t.active != drop.active || t.channelID != drop.channelID || t.file != drop.file)
+    {
+        drop = t;
+        repaint();
+    }
+}
+
+void ChannelRack::dropFile (const juce::File& file, juce::Point<int> pos)
+{
+    const auto target = dropTargetAt (file, pos);
+
+    if (! target.active)
+        return;
+
+    if (fileimport::isMidiFile (file))
+        importMidiFile (file, target.channelID);
+    else
+        addSoundFile (file, target.channelID);
+}
+
+bool ChannelRack::isInterestedInDragSource (const SourceDetails& d)
+{
+    const auto f = fileimport::draggedFile (d.description);
+    return fileimport::isAudioFile (f) || fileimport::isMidiFile (f);
+}
+
+void ChannelRack::itemDragMove (const SourceDetails& d)     { setDrop (dropTargetAt (fileimport::draggedFile (d.description), d.localPosition.toInt())); }
+void ChannelRack::itemDragExit (const SourceDetails&)       { setDrop ({}); }
+
+void ChannelRack::itemDropped (const SourceDetails& d)
+{
+    setDrop ({});
+    dropFile (fileimport::draggedFile (d.description), d.localPosition.toInt());
+}
+
+bool ChannelRack::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    for (auto& f : files)
+        if (fileimport::isAudioFile (juce::File (f)) || fileimport::isMidiFile (juce::File (f)))
+            return true;
+
+    return false;
+}
+
+void ChannelRack::fileDragMove (const juce::StringArray& files, int x, int y)
+{
+    for (auto& f : files)
+        if (fileimport::isAudioFile (juce::File (f)) || fileimport::isMidiFile (juce::File (f)))
+        {
+            setDrop (dropTargetAt (juce::File (f), { x, y }));
+            return;
+        }
+}
+
+void ChannelRack::fileDragExit (const juce::StringArray&)   { setDrop ({}); }
+
+void ChannelRack::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    setDrop ({});
+    bool first = true;
+
+    for (auto& f : files)
+    {
+        const juce::File file (f);
+
+        if (! fileimport::isAudioFile (file) && ! fileimport::isMidiFile (file))
+            continue;
+
+        // The first file goes where it was dropped; any others become new channels.
+        if (first)
+            dropFile (file, { x, y });
+        else if (fileimport::isMidiFile (file))
+            importMidiFile (file);
+        else
+            addSoundFile (file);
+
+        first = false;
+    }
+}
+
+void ChannelRack::addSoundFile (const juce::File& file, const juce::String& ontoChannelID)
+{
+    auto* store = &state.session.getAssetStore();
+    state.session.logMessage ("Adding " + file.getFileName() + " to the channel rack...");
+    juce::Component::SafePointer<ChannelRack> safe (this);   // made here, on the message thread
+
+    importPool.addJob ([safe, file, ontoChannelID, store]
+    {
+        auto result = store->importAudioFile (file);   // converts to FLAC (background thread)
+
+        juce::MessageManager::callAsync ([safe, file, ontoChannelID, result]
+        {
+            if (safe != nullptr)
+                safe->soundImported (file, result, ontoChannelID);
+        });
+    });
+}
+
+void ChannelRack::soundImported (const juce::File& file, const AssetStore::ImportResult& result, const juce::String& ontoChannelID)
+{
+    auto* edit = state.getEdit();
+
+    if (! result.ok() || edit == nullptr)
+    {
+        state.session.logMessage (result.error.isNotEmpty() ? result.error : "Couldn't add " + file.getFileName());
+        return;
+    }
+
+    state.beginAction();
+    auto* target = ontoChannelID.isNotEmpty() ? song::findChannel (*edit, ontoChannelID) : nullptr;
+    const auto oldName = target != nullptr ? target->getName() : juce::String();
+
+    if (target != nullptr && song::setSamplerSample (*edit, *target, result, file.getFileName()))
+    {
+        state.session.logMessage ("New sound for " + oldName + ": " + file.getFileName()
+                                   + " - it is being sent to the others");
+    }
+    else
+    {
+        target = song::addSamplerChannel (*edit, result, file.getFileName());
+
+        if (target != nullptr)
+            state.session.logMessage ("Added " + file.getFileName() + " to the channel rack ("
+                                       + juce::String (result.lengthSeconds, 2) + " s) - it is being sent to the others");
+    }
+
+    if (target != nullptr)
+    {
+        state.selectedChannel = scrollToChannel = song::getChannelID (*target);
+        state.placeAudioChannel = {};
+
+        if (state.onSelectionChanged)
+            state.onSelectionChanged();
+    }
+}
+
+void ChannelRack::importMidiFile (const juce::File& file, const juce::String& ontoChannelID)
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    state.beginAction();
+    auto channelID = ontoChannelID;
+    state.session.logMessage (fileimport::applyMidiFile (*edit, state.getPattern(), file, channelID));
+
+    if (song::findChannel (*edit, channelID) != nullptr)
+    {
+        state.selectedChannel = scrollToChannel = channelID;
+        state.placeAudioChannel = {};
+
+        if (state.onSelectionChanged)
+            state.onSelectionChanged();
+    }
+}
+
 void ChannelRack::showAddChannelMenu()
 {
     auto* edit = state.getEdit();
@@ -430,6 +690,7 @@ void ChannelRack::showAddChannelMenu()
     m.addItem (3, "Hat (Drum Synth)");
     m.addItem (4, "Snare (Drum Synth)");
     m.addItem (5, "Synth (4OSC)");
+    m.addItem (6, "Sampler: choose a sound file...");
 
     juce::Array<juce::PluginDescription> instruments;
 
@@ -451,6 +712,19 @@ void ChannelRack::showAddChannelMenu()
 
         if (e == nullptr || result == 0)
             return;
+
+        if (result == 6)
+        {
+            chooser = std::make_unique<juce::FileChooser> ("Sound for the new channel", juce::File(),
+                                                           "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this] (const juce::FileChooser& fc)
+            {
+                if (fc.getResult().existsAsFile())
+                    addSoundFile (fc.getResult());
+            });
+            return;
+        }
 
         state.beginAction();
         te::AudioTrack* track = nullptr;
@@ -499,6 +773,15 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
     m.addItem (1, instrument != nullptr ? "Open instrument (" + instrument->getName() + (missing ? ", not installed here)" : ")")
                                         : juce::String (song::isAudioChannel (*track) ? "Audio channel (no instrument)" : "No instrument"),
                instrument != nullptr && ! missing);
+
+    if (auto* sampler = dynamic_cast<SamplerPlugin*> (instrument))
+    {
+        const auto hash = sampler->getAsset();
+        const bool here = state.session.getAssetStore().has (hash);
+        m.addItem (-2, "Sound: " + song::getAssetName (*edit, hash) + (here ? juce::String() : "  (still arriving...)"), false);
+        m.addItem (4, "Cut itself (a new hit stops the last one, for 808s)", true, sampler->cutValue.get());
+        m.addItem (5, "Replace the sound...  (or drop one on this channel)");
+    }
 
     auto effects = song::getEffects (*track);
 
@@ -565,6 +848,25 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         {
             state.beginAction();
             song::removeChannel (*e, *t);
+        }
+        else if (result == 4)
+        {
+            if (auto* sampler = dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)))
+            {
+                state.beginAction();
+                sampler->cutValue = ! sampler->cutValue.get();
+            }
+        }
+        else if (result == 5)
+        {
+            chooser = std::make_unique<juce::FileChooser> ("New sound for " + t->getName(), juce::File(),
+                                                           "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+            chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this, channelID] (const juce::FileChooser& fc)
+            {
+                if (fc.getResult().existsAsFile())
+                    addSoundFile (fc.getResult(), channelID);
+            });
         }
         else if (result >= 100 && result < 200)
         {

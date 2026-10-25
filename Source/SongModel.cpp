@@ -1,5 +1,6 @@
 #include "SongModel.h"
 #include "DrumSynthPlugin.h"
+#include "SamplerPlugin.h"
 
 namespace song
 {
@@ -412,6 +413,38 @@ void removeNote (te::Edit& edit, juce::ValueTree note)
 
     if (parent.isValid())
         parent.removeChild (note, um (edit));
+}
+
+int setChannelNotes (te::Edit& edit, juce::ValueTree pattern, const juce::String& channelID,
+                     const juce::Array<NoteSpec>& notes)
+{
+    if (! pattern.isValid())
+        return 0;
+
+    for (auto& n : getNotes (pattern, channelID))
+        pattern.removeChild (n, um (edit));
+
+    const double maxBeats = 8 * 4.0;
+    double end = 0.0;
+    int added = 0;
+
+    for (auto& n : notes)
+    {
+        if (n.beat >= maxBeats - 1.0e-6)
+            continue;
+
+        const double length = juce::jmin (n.length, maxBeats - n.beat);
+        addNote (edit, pattern, channelID, n.pitch, n.beat, length, n.velocity);
+        end = juce::jmax (end, n.beat + length);
+        ++added;
+    }
+
+    const int bars = juce::jlimit (1, 8, (int) std::ceil (end / 4.0 - 1.0e-9));
+
+    if (bars > getBars (pattern))
+        setBars (edit, pattern, bars);
+
+    return added;
 }
 
 juce::ValueTree findNoteAt (const juce::ValueTree& pattern, const juce::String& channelID, int pitch, double beat)
@@ -1014,6 +1047,9 @@ juce::StringArray getAssetHashes (te::Edit& edit)
         if (isAudioClip (c))
             hashes.addIfNotAlreadyThere (c[ids::asset].toString());
 
+    for (auto* t : getChannels (edit))
+        hashes.addIfNotAlreadyThere (getSamplerAsset (*t));
+
     hashes.removeEmptyStrings();
     return hashes;
 }
@@ -1065,6 +1101,67 @@ juce::ValueTree placeAudioChannel (te::Edit& edit, const te::AudioTrack& channel
 
     return addAudioClip (edit, hash, getChannelID (channel), lane, startBeat, 0.0,
                          juce::jmax (0.05, getAssetSeconds (edit, hash)));
+}
+
+//==============================================================================
+juce::String channelNameForFile (const juce::String& fileName)
+{
+    const auto base = fileName.upToLastOccurrenceOf (".", false, false);
+    return (base.isNotEmpty() ? base : fileName).substring (0, 40);
+}
+
+static SamplerPlugin* getSampler (te::AudioTrack& track)
+{
+    return dynamic_cast<SamplerPlugin*> (getInstrument (track));
+}
+
+bool isSamplerChannel (te::AudioTrack& track)               { return getSampler (track) != nullptr; }
+
+juce::String getSamplerAsset (te::AudioTrack& track)
+{
+    auto* sampler = getSampler (track);
+    return sampler != nullptr ? sampler->getAsset() : juce::String();
+}
+
+te::AudioTrack* addSamplerChannel (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& fileName)
+{
+    addAsset (edit, r, fileName);
+    auto* track = addEmptyChannel (edit, channelNameForFile (fileName));
+
+    if (track != nullptr)
+    {
+        if (auto p = edit.getPluginCache().createNewPlugin (SamplerPlugin::xmlTypeName, {}))
+        {
+            p->state.setProperty (SamplerPlugin::assetID, r.hash, nullptr);   // travels with the plugin
+            track->pluginList.insertPlugin (p, 0, nullptr);
+        }
+    }
+
+    return track;
+}
+
+bool setSamplerSample (te::Edit& edit, te::AudioTrack& track, const AssetStore::ImportResult& r, const juce::String& fileName)
+{
+    auto* sampler = getSampler (track);
+
+    if (sampler == nullptr)
+        return false;
+
+    addAsset (edit, r, fileName);
+    sampler->state.setProperty (SamplerPlugin::assetID, r.hash, um (edit));
+    track.setName (channelNameForFile (fileName));
+    return true;
+}
+
+juce::StringArray getSamplerChannelsUsing (te::Edit& edit, const juce::String& hash)
+{
+    juce::StringArray names;
+
+    for (auto* t : getChannels (edit))
+        if (getSamplerAsset (*t) == hash)
+            names.add (t->getName());
+
+    return names;
 }
 
 int findFreeLane (te::Edit& edit, double startBeat, double endBeat)
@@ -1201,7 +1298,7 @@ void removeAsset (te::Edit& edit, const juce::String& hash)
     juce::Array<te::AudioTrack*> channels;
 
     for (auto* t : getChannels (edit))
-        if (isAudioChannel (*t) && getChannelAsset (edit, *t) == hash)
+        if ((isAudioChannel (*t) && getChannelAsset (edit, *t) == hash) || getSamplerAsset (*t) == hash)
             channels.add (t);
 
     for (auto* t : channels)

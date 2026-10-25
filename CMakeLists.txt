@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 file(READ VERSION.txt SYNCTEST_VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS VERSION.txt)   # a new version reconfigures the build
 string(STRIP "${SYNCTEST_VERSION}" SYNCTEST_VERSION)
 project(SyncTest VERSION ${SYNCTEST_VERSION} LANGUAGES C CXX)
 
@@ -51,7 +52,11 @@ target_sources(SyncTest PRIVATE
     Source/ProjectFile.cpp
     Source/Exporter.cpp
     Source/Mp3Encoder.cpp
-    Source/AutomationEditor.cpp)
+    Source/AutomationEditor.cpp
+    Source/SamplerPlugin.cpp
+    Source/SamplePreviewer.cpp
+    Source/FileImport.cpp
+    Source/SoundBrowser.cpp)
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)

@@ -130,6 +130,19 @@ namespace song
     void removeNote (te::Edit&, juce::ValueTree note);
     juce::ValueTree findNoteAt (const juce::ValueTree& pattern, const juce::String& channelID, int pitch, double beat);
 
+    /** A note to add (e.g. read from a MIDI file). */
+    struct NoteSpec
+    {
+        int pitch = 60, velocity = 100;
+        double beat = 0.0, length = stepBeats;
+    };
+
+    /** Replaces a channel's notes in a pattern (a MIDI file dropped on it). The pattern
+        grows to fit them, up to its 8-bar maximum; notes that start later are left out.
+        Returns how many notes were added. */
+    int setChannelNotes (te::Edit&, juce::ValueTree pattern, const juce::String& channelID,
+                         const juce::Array<NoteSpec>& notes);
+
     //==============================================================================
     // Playlist (song arrangement)
     constexpr int numLanes = 16;
@@ -240,6 +253,22 @@ namespace song
     /** Places a full-length clip of an audio channel's file on the playlist. */
     juce::ValueTree placeAudioChannel (te::Edit&, const te::AudioTrack& channel, int lane, double startBeat);
 
+    //==============================================================================
+    // Sampler channels (FL-style): a sound from your folders dropped onto the channel
+    // rack becomes a channel that plays it on every step / note (see SamplerPlugin).
+    // The file itself is shared like any other audio file of the song.
+    bool isSamplerChannel (te::AudioTrack&);
+    /** The file a sampler channel plays ("" if it isn't one). */
+    juce::String getSamplerAsset (te::AudioTrack&);
+    /** A new channel named after the file, playing it. */
+    te::AudioTrack* addSamplerChannel (te::Edit&, const AssetStore::ImportResult&, const juce::String& fileName);
+    /** Gives a sampler channel a new sound (a file dropped on its row). False if it isn't one. */
+    bool setSamplerSample (te::Edit&, te::AudioTrack&, const AssetStore::ImportResult&, const juce::String& fileName);
+    /** Names of the sampler channels playing this file. */
+    juce::StringArray getSamplerChannelsUsing (te::Edit&, const juce::String& hash);
+    /** "Kick 01.wav" -> "Kick 01" (for channel names). */
+    juce::String channelNameForFile (const juce::String& fileName);
+
     /** First playlist lane with nothing between these beats (the last lane if all are busy). */
     int findFreeLane (te::Edit&, double startBeat, double endBeat);
 
@@ -264,7 +293,7 @@ namespace song
     void renameAsset (te::Edit&, const juce::String& hash, const juce::String& newName);
     /** The audio channel playing this file; a new one if its channel was deleted. */
     te::AudioTrack* findOrCreateChannelForAsset (te::Edit&, const juce::String& hash);
-    /** Deletes a file from the song for good: its clips, its audio channel(s) and its entry. */
+    /** Deletes a file from the song for good: its clips, its audio and sampler channel(s) and its entry. */
     void removeAsset (te::Edit&, const juce::String& hash);
 
     /** Channels that have notes in a pattern, in channel-rack order. */

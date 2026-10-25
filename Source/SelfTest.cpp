@@ -13,6 +13,9 @@
 #include "MixerRouter.h"
 #include "ProjectFile.h"
 #include "Exporter.h"
+#include "SamplerPlugin.h"
+#include "SamplePreviewer.h"
+#include "FileImport.h"
 
 namespace
 {
@@ -82,6 +85,26 @@ namespace
                 samplesFed += n;
                 done += n;
             }
+        }
+
+        /** Feeds silence into the mic and returns the loudest sample that came out
+            of the "speakers" (what the engine and anything else on the card played). */
+        float feedSilenceAndMeasure (double seconds)
+        {
+            const int total = juce::jmax (1, (int) std::ceil (seconds * sampleRate / blockSize)) * blockSize;
+            juce::MidiBuffer midi;
+            float peak = 0.0f;
+
+            for (int done = 0; done < total; done += blockSize)
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                buffer.clear();
+                io.processBlock (buffer, midi);
+                peak = juce::jmax (peak, buffer.getMagnitude (0, blockSize));
+                samplesFed += blockSize;
+            }
+
+            return peak;
         }
 
         /** Like a real interface: keeps processing blocks of tone on its own thread
@@ -190,6 +213,7 @@ private:
     std::function<void (int)> finished;
     juce::File pluginFile, dumpDir;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
+    std::unique_ptr<SamplePreviewer> previewer;       // the sound browser's preview (on the simulated card)
     collab::Session host { engine }, peer1 { engine }, peer2 { engine };
     collab::Session fourth { engine };   // a PC that only opens a saved song
     std::vector<Step> steps;
@@ -230,6 +254,98 @@ private:
     bool exportDone = false;
     Exporter::Result exportResult;
     juce::int64 fedAtTake2Start = -1;
+
+    // Your sounds (sound browser): preview, sampler channels, MIDI files
+    juce::File beatsFolder, boomFile, longFile, midiFile;
+    juce::String boomHash, longHash, midiLogOnSynth, midiLogNew;
+    juce::int64 contentBeforePreview = 0;
+    int assetsBeforePreview = 0;
+    bool p2WasSongMode = true, exportCopyLoaded = false;
+
+    /** A mono drum-like hit: a sine that fades out over the file. */
+    static juce::File writeHitWav (juce::File f, double seconds, double freq)
+    {
+        f.getParentDirectory().createDirectory();
+        f.deleteFile();
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> out (f.createOutputStream());
+        auto writer = wav.createWriterFor (out, juce::AudioFormatWriterOptions{}
+                                                    .withSampleRate (44100.0).withNumChannels (1).withBitsPerSample (16));
+
+        if (writer == nullptr)
+            return f;
+
+        const int n = (int) (seconds * 44100.0);
+        juce::AudioBuffer<float> buffer (1, n);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const double t = i / 44100.0;
+            buffer.setSample (0, i, (float) (0.6 * std::exp (-t / (seconds * 0.25)) * std::sin (juce::MathConstants<double>::twoPi * freq * t)));
+        }
+
+        writer->writeFromAudioSampleBuffer (buffer, 0, n);
+        return f;
+    }
+
+    /** A MIDI file with 4 notes in the first 2 bars, and one far away at bar 11. */
+    static juce::File writeTestMidi (juce::File f)
+    {
+        f.getParentDirectory().createDirectory();
+        f.deleteFile();
+        juce::MidiMessageSequence seq;
+        struct N { int pitch; double beat, length; int velocity; };
+
+        for (auto n : { N { 60, 0.0, 1.0, 100 }, N { 64, 1.0, 1.0, 90 }, N { 67, 2.0, 0.5, 80 }, N { 72, 4.0, 2.0, 110 },
+                        N { 48, 40.0, 1.0, 100 } })
+        {
+            seq.addEvent (juce::MidiMessage::noteOn (1, n.pitch, (juce::uint8) n.velocity), n.beat * 960.0);
+            seq.addEvent (juce::MidiMessage::noteOff (1, n.pitch), (n.beat + n.length) * 960.0);
+        }
+
+        seq.updateMatchedPairs();
+        juce::MidiFile midi;
+        midi.setTicksPerQuarterNote (960);
+        midi.addTrack (seq);
+        juce::FileOutputStream out (f);
+        midi.writeTo (out);
+        return f;
+    }
+
+    /** A channel's notes in Pattern 1 as sorted "pitch@beat+length v velocity" strings. */
+    static juce::StringArray notesIn (te::Edit& e, const juce::String& channelName)
+    {
+        juce::StringArray list;
+
+        if (auto* t = ch (e, channelName))
+            for (auto& n : song::getNotes (pat (e, "Pattern 1"), song::getChannelID (*t)))
+                list.add (juce::String ((int) n[song::ids::p]) + "@" + juce::String ((double) n[song::ids::b], 2)
+                           + "+" + juce::String ((double) n[song::ids::l], 2) + "v" + juce::String ((int) n[song::ids::v]));
+
+        list.sort (true);
+        return list;
+    }
+
+    /** Renders some channels of an Edit (its loop range) and measures the peak in several beat windows. */
+    juce::Array<float> renderPeaks (te::Edit& e, juce::StringArray trackNames, std::initializer_list<std::pair<double, double>> windows)
+    {
+        juce::Array<float> peaks;
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("synctest-render", ".wav");
+        juce::BigInteger tracks;
+        auto all = te::getAllTracks (e);
+
+        for (int i = 0; i < all.size(); ++i)
+            if (trackNames.contains (all[i]->getName()))
+                tracks.setBit (i);
+
+        const bool ok = te::Renderer::renderToFile ("test", file, e, e.getTransport().getLoopRange(), tracks, true, true, {}, false);
+
+        for (auto& w : windows)
+            peaks.add (ok ? peakOf (file, timeOfBeat (e, w.first), timeOfBeat (e, w.second)) : -1.0f);
+
+        file.deleteFile();
+        return peaks;
+    }
 
     // Automation
     juce::String autoSid;
@@ -2402,6 +2518,221 @@ private:
                 return length >= songSeconds - 0.05 && peak > 0.05f;
             },
             90000, 0, ! Exporter::canExportMp3() });
+
+        //==============================================================================
+        // Your sounds (the sound browser): previewing is only yours; a sound or MIDI file
+        // dropped into the song is shared like everything else.
+        steps.push_back ({ "Sounds: clicking a sound in your folders plays it to your speakers only - the song doesn't change",
+            [this]
+            {
+                beatsFolder = testRoot.getChildFile ("My Beats");
+                boomFile = writeHitWav (beatsFolder.getChildFile ("Kit 1").getChildFile ("Boom 01.wav"), 0.3, 70.0);
+                longFile = writeHitWav (beatsFolder.getChildFile ("Kit 1").getChildFile ("808 long.wav"), 1.5, 50.0);
+                midiFile = writeTestMidi (beatsFolder.getChildFile ("MIDI").getChildFile ("melody.mid"));
+                contentBeforePreview = host.getSync()->computeContentHash();
+                assetsBeforePreview = song::getAssets (H()).size();
+                previewer = std::make_unique<SamplePreviewer> (engine);
+                previewer->play (longFile);
+            },
+            [this]
+            {
+                const float playing = soundCard->feedSilenceAndMeasure (0.3);
+
+                if (playing < 0.05f)
+                {
+                    previewer->play (longFile);   // the read-ahead wasn't ready yet: try again
+                    return false;
+                }
+
+                previewer->stop();
+                soundCard->feedSilenceAndMeasure (0.05);   // (the stop fades out within a block)
+                const float stopped = soundCard->feedSilenceAndMeasure (0.2);
+                std::cout << "    speakers while previewing: peak " << playing << "; after Stop: " << stopped << std::endl;
+
+                return stopped < 0.001f && host.getSync()->computeContentHash() == contentBeforePreview
+                    && song::getAssets (H()).size() == assetsBeforePreview && hashesEqual();
+            },
+            8000 });
+
+        steps.push_back ({ "Sounds: peer 1 drops 'Boom 01.wav' on the channel rack -> a new sampler channel everywhere; the file reaches every PC and each loads it",
+            [this]
+            {
+                auto r = peer1.getAssetStore().importAudioFile (boomFile);
+                boomHash = r.hash;
+                P1().getUndoManager().beginNewTransaction();
+                song::addSamplerChannel (P1(), r, boomFile.getFileName());
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e)
+                {
+                    auto* t = ch (e, "Boom 01");
+                    return t != nullptr && song::isSamplerChannel (*t) && song::getSamplerAsset (*t) == boomHash
+                        && PatternCompiler::describeLoadedSample (*t) == boomHash;
+                })
+                && hasVerified (host, boomHash) && hasVerified (peer2, boomHash) && hashesEqual();
+            },
+            10000, 600 });
+
+        steps.push_back ({ "Sounds: peer 2 puts 'Boom 01' on steps 1 and 9 of Pattern 1 -> everywhere; it sounds exactly on those steps (render)",
+            [this]
+            {
+                auto p = pat (P2(), "Pattern 1");
+
+                if (auto* t = ch (P2(), "Boom 01"))
+                {
+                    P2().getUndoManager().beginNewTransaction();
+                    song::setStep (P2(), p, *t, 0, true);
+                    song::setStep (P2(), p, *t, 8, true);
+                }
+
+                p2WasSongMode = peer2.isSongMode();
+                peer2.setSongMode (false);   // only peer 2's own playback
+                peer2.setPlayingPattern (p[song::ids::sid].toString());
+            },
+            [this]
+            {
+                if (! everywhere ([] (te::Edit& e) { return hasStep (e, "Pattern 1", "Boom 01", 0) && hasStep (e, "Pattern 1", "Boom 01", 8); })
+                     || ! hashesEqual())
+                    return false;
+
+                peer2.getCompiler()->compileNow();
+                auto peaks = renderPeaks (P2(), { "Boom 01" }, { { 0.0, 0.4 }, { 1.2, 1.9 }, { 2.0, 2.4 }, { 3.2, 3.9 } });
+                std::cout << "    peaks: step 1 " << peaks[0] << ", between " << peaks[1] << ", step 9 " << peaks[2]
+                          << ", after " << peaks[3] << std::endl;
+                return peaks[0] > 0.2f && peaks[2] > 0.2f && peaks[1] >= 0.0f && peaks[1] < 0.01f && peaks[3] < 0.01f;
+            },
+            15000, 600 });
+
+        steps.push_back ({ "Sounds: the host drops '808 long.wav' on that channel -> it plays the new sound everywhere (same channel, same steps)",
+            [this]
+            {
+                peer2.setSongMode (p2WasSongMode);
+                auto r = host.getAssetStore().importAudioFile (longFile);
+                longHash = r.hash;
+
+                if (auto* t = ch (H(), "Boom 01"))
+                {
+                    H().getUndoManager().beginNewTransaction();
+                    song::setSamplerSample (H(), *t, r, longFile.getFileName());
+                }
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e)
+                {
+                    auto* t = ch (e, "808 long");
+                    return t != nullptr && ch (e, "Boom 01") == nullptr && song::getSamplerAsset (*t) == longHash
+                        && PatternCompiler::describeLoadedSample (*t) == longHash
+                        && hasStep (e, "Pattern 1", "808 long", 0) && hasStep (e, "Pattern 1", "808 long", 8);
+                })
+                && hasVerified (peer1, longHash) && hasVerified (peer2, longHash) && hashesEqual();
+            },
+            10000, 600 });
+
+        steps.push_back ({ "Sounds: peer 1 turns on 'Cut itself' for the 808 -> everywhere; a copy made for exporting loads the sound too",
+            [this]
+            {
+                if (auto* t = ch (P1(), "808 long"))
+                    if (auto* sampler = dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)))
+                    {
+                        P1().getUndoManager().beginNewTransaction();
+                        sampler->cutValue = true;
+                    }
+
+                // What the exporter does: a private copy of the song, compiled on its own.
+                auto copyState = host.getSync()->createSnapshot();
+                copyState.setProperty (te::IDs::projectID, te::ProjectItemID::createNewID (te::ProjectID {}).toString(), nullptr);
+
+                if (auto copy = te::loadEditFromState (engine, copyState, te::Edit::forRendering))
+                {
+                    PatternCompiler compiler (*copy, host.getAssetStore());
+                    auto* t = ch (*copy, "808 long");
+                    exportCopyLoaded = t != nullptr && PatternCompiler::describeLoadedSample (*t) == longHash;
+                }
+            },
+            [this]
+            {
+                return exportCopyLoaded && hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    auto* t = ch (e, "808 long");
+                    auto* sampler = t != nullptr ? dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)) : nullptr;
+                    return sampler != nullptr && sampler->cutValue.get();
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Sounds: peer 2 drops melody.mid on the Synth, the host drops it on empty rack space -> the notes replace Synth's, a new 'melody' channel; everywhere",
+            [this]
+            {
+                if (auto* synth = ch (P2(), "Synth"))
+                {
+                    P2().getUndoManager().beginNewTransaction();
+                    auto id = song::getChannelID (*synth);
+                    midiLogOnSynth = fileimport::applyMidiFile (P2(), pat (P2(), "Pattern 1"), midiFile, id);
+                }
+
+                H().getUndoManager().beginNewTransaction();
+                juce::String none;
+                midiLogNew = fileimport::applyMidiFile (H(), pat (H(), "Pattern 1"), midiFile, none);
+                std::cout << "    peer 2: " << midiLogOnSynth << "\n    host: " << midiLogNew << std::endl;
+            },
+            [this]
+            {
+                const juce::StringArray expected { "60@0.00+1.00v100", "64@1.00+1.00v90", "67@2.00+0.50v80", "72@4.00+2.00v110" };
+
+                return midiLogOnSynth.contains ("left out") && hashesEqual()
+                    && everywhere ([&expected] (te::Edit& e)
+                       {
+                           return notesIn (e, "Synth") == expected && notesIn (e, "melody") == expected
+                               && song::getBars (pat (e, "Pattern 1")) >= 2;
+                       });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Sounds: the host deletes '808 long.wav' from the project -> its sampler channel goes too, everywhere",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::removeAsset (H(), longHash);
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e) { return ch (e, "808 long") == nullptr && ! song::getAssetHashes (e).contains (longHash); })
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Same moment, same channel, different things: host renames Clap and turns its volume down while peer 2 mutes it and pans it -> all four kept everywhere",
+            [this]
+            {
+                auto* hostClap = ch (H(), "Clap");
+                auto* p2Clap = ch (P2(), "Clap");
+
+                if (hostClap == nullptr || p2Clap == nullptr)
+                    return;
+
+                // Both before either change has been sent: they cross on the network.
+                H().getUndoManager().beginNewTransaction();
+                hostClap->setName ("Clap 2");
+                song::getVolumePlugin (*hostClap)->volParam->setNormalisedParameter (0.5f, juce::sendNotification);
+
+                P2().getUndoManager().beginNewTransaction();
+                p2Clap->setMute (true);
+                song::getVolumePlugin (*p2Clap)->panParam->setNormalisedParameter (0.2f, juce::sendNotification);
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    auto* t = ch (e, "Clap 2");
+                    auto* v = t != nullptr ? song::getVolumePlugin (*t) : nullptr;
+                    return v != nullptr && t->isMuted (false)
+                        && std::abs (v->volParam->getCurrentNormalisedValue() - 0.5f) < 0.001f
+                        && std::abs (v->panParam->getCurrentNormalisedValue() - 0.2f) < 0.001f;
+                });
+            },
+            8000, 600 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

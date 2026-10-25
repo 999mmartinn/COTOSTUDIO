@@ -167,6 +167,7 @@ private:
 
     // Changes collected during this message-loop turn
     juce::Array<juce::ValueTree> propsDirty, childrenDirty, addedChildren, stateDirty;
+    juce::Array<juce::Array<juce::Identifier>> propsDirtyNames;   // which properties of propsDirty[i] changed
     std::vector<std::pair<juce::ValueTree, juce::StringArray>> removedKeys;
 
     // Parameter (knob) sync for external plugins
@@ -192,8 +193,13 @@ private:
 
     // Building and applying descriptions
     juce::ValueTree describeChildren (const juce::ValueTree& node) const;
-    juce::ValueTree describeProps (const juce::ValueTree& node) const;
-    bool reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming);
+    /** Only the properties that changed (and the ones that were removed): two people changing
+        different properties of the same thing at the same moment don't undo each other. */
+    juce::ValueTree describeProps (const juce::ValueTree& node, const juce::Array<juce::Identifier>& changed,
+                                   juce::StringArray& removed) const;
+    /** removedOnly == nullptr: make local's properties exactly incoming's (a full description).
+        Otherwise: set incoming's properties and remove only the listed ones (a "props" change). */
+    bool reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming, const juce::StringArray* removedOnly = nullptr);
     bool reconcileChildren (juce::ValueTree& local, const juce::ValueTree& incoming);
     bool reconcileNode (juce::ValueTree& local, const juce::ValueTree& incoming);
 

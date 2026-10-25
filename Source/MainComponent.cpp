@@ -76,6 +76,7 @@ MainComponent::MainComponent (te::Engine& e)
     auto* settings = appProperties.getUserSettings();
     session.setUserName (settings->getValue ("userName", juce::SystemStats::getComputerName()));
     browserVisible = settings->getBoolValue ("browserVisible", true);
+    soundsVisible = settings->getBoolValue ("soundsVisible", true);
     recentFiles.setMaxNumberOfItems (8);
     recentFiles.restoreFromString (settings->getValue ("recentSongs"));
     portEditor.setText (settings->getValue ("port", "47800"));
@@ -85,10 +86,10 @@ MainComponent::MainComponent (te::Engine& e)
     portEditor.setInputRestrictions (5, "0123456789");
 
     for (auto* c : std::initializer_list<juce::Component*> {
-             &fileButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
+             &fileButton, &soundsButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
              &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoLabel, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
-             &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
+             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -162,6 +163,33 @@ MainComponent::MainComponent (te::Engine& e)
     browser.onUserNameChanged = [this] (const juce::String& name) { appProperties.getUserSettings()->setValue ("userName", name); };
     showBrowserButton.setTooltip ("Show the browser (F8)");
     showBrowserButton.onClick = [this] { setBrowserVisible (true); };
+    // Your sounds (far left): folders saved on this PC only; a sound joins the song when dropped in.
+    sounds.setFolders (juce::StringArray::fromLines (settings->getValue ("soundFolders")));
+    sounds.setPreviewVolume ((float) settings->getDoubleValue ("previewVolume", 0.8));
+    sounds.onFoldersChanged = [this] (const juce::StringArray& folders)
+    {
+        appProperties.getUserSettings()->setValue ("soundFolders", folders.joinIntoString ("\n"));
+    };
+    sounds.onCollapse = [this] { setSoundsVisible (false); };
+    sounds.onAddToRack = [this] (const juce::File& f) { rack.addSoundFile (f); };
+    sounds.onAddToPlaylist = [this] (const juce::File& f)
+    {
+        if (auto* edit = state.getEdit())
+            playlist.importFiles ({ f }, song::findFreeLane (*edit, state.songStartBeat, state.songStartBeat + 4.0), state.songStartBeat);
+    };
+    sounds.onMidiToSelectedChannel = [this] (const juce::File& f)
+    {
+        auto* channel = state.getSelectedChannel();
+        rack.importMidiFile (f, channel != nullptr ? song::getChannelID (*channel) : juce::String());
+    };
+    sounds.onMidiToNewChannel = [this] (const juce::File& f) { rack.importMidiFile (f); };
+
+    soundsButton.setClickingTogglesState (false);
+    soundsButton.setColour (juce::TextButton::buttonOnColourId, accent.darker (0.2f));
+    soundsButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    soundsButton.setTooltip ("Your folders of sounds and MIDI (Alt+F8). Only on this PC until you drag a sound into the song");
+    soundsButton.onClick = [this] { setSoundsVisible (! soundsVisible); };
+
     session.onPeopleChanged = [this] { browser.refreshPeople(); triggerAsyncUpdate(); };
     session.onSharedPatternOffered = [this] (const juce::String& sid, const juce::String& owner) { showPatternOffer (sid, owner); };
     session.onTempoQuestion = [this] (const collab::Session::TempoQuestion& q) { showTempoQuestion (q); };
@@ -414,6 +442,7 @@ MainComponent::MainComponent (te::Engine& e)
 MainComponent::~MainComponent()
 {
     stopTimer();
+    appProperties.getUserSettings()->setValue ("previewVolume", (double) previewer.getGain());
     session.clearCallbacks();   // the session goes after the window's parts: it must not call into them
     unwatchEdit();
 }
@@ -611,6 +640,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
     if (key == juce::KeyPress::F9Key)                                               { bottomTabs.setCurrentTabIndex (1); return true; }
+    if (key == juce::KeyPress (juce::KeyPress::F8Key, juce::ModifierKeys::altModifier, 0)) { setSoundsVisible (! soundsVisible); return true; }
     if (key == juce::KeyPress::F8Key)                                               { setBrowserVisible (! browserVisible); return true; }
 
     return false;
@@ -675,6 +705,13 @@ void MainComponent::showPatternMenu()
             refresh();
         }
     });
+}
+
+void MainComponent::setSoundsVisible (bool shouldBeVisible)
+{
+    soundsVisible = shouldBeVisible;
+    appProperties.getUserSettings()->setValue ("soundsVisible", soundsVisible);
+    resized();
 }
 
 void MainComponent::setBrowserVisible (bool shouldBeVisible)
@@ -1494,6 +1531,9 @@ void MainComponent::resized()
 
     auto top = r.removeFromTop (28);
     fileButton.setBounds (top.removeFromLeft (54));
+    top.removeFromLeft (6);
+    soundsButton.setBounds (top.removeFromLeft (66));
+    soundsButton.setToggleState (soundsVisible, juce::dontSendNotification);
     top.removeFromLeft (8);
     hostButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (8);
@@ -1548,6 +1588,14 @@ void MainComponent::resized()
     r.removeFromTop (8);
     logView.setBounds (r.removeFromBottom (70));
     r.removeFromBottom (8);
+
+    sounds.setVisible (soundsVisible);
+
+    if (soundsVisible)
+    {
+        sounds.setBounds (r.removeFromLeft (SoundBrowser::defaultWidth));
+        r.removeFromLeft (6);
+    }
 
     browser.setVisible (browserVisible);
     showBrowserButton.setVisible (! browserVisible);

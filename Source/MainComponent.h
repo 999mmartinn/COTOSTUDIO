@@ -7,6 +7,7 @@
 #include "Mixer.h"
 #include "AutomationEditor.h"
 #include "Browser.h"
+#include "SoundBrowser.h"
 #include "Exporter.h"
 #include "Look.h"
 
@@ -101,6 +102,13 @@ private:
     juce::Slider tempoSlider { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
     juce::Label tempoLabel { {}, "BPM" }, playingLabel;
     juce::ComboBox patternBox, lengthBox;
+
+    // Your own folders of sounds (far left; local only) and what plays them while you browse.
+    SamplePreviewer previewer { engine };
+    SoundBrowser sounds { previewer };
+    juce::TextButton soundsButton { "Sounds" };
+    bool soundsVisible = true;
+    void setSoundsVisible (bool);
 
     Browser browser { state };
     juce::TextButton showBrowserButton { ">" };

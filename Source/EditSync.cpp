@@ -23,6 +23,7 @@ static const juce::Identifier localProperties[] =
 {
     "windowX", "windowY", "windowLocked", "windowState",
     "lastSignificantChange", "modifiedBy", "mtime",
+    "playSlotClips", "soloIsolate",   // written by the engine itself while it plays; not used by this app
 };
 
 // Properties that ARE sent, but are left out of the divergence hash because two
@@ -333,7 +334,16 @@ void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identif
         return;
     }
 
-    propsDirty.addIfNotAlreadyThere (v);
+    auto index = propsDirty.indexOf (v);
+
+    if (index < 0)
+    {
+        propsDirty.add (v);
+        propsDirtyNames.add ({});
+        index = propsDirty.size() - 1;
+    }
+
+    propsDirtyNames.getReference (index).addIfNotAlreadyThere (prop);
     triggerAsyncUpdate();
 }
 
@@ -421,16 +431,20 @@ juce::ValueTree EditSync::describeChildren (const juce::ValueTree& node) const
     return desc;
 }
 
-juce::ValueTree EditSync::describeProps (const juce::ValueTree& node) const
+juce::ValueTree EditSync::describeProps (const juce::ValueTree& node, const juce::Array<juce::Identifier>& changed,
+                                         juce::StringArray& removed) const
 {
     juce::ValueTree desc (node.getType());
 
-    for (int i = 0; i < node.getNumProperties(); ++i)
+    for (auto& name : changed)
     {
-        auto name = node.getPropertyName (i);
+        if (isLocalProperty (node, name, false) || name == stateProperty)
+            continue;
 
-        if (! isLocalProperty (node, name, false) && name != stateProperty)
+        if (node.hasProperty (name))
             desc.setProperty (name, node.getProperty (name), nullptr);
+        else
+            removed.addIfNotAlreadyThere (name.toString());
     }
 
     return desc;
@@ -475,17 +489,28 @@ void EditSync::flushNow()
         return false;
     };
 
-    for (auto& node : propsDirty)
+    for (int i = 0; i < propsDirty.size(); ++i)
     {
+        auto node = propsDirty[i];
         auto path = pathOf (node);
 
         if (path == "!" || isCovered (node))
             continue;
 
+        juce::StringArray removed;
+        auto desc = describeProps (node, propsDirtyNames.getReference (i), removed);
+
+        if (desc.getNumProperties() == 0 && removed.isEmpty())
+            continue;
+
         juce::ValueTree op (ids::OP);
         op.setProperty (ids::kind, "props", nullptr);
         op.setProperty (ids::path, path, nullptr);
-        op.appendChild (describeProps (node), nullptr);
+
+        if (! removed.isEmpty())
+            op.setProperty (ids::removed, removed.joinIntoString ("|"), nullptr);
+
+        op.appendChild (desc, nullptr);
         propOps.push_back ({ path, depthOf (path), op });
     }
 
@@ -511,6 +536,7 @@ void EditSync::flushNow()
     }
 
     propsDirty.clear();
+    propsDirtyNames.clear();
     childrenDirty.clear();
     addedChildren.clear();
     removedKeys.clear();
@@ -524,7 +550,7 @@ void EditSync::flushNow()
 //==============================================================================
 // Applying remote changes
 
-bool EditSync::reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming)
+bool EditSync::reconcileProps (juce::ValueTree& local, const juce::ValueTree& incoming, const juce::StringArray* removedOnly)
 {
     for (int i = 0; i < incoming.getNumProperties(); ++i)
     {
@@ -546,7 +572,10 @@ bool EditSync::reconcileProps (juce::ValueTree& local, const juce::ValueTree& in
     {
         auto name = local.getPropertyName (i);
 
-        if (! isLocalProperty (local, name, false) && name != stateProperty && ! incoming.hasProperty (name))
+        if (isLocalProperty (local, name, false) || name == stateProperty || incoming.hasProperty (name))
+            continue;
+
+        if (removedOnly == nullptr || removedOnly->contains (name.toString()))
             local.removeProperty (name, nullptr);
     }
 
@@ -716,7 +745,12 @@ bool EditSync::applyRemote (const juce::ValueTree& op)
     }
 
     if (kind == "props")
-        ok = reconcileProps (target, op.getChild (0));
+    {
+        // Only what changed: other properties of this node keep their (maybe newer) values.
+        auto removed = juce::StringArray::fromTokens (op[ids::removed].toString(), "|", {});
+        removed.removeEmptyStrings();
+        ok = reconcileProps (target, op.getChild (0), &removed);
+    }
     else if (kind == "children")
         ok = reconcileChildren (target, op.getChild (0));
 
