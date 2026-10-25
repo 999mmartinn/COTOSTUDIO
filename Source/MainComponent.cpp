@@ -84,7 +84,7 @@ MainComponent::MainComponent (te::Engine& e)
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &fileButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
-             &patModeButton, &songModeButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
+             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
              &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
@@ -98,13 +98,18 @@ MainComponent::MainComponent (te::Engine& e)
 
     tempoSlider.setRange (40.0, 250.0, 1.0);
     tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 50, 26);
-    tempoSlider.onDragStart = [this] { state.beginAction(); };
+    tempoSlider.setTooltip ("Tempo. In a session everyone else has to accept a change (it is part of the song)");
     tempoSlider.onValueChange = [this]
     {
-        if (auto* edit = state.getEdit())
-            if (auto* tempo = edit->tempoSequence.getTempo (0))
-                if (std::abs (tempo->getBpm() - tempoSlider.getValue()) > 0.01)
-                    tempo->setBpm (tempoSlider.getValue());
+        if (! session.tempoNeedsApproval())
+        {
+            session.requestTempo (tempoSlider.getValue());   // alone: right away
+            return;
+        }
+
+        // In a session: wait until you stop clicking, then ask everyone once.
+        tempoAskCountdown = 4;
+        refreshTempo();
     };
 
     lengthBox.addItem ("1 bar", 1);
@@ -155,7 +160,10 @@ MainComponent::MainComponent (te::Engine& e)
     browser.onUserNameChanged = [this] (const juce::String& name) { appProperties.getUserSettings()->setValue ("userName", name); };
     showBrowserButton.setTooltip ("Show the browser (F8)");
     showBrowserButton.onClick = [this] { setBrowserVisible (true); };
-    session.onPeopleChanged = [this] { browser.refreshPeople(); };
+    session.onPeopleChanged = [this] { browser.refreshPeople(); triggerAsyncUpdate(); };
+    session.onSharedPatternOffered = [this] (const juce::String& sid, const juce::String& owner) { showPatternOffer (sid, owner); };
+    session.onTempoQuestion = [this] (const collab::Session::TempoQuestion& q) { showTempoQuestion (q); };
+    session.onTempoQuestionClosed = [this] (int id) { closeTempoQuestion (id); };
     session.onChatChanged = [this] { browser.refreshChat(); };
     browser.refreshPeople();
 
@@ -257,6 +265,34 @@ MainComponent::MainComponent (te::Engine& e)
     patModeButton.onClick = [this] { session.setSongMode (false); refresh(); };
     songModeButton.onClick = [this] { session.setSongMode (true); refresh(); };
 
+    // Share: everyone (except people in Focus) hears your playback. Focus: nobody's share pulls you in.
+    for (auto* b : { &shareButton, &focusButton })
+        b->setClickingTogglesState (false);
+
+    shareButton.onClick = [this]
+    {
+        if (session.isSharing())
+            session.stopSharing();
+        else if (session.isFollowingShare())
+            session.leaveShare();
+        else if (session.isShareRunning())
+            session.joinShare();
+        else
+        {
+            const auto error = session.startSharing();
+
+            if (error.isNotEmpty())
+                appendLog (error);
+        }
+
+        refresh();
+    };
+
+    focusButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8a6fd8));
+    focusButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+    focusButton.setTooltip ("Focus: when someone shares their playback, you keep working on your own and aren't pulled in");
+    focusButton.onClick = [this] { session.setFocus (! session.isFocus()); refresh(); };
+
     undoButton.onClick = [this] { undo (false); };
     redoButton.onClick = [this] { undo (true); };
     undoButton.setTooltip ("Undo your last change (Ctrl+Z)");
@@ -345,6 +381,7 @@ MainComponent::MainComponent (te::Engine& e)
 MainComponent::~MainComponent()
 {
     stopTimer();
+    session.clearCallbacks();   // the session goes after the window's parts: it must not call into them
     unwatchEdit();
 }
 
@@ -404,7 +441,10 @@ void MainComponent::refreshPatternControls()
     const bool playing = edit->getTransport().isPlaying();
     auto playingPattern = song::findPattern (*edit, session.getPlayingPattern());
     const auto what = session.isSongMode() ? juce::String ("Song") : playingPattern[song::ids::name].toString();
-    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + what : juce::String(),
+    const auto whose = session.isFollowingShare() ? session.getShareOwnerName() + ": " : juce::String();
+    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + whose + what
+                                     + (session.isSharing() ? "  (shared)" : "")
+                                  : juce::String(),
                           juce::dontSendNotification);
 
     patModeButton.setToggleState (! session.isSongMode(), juce::dontSendNotification);
@@ -435,12 +475,57 @@ void MainComponent::refresh()
         recordButton.setColour (juce::TextButton::buttonColourId, recording ? juce::Colour (0xffd03a3a) : juce::Colour (0xff3a414a));
         recordButton.setColour (juce::TextButton::textColourOffId, recording ? juce::Colours::white : juce::Colour (0xffe06060));
 
-        if (auto* tempo = edit->tempoSequence.getTempo (0))
-            if (! tempoSlider.isMouseButtonDown())
-                tempoSlider.setValue (tempo->getBpm(), juce::dontSendNotification);
+        refreshTempo();
 
         undoButton.setEnabled (edit->getUndoManager().canUndo());
         redoButton.setEnabled (edit->getUndoManager().canRedo());
+    }
+
+    // Sharing / Focus
+    {
+        const bool inSession = mode == Mode::hosting || mode == Mode::joined;
+        const auto owner = session.getShareOwnerName().substring (0, 14);
+        juce::Colour on = accent.darker (0.2f);
+
+        if (session.isSharing())
+        {
+            shareButton.setButtonText ("Sharing");
+            shareButton.setTooltip ("Everyone following hears your playback, in sync. Only you control it. Click to stop sharing");
+        }
+        else if (session.isFollowingShare())
+        {
+            on = session.getShareOwnerColour();
+            shareButton.setButtonText ("With " + owner);
+            shareButton.setTooltip (session.getShareOwnerName() + " controls the playback. Click to leave "
+                                    "(you go back to where you were; the others keep listening)");
+        }
+        else if (session.isShareRunning())
+        {
+            shareButton.setButtonText ("Join " + owner);
+            shareButton.setTooltip (session.getShareOwnerName() + " is sharing their playback. Click to listen along");
+        }
+        else
+        {
+            shareButton.setButtonText ("Share");
+            shareButton.setTooltip (inSession ? "Share your playback: everyone (except people in Focus) hears what you play, "
+                                                "in sync, and only you control it. Click again to stop"
+                                              : "Share your playback with the others (in a session)");
+        }
+
+        shareButton.setColour (juce::TextButton::buttonOnColourId, on);
+        shareButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+        shareButton.setToggleState (session.isSharing() || session.isFollowingShare(), juce::dontSendNotification);
+        shareButton.setEnabled (inSession);
+        focusButton.setToggleState (session.isFocus(), juce::dontSendNotification);
+
+        // Following someone's share: only they control playback.
+        const bool control = session.canControlPlayback();
+
+        for (auto* b : { &playButton, &recordButton, &patModeButton, &songModeButton })
+            b->setEnabled (control);
+
+        if (! session.isFollowingShare() && patternOffer != nullptr)
+            patternOffer->exitModalState (0);   // the share is over: the question is moot
     }
 
     refreshPatternControls();
@@ -477,6 +562,13 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('n', cmd, 0))                                        { newSong(); return true; }
     if (key == juce::KeyPress ('y', cmd, 0)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
+    if ((key == juce::KeyPress::spaceKey || key == juce::KeyPress ('r')) && ! session.canControlPlayback())
+    {
+        appendLog (session.getShareOwnerName() + " controls the playback right now (click 'With "
+                    + session.getShareOwnerName() + "' to leave and play on your own)");
+        return true;
+    }
+
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
@@ -577,6 +669,13 @@ void MainComponent::timerCallback()
         autosave();
     }
 
+    // A changed tempo is asked for once you stop clicking.
+    if (tempoAskCountdown > 0 && --tempoAskCountdown == 0)
+    {
+        session.requestTempo (tempoSlider.getValue());
+        refreshTempo();
+    }
+
     // Recording starts/ends a moment after the button (the engine applies it).
     const bool recording = session.isRecording();
 
@@ -585,6 +684,94 @@ void MainComponent::timerCallback()
         lastRecording = recording;
         refresh();
     }
+}
+
+//==============================================================================
+void MainComponent::showPatternOffer (const juce::String& sid, const juce::String& owner)
+{
+    auto* edit = state.getEdit();
+    auto pattern = edit != nullptr ? song::findPattern (*edit, sid) : juce::ValueTree();
+
+    if (! pattern.isValid())
+        return;
+
+    if (patternOffer != nullptr)
+        patternOffer->exitModalState (0);   // an older offer (they switched pattern again)
+
+    auto* w = new juce::AlertWindow ("Go to the shared pattern?",
+                                     owner + " is playing \"" + pattern[song::ids::name].toString() + "\".\n"
+                                     "Go to that pattern? (If you stay, you keep working on yours and still hear theirs.)",
+                                     juce::MessageBoxIconType::QuestionIcon);
+    w->addButton ("Go there", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Stay here", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    patternOffer = w;
+
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, sid] (int result)
+    {
+        if (result == 1 && session.isFollowingShare() && state.getEdit() != nullptr
+             && song::findPattern (*state.getEdit(), sid).isValid())
+            selectPattern (sid);
+    }), true);
+}
+
+void MainComponent::showTempoQuestion (const collab::Session::TempoQuestion& q)
+{
+    auto bpm = [] (double v) { return std::abs (v - std::round (v)) < 0.005 ? juce::String (juce::roundToInt (v)) : juce::String (v, 2); };
+
+    auto* w = new juce::AlertWindow ("Change the tempo?",
+                                     q.fromName + " wants to change the tempo from " + bpm (q.oldBpm) + " to " + bpm (q.bpm)
+                                       + " BPM.\nEveryone has to agree (30 seconds to answer).",
+                                     juce::MessageBoxIconType::QuestionIcon);
+    w->addButton ("Accept", 1);
+    w->addButton ("Decline", 0);
+    tempoQuestions[q.id] = w;
+
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, id = q.id] (int result)
+    {
+        auto it = tempoQuestions.find (id);
+
+        if (it == tempoQuestions.end())
+            return;   // closed because it was already decided
+
+        tempoQuestions.erase (it);
+        session.answerTempo (id, result == 1);
+    }), true);
+}
+
+void MainComponent::closeTempoQuestion (int id)
+{
+    auto it = tempoQuestions.find (id);
+
+    if (it == tempoQuestions.end())
+        return;
+
+    auto w = it->second;
+    tempoQuestions.erase (it);
+
+    if (w != nullptr)
+        w->exitModalState (0);
+}
+
+void MainComponent::refreshTempo()
+{
+    auto* edit = state.getEdit();
+    auto* tempo = edit != nullptr ? edit->tempoSequence.getTempo (0) : nullptr;
+
+    if (tempo == nullptr)
+        return;
+
+    // (The new tempo can arrive a moment before the "approved" notice: then it's done already.)
+    const double pending = std::abs (session.getPendingTempo() - tempo->getBpm()) < 0.001 ? 0.0 : session.getPendingTempo();
+    const bool waiting = tempoAskCountdown > 0 || pending != 0.0;
+
+    if (tempoAskCountdown == 0 && ! tempoSlider.isMouseButtonDown())
+        tempoSlider.setValue (pending != 0.0 ? pending : tempo->getBpm(), juce::dontSendNotification);
+
+    // Orange: a tempo you asked for that isn't in the song yet.
+    tempoSlider.setColour (juce::Slider::textBoxTextColourId, waiting ? juce::Colour (0xffffa040) : juce::Colours::white);
+    tempoSlider.setTooltip (pending != 0.0 ? "Waiting for everyone to accept " + juce::String (pending, 0) + " BPM "
+                                               "(the song is still at " + juce::String (tempo->getBpm(), 0) + ")"
+                                           : "Tempo. In a session everyone else has to accept a change (it is part of the song)");
 }
 
 void MainComponent::showRecordSetupMenu()
@@ -663,7 +850,7 @@ juce::File MainComponent::autosaveFolder()
 juce::int64 MainComponent::currentHash() const
 {
     auto* sync = const_cast<collab::Session&> (session).getSync();
-    return sync != nullptr ? sync->computeHash() : 0;
+    return sync != nullptr ? sync->computeContentHash() : 0;
 }
 
 void MainComponent::updateTitle()
@@ -1054,6 +1241,7 @@ void MainComponent::resized()
     top.removeFromLeft (8);
     leaveButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (16);
+    playingLabel.setBounds (top.removeFromRight (juce::jmin (260, top.getWidth() / 2)));   // what's playing
     statusLabel.setBounds (top);
 
     r.removeFromTop (8);
@@ -1070,24 +1258,25 @@ void MainComponent::resized()
 
     patModeButton.setBounds (bar.removeFromLeft (48));
     songModeButton.setBounds (bar.removeFromLeft (56));
-    bar.removeFromLeft (6);
-    playButton.setBounds (bar.removeFromLeft (70));
     bar.removeFromLeft (4);
-    recordButton.setBounds (bar.removeFromLeft (64));
-    bar.removeFromLeft (12);
-    tempoLabel.setBounds (bar.removeFromLeft (36));
-    tempoSlider.setBounds (bar.removeFromLeft (110));
-    bar.removeFromLeft (12);
-    patternLabel.setBounds (bar.removeFromLeft (56));
-    patternBox.setBounds (bar.removeFromLeft (130));
+    shareButton.setBounds (bar.removeFromLeft (92));
+    focusButton.setBounds (bar.removeFromLeft (58));
+    bar.removeFromLeft (6);
+    playButton.setBounds (bar.removeFromLeft (64));
+    bar.removeFromLeft (4);
+    recordButton.setBounds (bar.removeFromLeft (60));
+    bar.removeFromLeft (8);
+    tempoLabel.setBounds (bar.removeFromLeft (34));
+    tempoSlider.setBounds (bar.removeFromLeft (100));
+    bar.removeFromLeft (8);
+    patternLabel.setBounds (bar.removeFromLeft (52));
+    patternBox.setBounds (bar.removeFromLeft (120));
     bar.removeFromLeft (4);
     newPatternButton.setBounds (bar.removeFromLeft (28));
     bar.removeFromLeft (4);
     patternMenuButton.setBounds (bar.removeFromLeft (32));
-    bar.removeFromLeft (8);
-    lengthBox.setBounds (bar.removeFromLeft (80));
-    bar.removeFromLeft (8);
-    playingLabel.setBounds (bar);
+    bar.removeFromLeft (6);
+    lengthBox.setBounds (bar.removeFromLeft (72));
 
     r.removeFromTop (8);
     logView.setBounds (r.removeFromBottom (70));

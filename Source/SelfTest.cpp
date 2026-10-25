@@ -109,6 +109,9 @@ public:
             s->peerName = label;
             s->onLog = [label] (const juce::String& m) { std::cout << "    [" << label << "] " << m << std::endl; };
             s->setAssetFolder (testRoot.getChildFile (juce::String (label) + "-assets"));
+            s->onTempoQuestion = [this, s] (const collab::Session::TempoQuestion& q) { tempoAsked[s].add (q); };
+            s->onTempoQuestionClosed = [this, s] (int id) { tempoClosed[s].add (id); };
+            s->onSharedPatternOffered = [this, s] (const juce::String& sid, const juce::String&) { patternOffers[s].add (sid); };
         }
 
         toneFile  = writeTestWav (testRoot.getChildFile ("tone.wav"), 2.0, 440.0, false);
@@ -149,6 +152,35 @@ private:
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
     int resyncsBefore = 0, channelsBefore = 0;
+
+    // Tempo approval, sharing playback
+    std::map<collab::Session*, juce::Array<collab::Session::TempoQuestion>> tempoAsked;
+    std::map<collab::Session*, juce::Array<int>> tempoClosed;
+    std::map<collab::Session*, juce::StringArray> patternOffers;
+    juce::String shareError { "not done" };
+    double shareOffset = 0.0;
+    juce::int64 newSongHash = 0;
+
+    int lastQuestion (collab::Session& s) { auto& a = tempoAsked[&s]; return a.isEmpty() ? 0 : a.getLast().id; }
+    bool questionOpen (collab::Session& s)
+    {
+        const int id = lastQuestion (s);
+        return id != 0 && ! tempoClosed[&s].contains (id);
+    }
+
+    static double bpmOf (te::Edit& e)       { return e.tempoSequence.getTempo (0)->getBpm(); }
+    static double beatOf (te::Edit& e)      { return e.tempoSequence.toBeats (e.getTransport().getPosition()).inBeats(); }
+    static double timeOfBeat (te::Edit& e, double beat) { return e.tempoSequence.toTime (te::BeatPosition::fromBeats (beat)).inSeconds(); }
+
+    bool compiledEqual (collab::Session& a, collab::Session& b)
+    {
+        for (auto* t : song::getChannels (*a.getEdit()))
+            if (compiled (a, t->getName()) != compiled (b, t->getName())
+                 || compiledAudio (a, t->getName()) != compiledAudio (b, t->getName()))
+                return false;
+
+        return true;
+    }
 
     // Recording
     juce::String vocalsID, takeHash;
@@ -501,13 +533,23 @@ private:
     void buildSteps()
     {
         steps.push_back ({ "Host creates the default song (Kick, Clap, Hat, Snare, Synth + a beat) and hosts",
-            [this] { host.createLocalEdit(); host.startHosting (port); },
+            [this]
+            {
+                host.createLocalEdit();
+                newSongHash = host.getSync()->computeContentHash();   // what the window remembers as "saved"
+                host.startHosting (port);
+            },
             [this]
             {
                 return host.getMode() == collab::Session::Mode::hosting
                     && song::getChannels (H()).size() == 5 && song::getPatterns (H()).size() == 1
                     && compiled (host, "Kick").size() == 4 && compiled (host, "Hat").size() == 4;
             } });
+
+        steps.push_back ({ "An untouched new song still counts as unchanged once the engine has settled (no '*' in the title)",
+            {},
+            [this] { return host.getSync()->computeContentHash() == newSongHash; },
+            4000, 1500 });
 
         steps.push_back ({ "The default beat makes sound (offline render of the drum synth)",
             {},
@@ -648,9 +690,58 @@ private:
                         && std::abs (c->getCurrentNormalisedValue() - 0.75f) < 1.0e-4f;
             } });
 
-        steps.push_back ({ "Peer 2 sets the tempo to 140 BPM -> everywhere",
-            [this] { P2().tempoSequence.getTempo (0)->setBpm (140.0); },
-            [this] { return everywhere ([] (te::Edit& e) { return std::abs (e.tempoSequence.getTempo (0)->getBpm() - 140.0) < 0.01; }); } });
+        steps.push_back ({ "Tempo: peer 2 asks for 140 BPM -> host and peer 1 are asked; the song stays at 120 until they agree",
+            [this] { peer2.requestTempo (140.0); },
+            [this]
+            {
+                return questionOpen (host) && questionOpen (peer1) && tempoAsked[&peer2].isEmpty()
+                    && std::abs (tempoAsked[&host].getLast().bpm - 140.0) < 0.01
+                    && std::abs (peer2.getPendingTempo() - 140.0) < 0.01
+                    && everywhere ([] (te::Edit& e) { return std::abs (bpmOf (e) - 120.0) < 0.01; });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Tempo: host and peer 1 accept -> 140 BPM everywhere, and everyone reads why in the chat",
+            [this]
+            {
+                host.answerTempo (lastQuestion (host), true);
+                peer1.answerTempo (lastQuestion (peer1), true);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return std::abs (bpmOf (e) - 140.0) < 0.01; })
+                    && peer2.getPendingTempo() == 0.0 && hashesEqual()
+                    && chatCount (host, "Tempo changed to 140 BPM (everyone agreed)") == 1
+                    && chatCount (peer2, "Tempo changed to 140 BPM (everyone agreed)") == 1;
+            } });
+
+        steps.push_back ({ "Tempo: peer 1 asks for 150 BPM -> host and peer 2 are asked",
+            [this] { peer1.requestTempo (150.0); },
+            [this] { return questionOpen (host) && questionOpen (peer2) && std::abs (peer1.getPendingTempo() - 150.0) < 0.01; } });
+
+        steps.push_back ({ "Tempo: the host declines -> stays at 140; peer 2's question closes; everyone is told who declined",
+            [this] { host.answerTempo (lastQuestion (host), false); },
+            [this]
+            {
+                return ! questionOpen (peer2) && peer1.getPendingTempo() == 0.0
+                    && everywhere ([] (te::Edit& e) { return std::abs (bpmOf (e) - 140.0) < 0.01; })
+                    && chatCount (peer1, "host declined the tempo change to 150 BPM - it stays at 140") == 1;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Tempo: the host asks for 100 BPM and nobody answers (2 s to answer here) -> cancelled, stays at 140",
+            [this]
+            {
+                host.setTempoAnswerTimeout (2000);
+                host.requestTempo (100.0);
+            },
+            [this]
+            {
+                return ! questionOpen (peer1) && ! questionOpen (peer2) && host.getPendingTempo() == 0.0
+                    && everywhere ([] (te::Edit& e) { return std::abs (bpmOf (e) - 140.0) < 0.01; })
+                    && chatCount (peer2, "Tempo change to 100 BPM cancelled: peer1, peer2 didn't answer in time") == 1;
+            },
+            8000 });
 
         steps.push_back ({ "Host turns the Snare volume knob and peer 1 mutes the Clap -> everywhere",
             [this]
@@ -736,33 +827,98 @@ private:
             {},
             [this] { return idsUnique (H()) && idsUnique (P1()) && idsUnique (P2()); } });
 
-        steps.push_back ({ "Peer 2 plays Pattern 2 -> everyone plays Pattern 2",
+        //==============================================================================
+        // Playback is personal; sharing makes the others follow
+        steps.push_back ({ "Playback is personal: peer 2 plays Pattern 2 -> only peer 2 plays",
             [this]
             {
+                host.setTempoAnswerTimeout (30000);
+                peer1.setViewingPattern (pat (P1(), "Pattern 1")[song::ids::sid].toString());
                 peer2.setPlayingPattern (pat (P2(), "Pattern 2")[song::ids::sid].toString());
                 peer2.setPlaying (true, 0.0);
             },
             [this]
             {
                 auto sid = pat (H(), "Pattern 2")[song::ids::sid].toString();
-                return H().getTransport().isPlaying() && P1().getTransport().isPlaying()
-                    && host.getPlayingPattern() == sid && peer1.getPlayingPattern() == sid
-                    && compiled (host, "Hat").contains ("60@5.000+0.250*100");
+                return P2().getTransport().isPlaying() && peer2.getPlayingPattern() == sid
+                    && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying()
+                    && host.getPlayingPattern() != sid && peer1.getPlayingPattern() != sid;
             },
-            4000 });
+            4000, 800 });
 
-        steps.push_back ({ "What each PC plays is identical (compiled notes of every channel)",
-            {},
-            [this] { return compiledEqualEverywhere(); } });
-
-        steps.push_back ({ "Peer 1 jumps to beat 3 while playing -> everyone jumps there",
-            [this] { peer1.seek (P1().tempoSequence.toTime (te::BeatPosition::fromBeats (3.0)).inSeconds()); },
+        steps.push_back ({ "Peer 1 switches to SONG and moves its playhead to beat 2 -> only on peer 1; the host turns Focus on",
             [this]
             {
-                auto beat = [] (te::Edit& e) { return e.tempoSequence.toBeats (e.getTransport().getPosition()).inBeats(); };
-                return beat (H()) >= 2.99 && beat (H()) < 4.5 && beat (P2()) >= 2.99 && beat (P2()) < 4.5;
+                peer1.setSongMode (true);
+                peer1.seek (timeOfBeat (P1(), 2.0));
+                host.setFocus (true);
+            },
+            [this]
+            {
+                bool hostInFocus = false;
+
+                for (auto& p : peer1.getPeople())
+                    if (p.name == "host")
+                        hostInFocus = p.focus;
+
+                return peer1.isSongMode() && ! host.isSongMode() && ! peer2.isSongMode()
+                    && std::abs (beatOf (P1()) - 2.0) < 0.01 && hostInFocus;
+            },
+            4000, 800 });
+
+        steps.push_back ({ "Peer 2 shares -> peer 1 follows into Pattern 2, playing in sync; the host (Focus) is left alone",
+            [this] { shareError = peer2.startSharing(); },
+            [this]
+            {
+                auto sid = pat (H(), "Pattern 2")[song::ids::sid].toString();
+
+                if (! (shareError.isEmpty() && peer2.isSharing() && peer1.isFollowingShare()
+                        && P1().getTransport().isPlaying() && peer1.getPlayingPattern() == sid && ! peer1.isSongMode()
+                        && ! host.isFollowingShare() && ! H().getTransport().isPlaying()
+                        && compiled (peer1, "Hat").contains ("60@5.000+0.250*100")))
+                    return false;
+
+                // Same spot in the loop (Pattern 2 is 2 bars long).
+                const double loop = timeOfBeat (P1(), 8.0);
+                auto d = std::fmod (P1().getTransport().getPosition().inSeconds() - P2().getTransport().getPosition().inSeconds() + loop, loop);
+                shareOffset = juce::jmin (d, loop - d);
+                std::cout << "    peer 1 is " << juce::roundToInt (shareOffset * 1000.0) << " ms from peer 2" << std::endl;
+
+                return shareOffset < 0.25
+                    && chatCount (host, "peer2 is sharing their playback (not following: host (Focus))") == 1
+                    && chatCount (peer1, "peer2 is sharing their playback (not following: host (Focus))") == 1;
+            },
+            6000 });
+
+        steps.push_back ({ "  ...peer 1 (looking at Pattern 1) is asked whether to go to Pattern 2",
+            {},
+            [this] { return patternOffers[&peer1].contains (pat (P1(), "Pattern 2")[song::ids::sid].toString()); } });
+
+        steps.push_back ({ "While following, peer 1 can't change the playback (Stop, PAT/SONG, moving the playhead are ignored)",
+            [this]
+            {
+                peer1.setPlaying (false, 0.0);
+                peer1.setSongMode (true);
+                peer1.seek (timeOfBeat (P1(), 6.0));
+            },
+            [this]
+            {
+                return P1().getTransport().isPlaying() && ! peer1.isSongMode()
+                    && P2().getTransport().isPlaying() && ! peer2.isSongMode();
+            },
+            4000, 800 });
+
+        steps.push_back ({ "Peer 2 jumps to beat 3 -> peer 1 jumps there too",
+            [this] { peer2.seek (timeOfBeat (P2(), 3.0)); },
+            [this]
+            {
+                return beatOf (P1()) >= 2.99 && beatOf (P1()) < 4.5 && beatOf (P2()) >= 2.99 && beatOf (P2()) < 4.5;
             },
             4000 });
+
+        steps.push_back ({ "What peer 1 plays is identical to peer 2 (compiled notes of every channel)",
+            {},
+            [this] { return compiledEqual (peer1, peer2); } });
 
         steps.push_back ({ "Note preview (guide note) plays and stops on the selected channel, locally only",
             [this]
@@ -773,10 +929,46 @@ private:
             },
             [this] { return hashesEqual(); } });
 
-        steps.push_back ({ "Peer 1 presses Stop -> everyone stops",
-            [this] { peer1.setPlaying (false, 0.0); },
-            [this] { return ! H().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
+        steps.push_back ({ "Peer 1 leaves the share -> back where it was (SONG, stopped, beat 2); everyone reads it in the chat",
+            [this] { peer1.leaveShare(); },
+            [this]
+            {
+                return ! peer1.isFollowingShare() && ! P1().getTransport().isPlaying() && peer1.isSongMode()
+                    && std::abs (beatOf (P1()) - 2.0) < 0.01 && P2().getTransport().isPlaying()
+                    && chatCount (host, "peer1 left peer2's playback") == 1 && chatCount (peer2, "peer1 left peer2's playback") == 1;
+            } });
+
+        steps.push_back ({ "Peer 1 joins again -> follows peer 2 again (playing Pattern 2)",
+            [this] { peer1.joinShare(); },
+            [this]
+            {
+                return peer1.isFollowingShare() && P1().getTransport().isPlaying() && ! peer1.isSongMode()
+                    && peer1.getPlayingPattern() == pat (P1(), "Pattern 2")[song::ids::sid].toString()
+                    && chatCount (peer2, "peer1 joined peer2's playback") == 1;
+            } });
+
+        steps.push_back ({ "The host turns Focus off -> joins the running share",
+            [this] { host.setFocus (false); },
+            [this]
+            {
+                return host.isFollowingShare() && H().getTransport().isPlaying()
+                    && host.getPlayingPattern() == pat (H(), "Pattern 2")[song::ids::sid].toString();
+            } });
+
+        steps.push_back ({ "Peer 2 presses Stop -> everyone following stops",
+            [this] { peer2.setPlaying (false, 0.0); },
+            [this] { return ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
             4000 });
+
+        steps.push_back ({ "Peer 2 stops sharing -> host and peer 1 are back to their own playback, as before",
+            [this] { peer2.stopSharing(); },
+            [this]
+            {
+                return ! peer2.isShareRunning() && ! host.isFollowingShare() && ! peer1.isFollowingShare()
+                    && peer1.isSongMode() && std::abs (beatOf (P1()) - 2.0) < 0.01
+                    && ! host.isSongMode() && host.getPlayingPattern() == pat (H(), "Pattern 1")[song::ids::sid].toString()
+                    && chatCount (host, "peer2 stopped sharing") == 1;
+            } });
 
         steps.push_back ({ "Playlist: host and peer 1 place clips at the same instant -> both everywhere",
             [this]
@@ -813,10 +1005,11 @@ private:
                 }) && std::abs (song::getSongLengthBeats (H()) - 20.0) < 1.0e-6;
             } });
 
-        steps.push_back ({ "Peer 1 switches to SONG mode and plays -> everyone plays the arrangement",
+        steps.push_back ({ "Peer 1 shares in SONG mode and plays -> everyone plays the arrangement",
             [this]
             {
                 peer1.setSongMode (true);
+                shareError = peer1.startSharing();
                 peer1.setPlaying (true, 0.0);
             },
             [this]
@@ -859,10 +1052,26 @@ private:
             },
             8000, 1600 });
 
-        steps.push_back ({ "Host stops and switches back to PAT mode -> everyone",
-            [this] { host.setPlaying (false, 0.0); host.setSongMode (false); },
-            [this] { return ! peer1.isSongMode() && ! peer2.isSongMode() && ! P1().getTransport().isPlaying(); },
+        steps.push_back ({ "Peer 1 stops and ends its share -> everyone back to their own playback, stopped",
+            [this] { peer1.setPlaying (false, 0.0); peer1.stopSharing(); },
+            [this]
+            {
+                return ! host.isShareRunning() && ! peer2.isShareRunning()
+                    && ! host.isFollowingShare() && ! peer2.isFollowingShare()
+                    && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying();
+            },
             4000 });
+
+        steps.push_back ({ "(each PC picks PAT mode and Pattern 1 on its own, for the next tests)",
+            [this]
+            {
+                for (auto* sess : { &host, &peer1, &peer2 })
+                {
+                    sess->setSongMode (false);
+                    sess->setPlayingPattern (pat (*sess->getEdit(), "Pattern 1")[song::ids::sid].toString());
+                }
+            },
+            [this] { return ! host.isSongMode() && ! peer1.isSongMode() && ! peer2.isSongMode() && compiledEqualEverywhere(); } });
 
         steps.push_back ({ "Mixer: host makes insert 'Drums' and routes Kick + Clap into it -> applied on every PC",
             [this]
@@ -999,8 +1208,8 @@ private:
             },
             15000 });
 
-        steps.push_back ({ "Audio: host switches to SONG mode -> the audio clip is put into playback the same way on every PC",
-            [this] { host.setSongMode (true); },
+        steps.push_back ({ "Audio: everyone switches to SONG mode -> the audio clip is put into playback the same way on every PC",
+            [this] { for (auto* sess : { &host, &peer1, &peer2 }) sess->setSongMode (true); },
             [this]
             {
                 auto a = compiledAudio (host, "tone");
@@ -1174,13 +1383,13 @@ private:
             },
             8000, 600 });
 
-        steps.push_back ({ "Recording: peer 2 presses Rec at beat 8 -> recording; host and peer 1 play along in SONG mode",
+        steps.push_back ({ "Recording: peer 2 presses Rec at beat 8 -> recording on peer 2 only (not sharing); everyone reads it in the chat",
             [this] { recordStarted = peer2.startRecording (P2().tempoSequence.toTime (te::BeatPosition::fromBeats (8.0)).inSeconds()); },
             [this]
             {
-                return recordStarted && peer2.isRecording()
-                    && H().getTransport().isPlaying() && P1().getTransport().isPlaying()
-                    && host.isSongMode() && peer1.isSongMode();
+                return recordStarted && peer2.isRecording() && peer2.isSongMode()
+                    && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying()
+                    && chatCount (host, "peer2 started recording") == 1 && chatCount (peer1, "peer2 started recording") == 1;
             },
             8000 });
 
@@ -1346,9 +1555,17 @@ private:
                     && chatCount (host, "peer1 left") == 1 && chatCount (peer2, "peer1 left") == 1;
             } });
 
-        steps.push_back ({ "Peer 1 rejoins and gets the latest song",
+        steps.push_back ({ "Meanwhile the host shares and plays the song -> peer 2 follows",
+            [this] { shareError = host.startSharing(); host.setPlaying (true, 0.0); },
+            [this] { return shareError.isEmpty() && host.isSharing() && peer2.isFollowingShare() && P2().getTransport().isPlaying(); } });
+
+        steps.push_back ({ "Peer 1 rejoins and gets the latest song -> it follows the running share right away",
             [this] { peer1.join ("127.0.0.1", port); },
-            [this] { return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15); } });
+            [this]
+            {
+                return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15)
+                    && peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
+            } });
 
         steps.push_back ({ "People: peer 1 is back in everyone's list and got the earlier chat",
             {},
@@ -1370,12 +1587,23 @@ private:
             },
             40000 });
 
+        steps.push_back ({ "The host stops and ends its share -> nobody plays or follows any more",
+            [this] { host.setPlaying (false, 0.0); host.stopSharing(); },
+            [this]
+            {
+                return ! host.isShareRunning() && ! peer1.isShareRunning() && ! peer2.isShareRunning()
+                    && ! peer1.isFollowingShare() && ! peer2.isFollowingShare()
+                    && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying();
+            } });
+
         //==============================================================================
         // Browser: split by channel, deleting audio from the project
         steps.push_back ({ "Browser: host makes pattern 'Beat' (Kick + Hat) and places it twice (bar 11, lane 7 and bar 13, lane 9)",
             [this]
             {
-                host.setSongMode (true);
+                for (auto* sess : { &host, &peer1, &peer2 })
+                    sess->setSongMode (true);
+
                 auto beat = song::addPattern (H(), "Beat", 1);
 
                 for (int step : { 0, 4, 8, 12 })

@@ -301,11 +301,10 @@ void Session::createLocalEdit()
     lastReplaceReason = "own";
     auto newEdit = te::createEmptyEdit (engine, juce::File());
     song::createDefaultSong (*newEdit);
-    installEdit (std::move (newEdit));
-    editSync->assignMissingSyncIDs();
+    installEdit (std::move (newEdit), true);
 }
 
-void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
+void Session::installEdit (std::unique_ptr<te::Edit> newEdit, bool assignSyncIDs)
 {
     if (onEditAboutToBeReplaced)
         onEditAboutToBeReplaced();
@@ -327,6 +326,11 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     router = std::make_unique<MixerRouter> (*edit);
     recorder->attachTo (edit.get());
 
+    // Our own new songs get their sync IDs now, before the window takes the song's
+    // fingerprint (otherwise an untouched new song would look changed).
+    if (assignSyncIDs)
+        editSync->assignMissingSyncIDs();
+
     if (onEditReplaced)
         onEditReplaced();
 }
@@ -342,7 +346,10 @@ void Session::attachSync()
 // People and chat
 static const juce::Identifier ROSTER ("ROSTER"), PERSON ("PERSON"), LINE ("LINE"),
                               viewingID ("viewing"), recordingID ("recording"), colourID ("colour"),
-                              hostID ("host"), yourID ("yourId"), textID ("text"), systemID ("system"), timeID ("time");
+                              hostID ("host"), yourID ("yourId"), textID ("text"), systemID ("system"), timeID ("time"),
+                              focusID ("focus"), listeningID ("listening"), shareID ("share"), shareNoteID ("shareNote"),
+                              sharerID ("sharer"), toID ("to"), bpmID ("bpm"), oldBpmID ("oldBpm"), resultID ("result"),
+                              yesID ("yes"), fromID_ ("from");
 
 juce::Colour Session::personColour (int index)
 {
@@ -391,6 +398,7 @@ juce::Array<Session::Person> Session::getPeople() const
         me.colour = personColour (0);
         me.isMe = true;
         me.recording = isRecording();
+        me.focus = focus;
         list.add (me);
         return list;
     }
@@ -404,6 +412,9 @@ juce::Array<Session::Person> Session::getPeople() const
         x.colour = personColour ((int) p[colourID]);
         x.isHost = p[hostID];
         x.recording = p[recordingID];
+        x.focus = p[focusID];
+        x.listening = p[listeningID];
+        x.sharing = x.id == shareOwner;
         x.isMe = x.id == myRosterID;
         list.add (x);
     }
@@ -440,11 +451,14 @@ void Session::setViewingPattern (const juce::String& patternSid)
     sendPresence();
 }
 
-void Session::sendPresence()
+void Session::sendPresence (const juce::String& shareNote)
 {
     if (mode == Mode::hosting)
     {
         rebuildRoster();
+
+        if (shareNote.isNotEmpty())
+            handleShareNote (peerName, shareNote);
     }
     else if (mode == Mode::joined && hostLink != nullptr)
     {
@@ -453,6 +467,12 @@ void Session::sendPresence()
         msg.setProperty (ids::name, peerName, nullptr);
         msg.setProperty (viewingID, viewingPattern, nullptr);
         msg.setProperty (recordingID, isRecording(), nullptr);
+        msg.setProperty (focusID, focus, nullptr);
+        msg.setProperty (listeningID, following, nullptr);
+
+        if (shareNote.isNotEmpty())
+            msg.setProperty (shareNoteID, shareNote, nullptr);
+
         hostLink->sendTree (msg);
     }
     else if (onPeopleChanged)
@@ -469,7 +489,7 @@ void Session::rebuildRoster()
     juce::ValueTree r (ROSTER);
 
     auto addPerson = [&r] (const juce::String& id, const juce::String& name, const juce::String& viewing,
-                           bool recording, int colour, bool host)
+                           bool recording, int colour, bool host, bool inFocus, bool listening)
     {
         juce::ValueTree p (PERSON);
         p.setProperty (ids::id, id, nullptr);
@@ -478,17 +498,21 @@ void Session::rebuildRoster()
         p.setProperty (recordingID, recording, nullptr);
         p.setProperty (colourID, colour, nullptr);
         p.setProperty (hostID, host, nullptr);
+        p.setProperty (focusID, inFocus, nullptr);
+        p.setProperty (listeningID, listening, nullptr);
         r.appendChild (p, nullptr);
     };
 
-    addPerson ("0", peerName, viewingPattern, isRecording(), 0, true);
+    r.setProperty (shareID, shareOwner, nullptr);
+    addPerson ("0", peerName, viewingPattern, isRecording(), 0, true, focus, following);
 
     {
         const juce::ScopedLock sl (clients.getLock());
 
         for (auto* c : clients)
             if (c->welcomed && ! c->dead)
-                addPerson (juce::String (c->tag), c->peerName, c->viewing, c->recording, c->colourIndex, false);
+                addPerson (juce::String (c->tag), c->peerName, c->viewing, c->recording, c->colourIndex, false,
+                           c->focus, c->listening && juce::String (c->tag) != shareOwner);
     }
 
     if (roster.isEquivalentTo (r))
@@ -496,6 +520,7 @@ void Session::rebuildRoster()
 
     roster = r;
     myRosterID = "0";
+    sendShareToNewListeners();   // when the host shares: newcomers to the share get the playback
 
     {
         const juce::ScopedLock sl (clients.getLock());
@@ -643,6 +668,7 @@ void Session::leave()
 
     hostLink.reset();
     pendingOps.removeAllChildren (nullptr);
+    resetSessionOnlyState();
     roster = {};
     myRosterID = "0";
     nextColourIndex = 1;
@@ -678,6 +704,7 @@ void Session::handleConnectionLost (PeerConnection& c)
     if (&c == hostLink.get())
     {
         log ("Lost the connection to the host. You keep your copy of the song.");
+        resetSessionOnlyState();
         mode = Mode::offline;
         juce::MessageManager::callAsync ([weak = juce::WeakReference<Session> (this)]
                                         { if (weak != nullptr) weak->hostLink.reset(); });
@@ -689,7 +716,15 @@ void Session::handleConnectionLost (PeerConnection& c)
         if (c.welcomed && mode == Mode::hosting)
         {
             broadcastSystemChat ((c.peerName.isNotEmpty() ? c.peerName : juce::String ("A peer")) + " left");
+
+            if (shareOwner == juce::String (c.tag))
+            {
+                broadcastSystemChat (c.peerName + "'s shared playback ended");
+                setShareOwner ({});
+            }
+
             rebuildRoster();   // c is marked dead, so it's no longer listed
+            checkTempoVote();  // they don't hold up a tempo question any more
         }
     }
 
@@ -747,8 +782,32 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         }
         else if (type == "transport")
         {
-            applyTransport (msg);
-            broadcast (msg, &from);
+            // Only the person sharing controls playback.
+            if (juce::String (from.tag) != shareOwner)
+                return;
+
+            auto relay = msg.createCopy();
+            relay.setProperty (sharerID, juce::String (from.tag), nullptr);
+            const auto to = msg[toID].toString();
+
+            if (to.isEmpty())
+            {
+                applyTransport (relay);
+                broadcast (relay, &from);
+            }
+            else if (to == "0")
+            {
+                applyTransport (relay);
+            }
+            else
+            {
+                flushOutgoing();
+                const juce::ScopedLock sl (clients.getLock());
+
+                for (auto* c : clients)
+                    if (juce::String (c->tag) == to && c->welcomed && ! c->dead)
+                        c->sendTree (relay);
+            }
         }
         else if (type == "resync")
         {
@@ -761,9 +820,30 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
             if (name.isNotEmpty())
                 from.peerName = name;
 
+            const bool startedRecording = ! from.recording && (bool) msg[recordingID];
             from.viewing = msg[viewingID].toString();
             from.recording = msg[recordingID];
+            from.focus = msg[focusID];
+            from.listening = msg[listeningID];
             rebuildRoster();
+
+            if (startedRecording)
+                broadcastSystemChat (from.peerName + " started recording");
+
+            if (msg.hasProperty (shareNoteID))
+                handleShareNote (from.peerName, msg[shareNoteID].toString());
+        }
+        else if (type == "shareStart" || type == "shareStop")
+        {
+            handleShareRequest (juce::String (from.tag), from.peerName, type == "shareStart");
+        }
+        else if (type == "tempoAsk")
+        {
+            startTempoVote (juce::String (from.tag), from.peerName, (double) msg[bpmID]);
+        }
+        else if (type == "tempoAnswer")
+        {
+            handleTempoAnswer ((int) msg[ids::id], juce::String (from.tag), (bool) msg[yesID]);
         }
         else if (type == "chat" && msg.getNumChildren() == 1)
         {
@@ -792,6 +872,17 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         roster = msg.getChild (0).createCopy();
         myRosterID = msg[yourID].toString();
 
+        const auto newOwner = roster[shareID].toString();
+
+        if (newOwner != shareOwner)
+        {
+            const auto old = shareOwner;
+            shareOwner = newOwner;
+            shareOwnerChanged (old);
+        }
+
+        sendShareToNewListeners();
+
         if (onPeopleChanged)
             onPeopleChanged();
 
@@ -814,6 +905,21 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         if (onChatChanged)
             onChatChanged();
 
+        return;
+    }
+
+    if (type == "tempoQuestion")
+    {
+        showTempoQuestion (msg);
+        return;
+    }
+
+    if (type == "tempoClosed")
+    {
+        if (msg[fromID_].toString() == myRosterID && msg[textID].toString().isNotEmpty())
+            log (msg[textID].toString());
+
+        closeTempoQuestion ((int) msg[ids::id], msg[fromID_].toString(), (double) msg[bpmID]);
         return;
     }
 
@@ -934,7 +1040,8 @@ void Session::applyOps (const juce::ValueTree& msg, PeerConnection* from)
 
 void Session::applyTransport (const juce::ValueTree& msg)
 {
-    if (edit == nullptr)
+    // Only playback from the share this PC follows (anything else is someone's own playback).
+    if (edit == nullptr || ! following || msg[sharerID].toString() != shareOwner)
         return;
 
     if (msg.hasProperty (ids::pattern) && compiler != nullptr)
@@ -948,16 +1055,7 @@ void Session::applyTransport (const juce::ValueTree& msg)
     const bool recordingHere = isRecording();
 
     if (msg[ids::recordingBy].toString().isNotEmpty())
-    {
         log (msg[ids::recordingBy].toString() + " is recording - playing along");
-
-        ChatLine line;
-        line.text = msg[ids::recordingBy].toString() + " started recording";
-        line.time = timeNow();
-        line.colour = juce::Colours::grey;
-        line.system = true;
-        addChatLine (line);
-    }
 
     // While this PC records, nobody else can move its playhead (it would break the take).
     if (! (bool) msg[ids::patternOnly] && ! recordingHere)
@@ -965,19 +1063,28 @@ void Session::applyTransport (const juce::ValueTree& msg)
 
     if (shouldPlay && ! transport.isPlaying())
     {
+        if (compiler != nullptr)
+            compiler->compileNow();
+
         transport.play (false);
     }
     else if (! shouldPlay && transport.isPlaying())
     {
-        transport.stop (false, false);   // a shared Stop also ends a take here (it is kept)
+        transport.stop (false, false);
 
-        if (recordingHere)
-        {
-            log ("Someone pressed Stop - saving your take");
+        if (recordingHere && compiler != nullptr)
+            compiler->compileNow();   // looping back on
+    }
 
-            if (compiler != nullptr)
-                compiler->compileNow();   // looping back on
-        }
+    // The person sharing plays a pattern you're not looking at: offer to go there (once per pattern).
+    const auto pattern = getPlayingPattern();
+
+    if (! isSongMode() && pattern.isNotEmpty() && pattern != viewingPattern && pattern != lastOfferedPattern)
+    {
+        lastOfferedPattern = pattern;
+
+        if (onSharedPatternOffered)
+            onSharedPatternOffered (pattern, nameOf (shareOwner));
     }
 
     if (onTransportChanged)
@@ -992,19 +1099,23 @@ juce::String Session::getPlayingPattern() const
     return compiler != nullptr ? compiler->getPattern() : juce::String();
 }
 
-void Session::sendTransport (bool patternOnly, const juce::String& recordingBy)
+void Session::sendTransport (bool patternOnly, const juce::String& recordingBy, const juce::String& to)
 {
-    if (edit == nullptr)
-        return;
+    if (edit == nullptr || ! isSharing())
+        return;   // your playback is yours unless you share it
 
     auto& transport = edit->getTransport();
 
     juce::ValueTree msg (ids::MSG);
     msg.setProperty (ids::type, "transport", nullptr);
+    msg.setProperty (sharerID, myRosterID, nullptr);
     msg.setProperty (ids::playing, transport.isPlaying() || recordingBy.isNotEmpty(), nullptr);
 
     if (recordingBy.isNotEmpty())
         msg.setProperty (ids::recordingBy, recordingBy, nullptr);
+
+    if (to.isNotEmpty())
+        msg.setProperty (toID, to, nullptr);
 
     msg.setProperty (ids::position, transport.getPosition().inSeconds(), nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
@@ -1012,7 +1123,21 @@ void Session::sendTransport (bool patternOnly, const juce::String& recordingBy)
     msg.setProperty (ids::patternOnly, patternOnly, nullptr);
 
     if (mode == Mode::hosting)
-        broadcast (msg, nullptr);
+    {
+        if (to.isEmpty())
+        {
+            broadcast (msg, nullptr);
+        }
+        else
+        {
+            flushOutgoing();
+            const juce::ScopedLock sl (clients.getLock());
+
+            for (auto* c : clients)
+                if (juce::String (c->tag) == to && c->welcomed && ! c->dead)
+                    c->sendTree (msg);
+        }
+    }
     else if (mode == Mode::joined && hostLink != nullptr)
     {
         flushOutgoing();
@@ -1022,7 +1147,7 @@ void Session::sendTransport (bool patternOnly, const juce::String& recordingBy)
 
 void Session::setPlaying (bool shouldPlay, double startSeconds)
 {
-    if (edit == nullptr)
+    if (edit == nullptr || following)
         return;
 
     auto& transport = edit->getTransport();
@@ -1053,7 +1178,7 @@ void Session::setPlaying (bool shouldPlay, double startSeconds)
 
 bool Session::startRecording (double startSeconds)
 {
-    if (edit == nullptr || isRecording())
+    if (edit == nullptr || isRecording() || following)
         return false;
 
     if (compiler != nullptr)
@@ -1065,7 +1190,7 @@ bool Session::startRecording (double startSeconds)
     if (! recorder->start (startSeconds))
         return false;
 
-    // Everyone else plays along from the same spot (and switches to SONG too).
+    // People following your share play along from the same spot (in SONG mode too).
     sendTransport (false, peerName);
 
     if (onTransportChanged)
@@ -1076,7 +1201,7 @@ bool Session::startRecording (double startSeconds)
 
 void Session::seek (double seconds)
 {
-    if (edit == nullptr || isRecording())
+    if (edit == nullptr || isRecording() || following)
         return;
 
     edit->getTransport().setPosition (te::TimePosition::fromSeconds (seconds));
@@ -1092,7 +1217,7 @@ bool Session::isSongMode() const
 
 void Session::setSongMode (bool shouldBeSong)
 {
-    if (compiler == nullptr || shouldBeSong == compiler->isSongMode())
+    if (compiler == nullptr || following || shouldBeSong == compiler->isSongMode())
         return;
 
     compiler->setSongMode (shouldBeSong);
@@ -1104,14 +1229,651 @@ void Session::setSongMode (bool shouldBeSong)
 
 void Session::setPlayingPattern (const juce::String& patternSid)
 {
-    if (compiler == nullptr || patternSid == compiler->getPattern())
+    if (compiler == nullptr || following || patternSid == compiler->getPattern())
         return;
 
     compiler->setPattern (patternSid);
-    sendTransport (true);   // everyone hears the same pattern
+    sendTransport (true);
 
     if (onTransportChanged)
         onTransportChanged();
+}
+
+//==============================================================================
+// This PC's playback, kept when the song object is replaced and restored after a share
+Session::LocalPlayback Session::captureLocalPlayback() const
+{
+    LocalPlayback p;
+
+    if (edit != nullptr)
+    {
+        p.playing = edit->getTransport().isPlaying();
+        p.position = edit->getTransport().getPosition().inSeconds();
+    }
+
+    if (compiler != nullptr)
+    {
+        p.songMode = compiler->isSongMode();
+        p.pattern = compiler->getPattern();
+    }
+
+    return p;
+}
+
+void Session::restoreLocalPlayback (const LocalPlayback& p, bool resumePlaying)
+{
+    if (edit == nullptr || compiler == nullptr)
+        return;
+
+    auto& transport = edit->getTransport();
+
+    if (transport.isPlaying())
+        transport.stop (false, false);
+
+    compiler->setSongMode (p.songMode);
+
+    if (p.pattern.isNotEmpty() && song::findPattern (*edit, p.pattern).isValid())
+        compiler->setPattern (p.pattern);
+
+    compiler->compileNow();
+    transport.setPosition (te::TimePosition::fromSeconds (p.position));
+
+    if (resumePlaying && p.playing)
+        transport.play (false);
+
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
+//==============================================================================
+// Sharing playback
+void Session::resetSessionOnlyState()
+{
+    if (following)
+    {
+        following = false;
+        restoreLocalPlayback (beforeShare, false);
+    }
+
+    shareOwner = {};
+    shareListenersSeen.clearQuick();
+    lastOfferedPattern = {};
+    tempoVote = {};
+    pendingTempo = 0.0;
+
+    for (auto id : openTempoQuestions)
+        if (onTempoQuestionClosed)
+            onTempoQuestionClosed (id);
+
+    openTempoQuestions.clearQuick();
+
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
+juce::String Session::nameOf (const juce::String& rosterID) const
+{
+    for (auto p : roster)
+        if (p[ids::id].toString() == rosterID)
+            return p[ids::name].toString();
+
+    return rosterID == myRosterID ? peerName : juce::String ("someone");
+}
+
+juce::String Session::getShareOwnerName() const
+{
+    return shareOwner.isNotEmpty() ? nameOf (shareOwner) : juce::String();
+}
+
+juce::Colour Session::getShareOwnerColour() const
+{
+    for (auto p : roster)
+        if (p[ids::id].toString() == shareOwner)
+            return personColour ((int) p[colourID]);
+
+    return personColour (0);
+}
+
+juce::String Session::startSharing()
+{
+    if (mode != Mode::hosting && mode != Mode::joined)
+        return "Sharing works when you're in a session";
+
+    if (shareOwner.isNotEmpty())
+        return shareOwner == myRosterID ? juce::String() : nameOf (shareOwner) + " is already sharing";
+
+    if (mode == Mode::hosting)
+    {
+        handleShareRequest ("0", peerName, true);
+    }
+    else if (hostLink != nullptr)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "shareStart", nullptr);
+        hostLink->sendTree (msg);
+    }
+
+    return {};
+}
+
+void Session::stopSharing()
+{
+    if (! isSharing())
+        return;
+
+    if (mode == Mode::hosting)
+    {
+        handleShareRequest ("0", peerName, false);
+    }
+    else if (hostLink != nullptr)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "shareStop", nullptr);
+        hostLink->sendTree (msg);
+    }
+}
+
+void Session::leaveShare()      { unfollowShare ("left"); }
+void Session::joinShare()       { followShare (true); }
+
+void Session::setFocus (bool shouldFocus)
+{
+    if (focus == shouldFocus)
+        return;
+
+    focus = shouldFocus;
+    log (focus ? "Focus on: when someone shares their playback, you keep working on your own"
+               : "Focus off");
+
+    if (focus && following)
+        unfollowShare ("focus");
+    else if (! focus && isShareRunning() && ! isSharing() && ! following && ! isRecording())
+        followShare (true);
+    else
+        sendPresence();
+}
+
+void Session::handleShareRequest (const juce::String& fromID, const juce::String& fromName, bool start)
+{
+    if (mode != Mode::hosting)
+        return;
+
+    if (start)
+    {
+        if (shareOwner.isNotEmpty())
+            return;   // someone else shares already (everyone's roster says who)
+
+        // Who won't be pulled in: people in Focus or recording.
+        juce::StringArray notFollowing;
+
+        auto check = [&notFollowing, &fromID] (const juce::String& id, const juce::String& name, bool inFocus, bool rec)
+        {
+            if (id == fromID)
+                return;
+
+            if (inFocus)
+                notFollowing.add (name + " (Focus)");
+            else if (rec)
+                notFollowing.add (name + " (recording)");
+        };
+
+        check ("0", peerName, focus, isRecording());
+
+        {
+            const juce::ScopedLock sl (clients.getLock());
+
+            for (auto* c : clients)
+                if (c->welcomed && ! c->dead)
+                    check (juce::String (c->tag), c->peerName, c->focus, c->recording);
+        }
+
+        broadcastSystemChat (fromName + " is sharing their playback"
+                              + (notFollowing.isEmpty() ? juce::String()
+                                                        : " (not following: " + notFollowing.joinIntoString (", ") + ")"));
+        setShareOwner (fromID);
+    }
+    else if (shareOwner == fromID && fromID.isNotEmpty())
+    {
+        broadcastSystemChat (fromName + " stopped sharing");
+        setShareOwner ({});
+    }
+}
+
+void Session::setShareOwner (const juce::String& newOwner)
+{
+    if (newOwner == shareOwner)
+        return;
+
+    const auto old = shareOwner;
+    shareOwner = newOwner;
+    shareOwnerChanged (old);   // the host reacts like everyone else...
+    rebuildRoster();           // ...and everyone else learns it from the roster
+}
+
+void Session::shareOwnerChanged (const juce::String& oldOwner)
+{
+    juce::ignoreUnused (oldOwner);
+    lastOfferedPattern = {};
+    shareListenersSeen.clearQuick();
+
+    if (following)
+    {
+        following = false;
+        restoreLocalPlayback (beforeShare, false);
+        log ("The shared playback ended - back to your own (where you were before)");
+    }
+
+    if (isSharing())
+    {
+        log ("You're sharing your playback: everyone following hears what you play. Only you control it");
+    }
+    else if (isShareRunning())
+    {
+        const auto who = nameOf (shareOwner);
+
+        if (focus)
+            log (who + " is sharing their playback. You're in Focus, so you keep working (click 'Join' to listen along)");
+        else if (isRecording())
+            log (who + " is sharing their playback. Join when your take is done");
+        else
+            followShare (false);
+    }
+
+    sendPresence();
+
+    if (onTransportChanged)
+        onTransportChanged();
+
+    if (onPeopleChanged)
+        onPeopleChanged();
+}
+
+void Session::followShare (bool manual)
+{
+    if (following || ! isShareRunning() || isSharing() || edit == nullptr)
+        return;
+
+    if (isRecording())
+    {
+        log ("Finish your take first");
+        return;
+    }
+
+    beforeShare = captureLocalPlayback();
+    following = true;
+    lastOfferedPattern = {};
+
+    if (edit->getTransport().isPlaying())
+        edit->getTransport().stop (false, false);   // until the shared playback arrives
+
+    log ("Listening along with " + nameOf (shareOwner) + " (they control playback; press the share button to leave)");
+    sendPresence (manual ? "joined" : "");
+
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
+void Session::unfollowShare (const juce::String& note)
+{
+    if (! following)
+        return;
+
+    following = false;
+    restoreLocalPlayback (beforeShare, false);
+    log ("Left " + nameOf (shareOwner) + "'s playback - back to your own (where you were before)");
+    sendPresence (note);
+
+    if (onTransportChanged)
+        onTransportChanged();
+}
+
+void Session::sendShareToNewListeners()
+{
+    if (! isSharing())
+    {
+        shareListenersSeen.clearQuick();
+        return;
+    }
+
+    juce::StringArray listening;
+
+    for (auto p : roster)
+        if ((bool) p[listeningID] && p[ids::id].toString() != myRosterID)
+            listening.add (p[ids::id].toString());
+
+    for (auto& id : listening)
+        if (! shareListenersSeen.contains (id))
+            sendTransport (false, {}, id);   // they just started following: give them the playback
+
+    shareListenersSeen = listening;          // someone who leaves and comes back gets it again
+}
+
+void Session::handleShareNote (const juce::String& name, const juce::String& note)
+{
+    if (mode != Mode::hosting || ! isShareRunning())
+        return;
+
+    const auto owner = nameOf (shareOwner);
+
+    if (note == "left")         broadcastSystemChat (name + " left " + owner + "'s playback");
+    else if (note == "focus")   broadcastSystemChat (name + " switched to Focus and left " + owner + "'s playback");
+    else if (note == "joined")  broadcastSystemChat (name + " joined " + owner + "'s playback");
+}
+
+//==============================================================================
+// Tempo changes need everyone's OK
+static juce::String bpmText (double bpm)
+{
+    return std::abs (bpm - std::round (bpm)) < 0.005 ? juce::String (juce::roundToInt (bpm)) : juce::String (bpm, 2);
+}
+
+bool Session::tempoNeedsApproval() const
+{
+    if (mode == Mode::hosting)
+        return getNumConnectedPeers() > 0;
+
+    return mode == Mode::joined;
+}
+
+void Session::applyTempo (double bpm)
+{
+    if (edit == nullptr)
+        return;
+
+    // Straight into the song, without the undo history: Ctrl+Z must not skip the approval.
+    if (auto* tempo = edit->tempoSequence.getTempo (0))
+        tempo->state.setProperty (te::IDs::bpm, juce::jlimit (40.0, 250.0, bpm), nullptr);
+}
+
+void Session::requestTempo (double bpmIn)
+{
+    if (edit == nullptr)
+        return;
+
+    auto* tempo = edit->tempoSequence.getTempo (0);
+
+    if (tempo == nullptr)
+        return;
+
+    const double bpm = juce::jlimit (40.0, 250.0, std::round (bpmIn * 100.0) / 100.0);
+
+    if (! tempoNeedsApproval())
+    {
+        pendingTempo = 0.0;
+        applyTempo (bpm);
+        statusChanged();
+        return;
+    }
+
+    const bool same = std::abs (tempo->getBpm() - bpm) < 0.001;
+
+    if (same && pendingTempo == 0.0)
+        return;
+
+    pendingTempo = same ? 0.0 : bpm;   // back to the current tempo = withdraw the request
+
+    if (mode == Mode::hosting)
+    {
+        startTempoVote ("0", peerName, bpm);
+    }
+    else if (hostLink != nullptr)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "tempoAsk", nullptr);
+        msg.setProperty (bpmID, bpm, nullptr);
+        hostLink->sendTree (msg);
+    }
+
+    statusChanged();
+}
+
+void Session::startTempoVote (const juce::String& fromID, const juce::String& fromName, double bpm)
+{
+    if (mode != Mode::hosting || edit == nullptr)
+        return;
+
+    auto* tempo = edit->tempoSequence.getTempo (0);
+
+    if (tempo == nullptr)
+        return;
+
+    bpm = juce::jlimit (40.0, 250.0, bpm);
+    const double current = tempo->getBpm();
+
+    auto tellRequester = [this, &fromID, &bpm] (const juce::String& result, const juce::String& text)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "tempoClosed", nullptr);
+        msg.setProperty (ids::id, 0, nullptr);
+        msg.setProperty (fromID_, fromID, nullptr);
+        msg.setProperty (bpmID, bpm, nullptr);
+        msg.setProperty (resultID, result, nullptr);
+        msg.setProperty (textID, text, nullptr);
+
+        if (fromID == "0")
+        {
+            if (text.isNotEmpty())
+                log (text);
+
+            closeTempoQuestion (0, "0", bpm);
+            return;
+        }
+
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            if (juce::String (c->tag) == fromID && ! c->dead)
+                c->sendTree (msg);
+    };
+
+    if (tempoVote.id != 0)
+    {
+        if (tempoVote.fromID != fromID)
+        {
+            tellRequester ("busy", tempoVote.fromName + "'s tempo change (" + bpmText (tempoVote.bpm)
+                                     + " BPM) is still waiting for answers. Try again in a moment");
+            return;
+        }
+
+        // The same person changed their mind: the old question goes away.
+        finishTempoVote ("replaced", std::abs (bpm - current) < 0.001 ? fromName + " withdrew the tempo change"
+                                                                     : juce::String());
+    }
+
+    if (std::abs (bpm - current) < 0.001)
+    {
+        tellRequester ("same", {});
+        return;
+    }
+
+    TempoVote v;
+    v.id = nextTempoID++;
+    v.bpm = bpm;
+    v.oldBpm = current;
+    v.fromID = fromID;
+    v.fromName = fromName;
+    v.deadline = juce::Time::getMillisecondCounter() + (juce::uint32) tempoAnswerTimeoutMs;
+
+    if (fromID != "0")
+        v.waiting.add ("0");
+
+    {
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            if (c->welcomed && ! c->dead && juce::String (c->tag) != fromID)
+                v.waiting.add (juce::String (c->tag));
+    }
+
+    if (v.waiting.isEmpty())
+    {
+        applyTempo (bpm);
+        tellRequester ("approved", {});
+        return;
+    }
+
+    tempoVote = v;
+    broadcastSystemChat (fromName + " asks to change the tempo from " + bpmText (current) + " to " + bpmText (bpm) + " BPM");
+
+    juce::ValueTree q (ids::MSG);
+    q.setProperty (ids::type, "tempoQuestion", nullptr);
+    q.setProperty (ids::id, v.id, nullptr);
+    q.setProperty (bpmID, bpm, nullptr);
+    q.setProperty (oldBpmID, current, nullptr);
+    q.setProperty (ids::name, fromName, nullptr);
+    q.setProperty (fromID_, fromID, nullptr);
+
+    for (auto& id : v.waiting)
+    {
+        if (id == "0")
+        {
+            showTempoQuestion (q);
+            continue;
+        }
+
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            if (juce::String (c->tag) == id && ! c->dead)
+                c->sendTree (q);
+    }
+}
+
+void Session::handleTempoAnswer (int id, const juce::String& fromID, bool yes)
+{
+    if (mode != Mode::hosting || tempoVote.id == 0 || id != tempoVote.id || ! tempoVote.waiting.contains (fromID))
+        return;
+
+    if (! yes)
+    {
+        finishTempoVote ("declined", nameOf (fromID) + " declined the tempo change to " + bpmText (tempoVote.bpm)
+                                       + " BPM - it stays at " + bpmText (tempoVote.oldBpm));
+        return;
+    }
+
+    tempoVote.waiting.removeString (fromID);
+    checkTempoVote();
+}
+
+void Session::checkTempoVote()
+{
+    if (mode != Mode::hosting || tempoVote.id == 0)
+        return;
+
+    auto connected = [this] (const juce::String& id)
+    {
+        if (id == "0")
+            return true;
+
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            if (juce::String (c->tag) == id && c->welcomed && ! c->dead)
+                return true;
+
+        return false;
+    };
+
+    if (! connected (tempoVote.fromID))
+    {
+        finishTempoVote ("cancelled", tempoVote.fromName + " left, so their tempo change is cancelled");
+        return;
+    }
+
+    for (int i = tempoVote.waiting.size(); --i >= 0;)
+        if (! connected (tempoVote.waiting[i]))
+            tempoVote.waiting.remove (i);   // people who left don't hold it up
+
+    if (tempoVote.waiting.isEmpty())
+    {
+        finishTempoVote ("approved", "Tempo changed to " + bpmText (tempoVote.bpm) + " BPM (everyone agreed)");
+        return;
+    }
+
+    if ((int) (juce::Time::getMillisecondCounter() - tempoVote.deadline) >= 0)
+    {
+        juce::StringArray names;
+
+        for (auto& id : tempoVote.waiting)
+            names.add (nameOf (id));
+
+        finishTempoVote ("expired", "Tempo change to " + bpmText (tempoVote.bpm) + " BPM cancelled: "
+                                      + names.joinIntoString (", ") + " didn't answer in time");
+    }
+}
+
+void Session::finishTempoVote (const juce::String& result, const juce::String& chatText)
+{
+    if (tempoVote.id == 0)
+        return;
+
+    const auto v = tempoVote;
+    tempoVote = {};
+
+    if (result == "approved")
+        applyTempo (v.bpm);
+
+    if (chatText.isNotEmpty())
+        broadcastSystemChat (chatText);
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "tempoClosed", nullptr);
+    msg.setProperty (ids::id, v.id, nullptr);
+    msg.setProperty (fromID_, v.fromID, nullptr);
+    msg.setProperty (bpmID, v.bpm, nullptr);
+    msg.setProperty (resultID, result, nullptr);
+    broadcast (msg, nullptr);
+    closeTempoQuestion (v.id, v.fromID, v.bpm);
+}
+
+void Session::showTempoQuestion (const juce::ValueTree& msg)
+{
+    TempoQuestion q;
+    q.id = (int) msg[ids::id];
+    q.bpm = msg[bpmID];
+    q.oldBpm = msg[oldBpmID];
+    q.fromName = msg[ids::name].toString();
+    openTempoQuestions.addIfNotAlreadyThere (q.id);
+    log (q.fromName + " asks to change the tempo from " + bpmText (q.oldBpm) + " to " + bpmText (q.bpm) + " BPM");
+
+    if (onTempoQuestion)
+        onTempoQuestion (q);
+}
+
+void Session::closeTempoQuestion (int id, const juce::String& requesterID, double bpm)
+{
+    if (openTempoQuestions.contains (id))
+    {
+        openTempoQuestions.removeFirstMatchingValue (id);
+
+        if (onTempoQuestionClosed)
+            onTempoQuestionClosed (id);
+    }
+
+    // Only the answer to my current request (an older one I replaced doesn't count).
+    if (requesterID == myRosterID && pendingTempo != 0.0 && std::abs (pendingTempo - bpm) < 0.001)
+    {
+        pendingTempo = 0.0;
+        statusChanged();
+    }
+}
+
+void Session::answerTempo (int id, bool yes)
+{
+    openTempoQuestions.removeFirstMatchingValue (id);
+
+    if (mode == Mode::hosting)
+    {
+        handleTempoAnswer (id, "0", yes);
+    }
+    else if (mode == Mode::joined && hostLink != nullptr)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "tempoAnswer", nullptr);
+        msg.setProperty (ids::id, id, nullptr);
+        msg.setProperty (yesID, yes, nullptr);
+        hostLink->sendTree (msg);
+    }
 }
 
 //==============================================================================
@@ -1138,10 +1900,8 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason, con
     msg.setProperty (ids::type, "snapshot", nullptr);
     msg.setProperty (ids::peer, c.peerIndex, nullptr);
     msg.setProperty (ids::reason, reason, nullptr);
-    msg.setProperty (ids::playing, edit->getTransport().isPlaying(), nullptr);
-    msg.setProperty (ids::position, edit->getTransport().getPosition().inSeconds(), nullptr);
-    msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
-    msg.setProperty (ids::songMode, isSongMode(), nullptr);
+    msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);   // a starting pattern for newcomers
+
     if (premade.isValid())
     {
         msg.appendChild (premade.createCopy(), nullptr);
@@ -1177,8 +1937,22 @@ juce::String Session::replaceSong (std::unique_ptr<te::Edit> newEdit, const juce
 
     deferredSnapshot = {};
     lastReplaceReason = "own";
-    installEdit (std::move (newEdit));
-    editSync->assignMissingSyncIDs();
+
+    // A new song ends any shared playback (its patterns are gone).
+    if (mode == Mode::hosting && isShareRunning())
+    {
+        broadcastSystemChat ("Shared playback ended (new song)");
+        setShareOwner ({});
+    }
+
+    const bool wasSongMode = isSongMode();   // PAT / SONG is yours: it stays as it was
+
+    if (edit != nullptr && edit->getTransport().isPlaying())
+        edit->getTransport().stop (false, false);
+
+    installEdit (std::move (newEdit), true);
+    compiler->setSongMode (wasSongMode);
+    compiler->compileNow();
 
     if (mode == Mode::hosting)
     {
@@ -1216,9 +1990,6 @@ juce::String Session::newProject()
 
     if (isRecording())
         return "Stop recording first";
-
-    if (edit != nullptr && edit->getTransport().isPlaying())
-        setPlaying (false, 0.0);
 
     auto newEdit = te::createEmptyEdit (engine, juce::File());
     song::createDefaultSong (*newEdit);
@@ -1267,9 +2038,6 @@ void Session::openProject (const juce::File& file, std::function<void (juce::Str
                 return;
             }
 
-            if (self.edit != nullptr && self.edit->getTransport().isPlaying())
-                self.setPlaying (false, 0.0);
-
             // The file name is the song's name (set before loading, so it's simply part of the song).
             auto state = result.song.createCopy();
             const auto title = file.getFileNameWithoutExtension();
@@ -1307,7 +2075,7 @@ void Session::saveProject (const juce::File& file, bool includeAudio, std::funct
     }
 
     auto song = editSync->createSnapshot();   // also writes the plugins' current settings into it
-    const auto songHash = editSync->computeHash();
+    const auto songHash = editSync->computeContentHash();   // what "unsaved changes" compares with
     auto hashes = song::getAssetHashes (*edit);
     ++fileJobsRunning;
     juce::WeakReference<Session> weak (this);
@@ -1375,16 +2143,30 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
     lastHashMatched = true;
     mode = Mode::joined;
     lastReplaceReason = reason;
+
+    // Playback is this PC's own: a fresh copy of the same song keeps it going where it was;
+    // a different song (joining, or the host switched songs) starts stopped at the beginning.
+    const bool sameSong = edit != nullptr && reason != "join" && reason != "newSong";
+    const auto playback = captureLocalPlayback();
+
+    if (edit != nullptr && edit->getTransport().isPlaying())
+        edit->getTransport().stop (false, false);
+
     installEdit (std::move (newEdit));
 
-    if (msg.hasProperty (ids::pattern))
-        compiler->setPattern (msg[ids::pattern].toString());
+    if (sameSong)
+    {
+        restoreLocalPlayback (playback, true);
+    }
+    else
+    {
+        compiler->setSongMode (playback.songMode);
 
-    if (msg.hasProperty (ids::songMode))
-        compiler->setSongMode ((bool) msg[ids::songMode]);
+        if (msg.hasProperty (ids::pattern))
+            compiler->setPattern (msg[ids::pattern].toString());
 
-    if ((bool) msg[ids::playing])
-        applyTransport (msg);
+        compiler->compileNow();
+    }
 
     if (reason == "join")
     {
@@ -1423,7 +2205,12 @@ void Session::timerCallback()
     {
         presenceRecording = isRecording();
         sendPresence();   // the others see a recording dot next to your name
+
+        if (presenceRecording && mode == Mode::hosting)
+            broadcastSystemChat (peerName + " started recording");
     }
+
+    checkTempoVote();
 
     if (deferredSnapshot.isValid() && ! isRecording() && ! recorder->isBusy())
     {

@@ -111,6 +111,9 @@ public:
 
     /** Hash of the shared state (local-only data excluded). */
     juce::int64 computeHash() const;
+    /** Like computeHash, but the order of the song's top-level sections doesn't count
+        (the engine reorders them on its own after a song is made). For "unsaved changes". */
+    juce::int64 computeContentHash() const;
 
     /** How many third-party plugin knobs are being watched (and so sent when moved). */
     int getNumListenedParameters() const noexcept   { return (int) listenedParams.size(); }

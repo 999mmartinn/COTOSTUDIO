@@ -66,6 +66,18 @@ private:
 
     // Transport / pattern bar
     juce::TextButton patModeButton { "PAT" }, songModeButton { "SONG" };
+
+    // Sharing playback ("listen together") and Focus
+    juce::TextButton shareButton { "Share" }, focusButton { "Focus" };
+    juce::Component::SafePointer<juce::AlertWindow> patternOffer;    // "go to the shared pattern?"
+    void showPatternOffer (const juce::String& patternSid, const juce::String& ownerName);
+
+    // Tempo changes asked of everyone
+    std::map<int, juce::Component::SafePointer<juce::AlertWindow>> tempoQuestions;
+    int tempoAskCountdown = 0;    // timer ticks until a changed BPM is sent as a request
+    void showTempoQuestion (const collab::Session::TempoQuestion&);
+    void closeTempoQuestion (int id);
+    void refreshTempo();
     juce::TextButton recordButton;
     bool lastRecording = false;
     void showRecordSetupMenu();

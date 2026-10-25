@@ -881,6 +881,19 @@ juce::int64 EditSync::computeHash() const
     return filteredCopy (root, true).toXmlString().hashCode64();
 }
 
+juce::int64 EditSync::computeContentHash() const
+{
+    auto copy = filteredCopy (root, true);
+    juce::StringArray parts;
+
+    for (auto child : copy)
+        parts.add (child.toXmlString());
+
+    parts.sort (false);
+    copy.removeAllChildren (nullptr);
+    return (copy.toXmlString() + parts.joinIntoString ("\n")).hashCode64();
+}
+
 juce::ValueTree EditSync::createSnapshot()
 {
     // Write every plugin's current state into the tree. These writes are sent

@@ -563,6 +563,16 @@ private:
                     what = pattern.isValid() ? "on " + pattern[ids::name].toString() : juce::String();
                 }
 
+                // Playback: sharing it, listening along, or in Focus.
+                juce::StringArray tags;
+
+                if (p.sharing)    tags.add ("sharing playback");
+                if (p.listening)  tags.add ("listening along");
+                if (p.focus)      tags.add ("Focus");
+
+                if (! tags.isEmpty())
+                    what += (what.isEmpty() ? juce::String() : juce::String::fromUTF8 (" \xc2\xb7 ")) + tags.joinIntoString (", ");
+
                 g.setFont (11.0f);
                 g.drawText (what, row, juce::Justification::topLeft, true);
             }

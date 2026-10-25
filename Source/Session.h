@@ -41,7 +41,7 @@ public:
     int lastSeqApplied = 0;      // host side: last op batch received from this peer
     bool welcomed = false;
     juce::String viewing;        // host side: presence of this peer (pattern sid)
-    bool recording = false;
+    bool recording = false, focus = false, listening = false;
     int colourIndex = -1;        // host side: this person's colour, kept for the whole connection
     std::atomic<bool> dead { false };
     const int tag;               // identifies this link for transfers
@@ -97,19 +97,74 @@ public:
     int getResyncCount() const noexcept          { return resyncCount; }
     bool isInSync() const noexcept               { return lastHashMatched; }
 
-    /** Play/stop is shared: each PC renders its own audio from the same song. */
+    /** Playback (PAT/SONG, play/stop, position, which pattern plays) belongs to each PC:
+        everyone listens to their own part. While you share your playback, everyone
+        following your share hears exactly what you hear. While you follow someone
+        else's share, these do nothing (only the person sharing controls playback). */
     void setPlaying (bool shouldPlay, double startSeconds = 0.0);
 
-    /** Moves the playhead; while playing, everyone jumps there too. */
+    /** Moves the playhead. */
     void seek (double seconds);
 
-    /** Pattern mode: which pattern plays. Shared too, so everyone hears the same thing. */
+    /** Pattern mode: which pattern plays. */
     void setPlayingPattern (const juce::String& patternSid);
     juce::String getPlayingPattern() const;
 
     /** Records every armed insert from this position (switches to SONG mode).
-        Everyone else plays along from the same spot. False if nothing is armed. */
+        False if nothing is armed, or while you follow someone's share. */
     bool startRecording (double startSeconds);
+
+    //==============================================================================
+    // Sharing playback ("listen together") and Focus
+    /** Starts sharing your playback: everyone who isn't in Focus (or recording) follows it.
+        Only one person shares at a time. Returns an error text, or "" if it worked. */
+    juce::String startSharing();
+    /** Ends your share: everyone goes back to their own playback, as it was before. */
+    void stopSharing();
+    /** Stops following someone's share (only for you; you're back to where you were). */
+    void leaveShare();
+    /** Follows the running share again (after leaving it, or while in Focus). */
+    void joinShare();
+    /** Focus: a share started by someone else doesn't pull you in. Turning it on while
+        following a share leaves it; turning it off joins a running share. */
+    void setFocus (bool);
+    bool isFocus() const noexcept                  { return focus; }
+
+    bool isShareRunning() const noexcept           { return shareOwner.isNotEmpty(); }
+    bool isSharing() const noexcept                { return isShareRunning() && shareOwner == myRosterID; }
+    bool isFollowingShare() const noexcept         { return following; }
+    bool canControlPlayback() const noexcept       { return ! following; }
+    /** Who is sharing ("" if nobody), and their colour. */
+    juce::String getShareOwnerName() const;
+    juce::Colour getShareOwnerColour() const;
+
+    /** While following a share in PAT mode: the person sharing plays a pattern that isn't
+        the one you're looking at. The window asks whether to go there. */
+    std::function<void (const juce::String& patternSid, const juce::String& ownerName)> onSharedPatternOffered;
+
+    //==============================================================================
+    // Tempo: part of the song, so in a session everyone else has to agree to a change.
+    struct TempoQuestion
+    {
+        int id = 0;
+        double bpm = 120.0, oldBpm = 120.0;
+        juce::String fromName;
+    };
+
+    /** True when a tempo change needs the others' approval (someone else is connected). */
+    bool tempoNeedsApproval() const;
+    /** Changes the tempo (alone: right away; in a session: asks everyone else first).
+        Tempo changes are not part of Ctrl+Z (undoing would skip the approval). */
+    void requestTempo (double bpm);
+    /** Your own request still waiting for answers (0 if none). */
+    double getPendingTempo() const noexcept        { return pendingTempo; }
+    /** Someone asks to change the tempo: answer with answerTempo (id, yes). */
+    std::function<void (const TempoQuestion&)> onTempoQuestion;
+    /** The question is over (decided, cancelled or expired): close it if it's still shown. */
+    std::function<void (int id)> onTempoQuestionClosed;
+    void answerTempo (int id, bool yes);
+    /** How long the others have to answer (the self-test shortens it). */
+    void setTempoAnswerTimeout (int ms)            { tempoAnswerTimeoutMs = juce::jmax (500, ms); }
     bool isRecording() const                     { return recorder != nullptr && recorder->isRecording(); }
     Recorder& getRecorder() noexcept             { return *recorder; }
 
@@ -139,6 +194,7 @@ public:
         juce::String id, name, viewing;     // viewing = sid of the pattern they're looking at
         juce::Colour colour;
         bool isHost = false, isMe = false, recording = false;
+        bool focus = false, listening = false, sharing = false;   // sharing playback / following it / in Focus
     };
 
     struct ChatLine
@@ -162,7 +218,7 @@ public:
     std::function<void()> onPeopleChanged;
     std::function<void()> onChatChanged;
 
-    /** PAT / SONG mode, shared like play/stop. */
+    /** PAT / SONG mode (yours, like play/stop). */
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
     PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
@@ -178,6 +234,17 @@ public:
     void logMessage (const juce::String& s)        { log (s); }
     MixerRouter* getRouter() const noexcept        { return router.get(); }
 
+    /** Disconnects every callback (the window calls it before it goes away). */
+    void clearCallbacks()
+    {
+        onEditAboutToBeReplaced = onEditReplaced = onRemoteChange = onTransportChanged = onStatusChanged = nullptr;
+        onPeopleChanged = onChatChanged = nullptr;
+        onLog = nullptr;
+        onSharedPatternOffered = nullptr;
+        onTempoQuestion = nullptr;
+        onTempoQuestionClosed = nullptr;
+    }
+
     std::function<void()> onEditAboutToBeReplaced;
     std::function<void()> onEditReplaced;
     std::function<void()> onRemoteChange;
@@ -187,7 +254,7 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 6;
+    static constexpr int protocolVersion = 7;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -233,20 +300,72 @@ private:
     int nextColourIndex = 1;             // 0 is the host's
     juce::Array<ChatLine> chat;
 
-    void sendPresence();
+    void sendPresence (const juce::String& shareNote = {});
     void rebuildRoster();                // host
+
+    // Playback of this PC (kept while the song object is replaced, restored after a share)
+    struct LocalPlayback
+    {
+        bool songMode = false, playing = false;
+        juce::String pattern;
+        double position = 0.0;
+    };
+
+    LocalPlayback captureLocalPlayback() const;
+    void restoreLocalPlayback (const LocalPlayback&, bool resumePlaying);
+
+    // Sharing (see startSharing). The host decides who shares; everyone learns it from the roster.
+    juce::String shareOwner;             // roster id of the person sharing ("" = nobody)
+    bool following = false, focus = false;
+    LocalPlayback beforeShare;           // what this PC was doing before it followed the share
+    juce::StringArray shareListenersSeen;   // owner: who already got the current playback
+    juce::String lastOfferedPattern;
+    void setShareOwner (const juce::String& newOwner);      // host: decides; everyone: reacts
+    void resetSessionOnlyState();        // leaving a session: own playback back, no questions open
+    void shareOwnerChanged (const juce::String& oldOwner);
+    void followShare (bool manual);
+    void unfollowShare (const juce::String& note);
+    void sendShareToNewListeners();
+    void handleShareRequest (const juce::String& fromID, const juce::String& fromName, bool start);   // host
+    void handleShareNote (const juce::String& name, const juce::String& note);                         // host
+    juce::String nameOf (const juce::String& rosterID) const;
+
+    // Tempo approval (the host runs the vote)
+    struct TempoVote
+    {
+        int id = 0;
+        double bpm = 120.0, oldBpm = 120.0;
+        juce::String fromID, fromName;
+        juce::StringArray waiting;      // roster ids that haven't answered yet
+        juce::uint32 deadline = 0;
+    };
+
+    TempoVote tempoVote;                 // host: the running vote (id 0 = none)
+    int nextTempoID = 1;
+    int tempoAnswerTimeoutMs = 30000;
+    double pendingTempo = 0.0;           // my own request, waiting
+    juce::Array<int> openTempoQuestions; // questions shown on this PC
+    void applyTempo (double bpm);
+    void startTempoVote (const juce::String& fromID, const juce::String& fromName, double bpm);   // host
+    void handleTempoAnswer (int id, const juce::String& fromID, bool yes);                         // host
+    void finishTempoVote (const juce::String& result, const juce::String& chatText);               // host
+    void showTempoQuestion (const juce::ValueTree& msg);
+    void closeTempoQuestion (int id, const juce::String& requesterID, double bpm);
+    void checkTempoVote();               // host: answers / timeout / people who left
     void addChatLine (const ChatLine&);
     void broadcastSystemChat (const juce::String& text);   // host
     juce::Colour myColour() const;
 
-    void installEdit (std::unique_ptr<te::Edit>);
+    void installEdit (std::unique_ptr<te::Edit>, bool assignSyncIDs = false);
     void attachSync();
     void sendLocalOp (const juce::ValueTree& op);
     void flushOutgoing();
     void broadcast (const juce::ValueTree& msg, PeerConnection* except);
     void applyOps (const juce::ValueTree& msg, PeerConnection* from);
     void applyTransport (const juce::ValueTree& msg);
-    void sendTransport (bool patternOnly, const juce::String& recordingBy = {});
+    /** Sends this PC's playback to the people following its share (only while sharing).
+        to: one person's roster id, or "" for everyone. */
+    void sendTransport (bool patternOnly, const juce::String& recordingBy = {}, const juce::String& to = {});
     void sendSnapshotTo (PeerConnection&, const juce::String& reason, const juce::ValueTree& premade = {});
     juce::String replaceSong (std::unique_ptr<te::Edit>, const juce::String& announcement);
     juce::ThreadPool fileJobs { 1 };

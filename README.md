@@ -5,6 +5,38 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 7 – Playing on your own, sharing, Focus, tempo approval (v0.9)**
+* **Your playback is yours now.** PAT/SONG, Play/Stop, where the playhead is and
+  which pattern loops only change on your PC. Everyone can listen to a
+  different part while working, without disturbing the others. Edits (notes,
+  patterns, playlist, mixer, effects, takes) are still shared live.
+* **Share** (next to PAT/SONG): you want the others to hear something? Click
+  it. Everyone who isn't in Focus is pulled into your playback automatically:
+  same mode, pattern and position, in sync. **Only you control it** while you
+  share; click again to stop sharing. Only one person shares at a time.
+* While someone shares, your button says **With <name>**: click it to leave
+  (only you leave; the others keep listening, and the chat says you left). You
+  go back to exactly where you were before the share (stopped). If you leave
+  or were in Focus, it says **Join <name>** to listen along again.
+* When the share ends, everyone goes back to where they were before it.
+* **Focus**: someone's share doesn't pull you in, you keep working on your
+  own. Turning Focus on while listening to a share leaves it; turning it off
+  joins a running share. People see "Focus" next to your name.
+* If the person sharing plays a pattern you aren't looking at, you're asked
+  **Go to the shared pattern?** *Go there* opens it; *Stay here* keeps you on
+  yours while you still hear theirs.
+* Someone who is recording isn't pulled into a share (it would break the
+  take); they can join when they're done. Recording no longer makes the others
+  play along - share your playback if you want them to hear the take.
+* **Tempo needs everyone's OK**: changing the BPM in a session asks everyone
+  else *Accept / Decline* (the field turns orange while you wait). One Decline
+  cancels it, and so does no answer within 30 seconds; the chat says what
+  happened. Alone, the tempo changes right away. Tempo changes aren't part of
+  Ctrl+Z (undoing would skip the approval): to go back, ask again.
+* Fixed: a brand-new, untouched song showed "Untitled *" (unsaved changes) and
+  asked to be saved when closing.
+* Everyone needs v0.9 (v0.8 copies can't join a v0.9 host).
+
 **Step 6 – Saving and opening songs (v0.8)**
 * **File** button (top left): **New song** (Ctrl+N), **Open...** (Ctrl+O),
   **Open recent**, **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S) and
@@ -61,8 +93,8 @@ Built step by step, with stability first.
   Inputs and arming belong to your PC only: your mic is yours, and nobody
   else's song changes when you pick one.
 * Press **● Rec** (or **R**): every armed insert records from the playlist's
-  green start marker, in SONG mode, and everyone else plays along. Press Rec
-  again, Stop or Space to finish.
+  green start marker, in SONG mode. Press Rec again, Stop or Space to finish.
+  (Since v0.9 the others don't play along unless you share your playback.)
 * Nothing armed yet? Rec offers your inputs and makes a **Vocals** insert that
   records from the one you pick (add your autotune to it, then press Rec).
 * Each take becomes a new audio channel (*Vocals take 1, 2...*) routed to that
@@ -122,7 +154,8 @@ Built step by step, with stability first.
 
 **Step 2 – Playlist (v0.3)**
 * **PAT / SONG** buttons next to Play (like FL). PAT loops the pattern you are
-  editing; SONG plays the arrangement. The mode is shared with everyone.
+  editing; SONG plays the arrangement. (Since v0.9 the mode is yours; see
+  Share.)
 * **Playlist** on top: lanes ("Track 1-16") where patterns are placed as clips.
   Click to place the selected pattern, drag to move it, drag its right edge to
   shorten or lengthen it, right-click to delete it, click a clip to edit its
@@ -181,7 +214,7 @@ and [JUCE](https://juce.com) (AGPLv3). This project is published under the
      plugin – it appears on both PCs;
    * click the plugin's button to open its window and move a knob – the
      other PC's knob moves;
-   * press **Play** on either PC – both play the loop.
+   * press **Share**, then **Play** on either PC – both play the loop.
 
 ### Which address do I type?
 
@@ -225,6 +258,8 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 * Chat isn't saved: it lives as long as the session (the host keeps it).
 * Plugins are saved with their settings, but each PC needs them installed to
   hear them (as before).
+* Sharing follows the person sharing as fast as the network allows: on the
+  internet the others hear it a few hundredths of a second later.
 * Not yet: solo and send knobs. Undo only undoes your own changes, and it
   starts fresh after opening a song.
 * Saving or opening a very big song (many long takes) can take a few seconds;
@@ -236,7 +271,10 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 `SyncTest.exe --selftest --plugin=<path to SyncTestGain.vst3>` runs a host
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
-including a fast 200-step drag), simultaneous edits, ID clashes, Play/Stop,
+including a fast 200-step drag), simultaneous edits, ID clashes, personal
+playback, sharing it (following in sync, only the sharer controls it, leaving,
+joining, Focus, a late joiner following a running share, everyone back where
+they were afterwards), tempo approval (accept, decline, no answer),
 the playlist, the mixer, saving and opening songs (a fourth PC opening the
 saved file must get the identical song and audio; the host switching songs
 for everyone; IDs staying unique), the people list and chat, split by channel (the song
