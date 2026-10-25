@@ -18,12 +18,36 @@ jobs:
         with:
           submodules: recursive
 
+      # ASIO (the low-latency driver of audio interfaces such as the Behringer UMC):
+      # Steinberg's ASIO SDK is dual-licensed GPLv3 / proprietary since October 2025.
+      # It is downloaded from Steinberg and used only if its licence file says GPL;
+      # otherwise the app is built without ASIO (Windows Audio only), as before.
+      - name: Get the ASIO SDK
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Invoke-WebRequest -Uri "https://www.steinberg.net/asiosdk" -OutFile asiosdk.zip
+          Expand-Archive asiosdk.zip -DestinationPath asiosdk -Force
+          $header = Get-ChildItem -Recurse asiosdk -Filter iasiodrv.h | Select-Object -First 1
+          $gpl = $false
+          foreach ($f in Get-ChildItem -Recurse asiosdk -File | Where-Object { $_.Name -match 'licen|copying|readme' }) {
+            $hit = Select-String -Path $f.FullName -Pattern 'GNU General Public License' -SimpleMatch | Select-Object -First 1
+            if ($hit) { $gpl = $true; Write-Output "::notice::ASIO SDK: $($f.Name): $($hit.Line.Trim())" }
+          }
+          if ($header -and $gpl) {
+            "ASIO_SDK=$($header.Directory.Parent.FullName.Replace('\', '/'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Output "::notice::ASIO SDK used: $((Get-Item asiosdk.zip).Length) bytes, headers in $($header.Directory.FullName)"
+          } else {
+            Write-Output "::warning::ASIO SDK not used (header found: $([bool]$header), GPL licence found: $gpl)"
+          }
+
       # CMake picks the newest Visual Studio installed on the runner.
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S . -B build -A x64 2>&1 | Tee-Object -FilePath configure.log
+          cmake -S . -B build -A x64 "-DSYNCTEST_ASIO_SDK=$env:ASIO_SDK" 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content configure.log | Select-String -Pattern "ASIO support" | ForEach-Object { Write-Output "::notice::$($_.Line.Trim())" }
 
       - name: Build
         shell: pwsh
@@ -41,7 +65,7 @@ jobs:
           Get-Content selftest.txt
           # The key lines also go to the run's public annotations (GitHub shows only
           # about 10 per step, so just failures, totals and measurements).
-          Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|big file|peak" |
+          Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|the take starts" |
             ForEach-Object { Write-Output "::notice::$($_.Line.Trim())" }
           exit $p.ExitCode
 
@@ -68,6 +92,8 @@ jobs:
           Copy-Item README.md dist/
           Copy-Item LICENSE dist/LICENSE.txt
           Copy-Item selftest.txt dist/ -ErrorAction SilentlyContinue
+          # The GPL source of the ASIO part travels with the program (GPLv3 / AGPLv3).
+          if ($env:ASIO_SDK) { Copy-Item asiosdk.zip dist/ASIO-SDK-source-GPLv3.zip }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -96,3 +122,5 @@ jobs:
           files: |
             dist/SyncTest.exe
             dist/README.md
+            dist/ASIO-SDK-source-GPLv3.zip
+          fail_on_unmatched_files: false

@@ -23,8 +23,10 @@ public:
             addAndMakeVisible (s);
         }
 
-        volume.setTooltip ("Volume (double-click: 0 dB)");
-        pan.setTooltip ("Pan (double-click: centre)");
+        volume.setTooltip ("Volume (right-click: reset to 0 dB)");
+        pan.setTooltip ("Pan (right-click: reset to centre)");
+        volume.describeDefault = [] { return juce::String ("0 dB"); };
+        pan.describeDefault = [] { return juce::String ("centre"); };
         volume.setDoubleClickReturnValue (true, 0.0);   // replaced in refresh() with the real default
         pan.setDoubleClickReturnValue (true, 0.5);
 
@@ -275,7 +277,7 @@ public:
     const juce::String channelID;
     const int index;
     juce::TextButton mute, name, route;
-    juce::Slider volume, pan;
+    ResetSlider volume, pan;
     bool paintValue = true;
     int lastStep = -1;
 };

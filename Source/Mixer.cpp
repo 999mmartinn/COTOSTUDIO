@@ -103,7 +103,10 @@ public:
         pan.setDoubleClickReturnValue (true, 0.5);
         pan.setColour (juce::Slider::rotarySliderFillColourId, accent);
         pan.setLookAndFeel (&knobLook());
-        pan.setTooltip ("Pan (double-click: centre)");
+        pan.setTooltip ("Pan (right-click: reset to centre)");
+        pan.describeDefault = [] { return juce::String ("centre"); };
+        fader.setTooltip (isMaster() ? "Volume (right-click: reset to -3 dB)" : "Volume (right-click: reset to 0 dB)");
+        fader.describeDefault = [this] { return juce::String (isMaster() ? "-3 dB" : "0 dB"); };
         pan.onDragStart = [this] { mixer.state.beginAction(); };
         pan.onValueChange = [this]
         {
@@ -129,6 +132,23 @@ public:
             }
         };
 
+        input.setTooltip ("Audio input recorded into this insert (your interface / mic). "
+                          "You hear it through this insert's effects");
+        input.onClick = [this] { showInputMenu(); };
+        arm.setTooltip ("Arm for recording: the Record button records this insert's input");
+        arm.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f"));   // a dot
+        arm.onClick = [this]
+        {
+            auto& rec = mixer.state.session.getRecorder();
+
+            if (rec.getInputFor (insertID).isEmpty())
+                showInputMenu();
+            else
+                rec.setArmed (insertID, ! rec.isArmed (insertID));
+
+            refresh();
+        };
+
         route.setTooltip ("Where this insert's sound goes");
         route.onClick = [this]
         {
@@ -143,6 +163,8 @@ public:
         {
             addAndMakeVisible (mute);
             addAndMakeVisible (route);
+            addAndMakeVisible (input);
+            addAndMakeVisible (arm);
         }
 
         dbLabel.setJustificationType (juce::Justification::centred);
@@ -178,6 +200,39 @@ public:
     {
         mixer.state.selectedInsert = insertID;
         mixer.refresh();
+    }
+
+    void showInputMenu()
+    {
+        auto& rec = mixer.state.session.getRecorder();
+        const auto inputs = rec.getInputs();
+        const auto current = rec.getInputFor (insertID);
+
+        juce::PopupMenu m;
+        m.addSectionHeader ("Record from (this PC only)");
+        m.addItem (1, "No input", true, current.isEmpty());
+
+        for (int i = 0; i < inputs.size(); ++i)
+            m.addItem (100 + i, inputs[i].name, true, inputs[i].id == current);
+
+        if (inputs.isEmpty())
+            m.addItem (-1, "(no inputs: choose your interface in Audio settings...)", false);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (input),
+                         [self = juce::Component::SafePointer<Strip> (this), inputs] (int r)
+        {
+            if (self == nullptr || r == 0)
+                return;
+
+            auto& recorder = self->mixer.state.session.getRecorder();
+
+            if (r == 1)
+                recorder.setInputFor (self->insertID, {});
+            else if (juce::isPositiveAndBelow (r - 100, inputs.size()))
+                recorder.setInputFor (self->insertID, inputs[r - 100].id);   // also arms it
+
+            self->refresh();
+        });
     }
 
     void showMenu()
@@ -263,6 +318,21 @@ public:
 
             auto* dest = resolveRoute (*edit, *t);
             route.setButtonText (dest != nullptr ? "-> " + juce::String (getInsertNumber (*edit, *dest)) : juce::String ("-> Master"));
+
+            // This PC's recording input (not shared: everyone records their own mic).
+            auto& rec = mixer.state.session.getRecorder();
+            const auto inputID = rec.getInputFor (insertID);
+            juce::String inputName ("No input");
+
+            for (auto& in : rec.getInputs())
+                if (in.id == inputID)
+                    inputName = in.name;
+
+            const bool armed = rec.isArmed (insertID);
+            input.setButtonText (inputName);
+            input.setColour (juce::TextButton::textColourOffId, inputID.isEmpty() ? juce::Colours::grey : juce::Colours::white);
+            arm.setColour (juce::TextButton::buttonColourId, armed ? juce::Colour (0xffd03a3a) : juce::Colour (0xff3a414a));
+            arm.setColour (juce::TextButton::textColourOffId, armed ? juce::Colours::white : juce::Colour (0xffd06060));
         }
 
         if (auto* v = getVolume())
@@ -274,7 +344,8 @@ public:
                 pan.setValue (v->panParam->getCurrentNormalisedValue(), juce::dontSendNotification);
 
             auto range = v->volParam->getValueRange();
-            fader.setDoubleClickReturnValue (true, (te::decibelsToVolumeFaderPosition (0.0f) - range.getStart())
+            // Back to where it starts: 0 dB on inserts, -3 dB (headroom) on the master.
+            fader.setDoubleClickReturnValue (true, (te::decibelsToVolumeFaderPosition (isMaster() ? -3.0f : 0.0f) - range.getStart())
                                                      / juce::jmax (0.0001f, range.getLength()));
             const float db = te::volumeFaderPositionToDB (v->volParam->getCurrentValue());
             dbLabel.setText (db <= -96.0f ? juce::String ("-inf") : juce::String (db, 1) + " dB", juce::dontSendNotification);
@@ -317,6 +388,17 @@ public:
         name.setBounds (r.removeFromTop (24));
         r.removeFromTop (4);
 
+        // Input + arm row (kept empty on the master so faders line up).
+        auto inputRow = r.removeFromTop (22);
+        r.removeFromTop (4);
+
+        if (! isMaster())
+        {
+            arm.setBounds (inputRow.removeFromRight (24));
+            inputRow.removeFromRight (3);
+            input.setBounds (inputRow);
+        }
+
         if (! isMaster())
         {
             route.setBounds (r.removeFromBottom (22));
@@ -334,9 +416,9 @@ public:
 
     Mixer& mixer;
     const juce::String insertID;
-    juce::TextButton name, mute, route;
+    juce::TextButton name, mute, route, input, arm;
     MeterBar meter;
-    juce::Slider fader, pan;
+    ResetSlider fader, pan;
     juce::Label dbLabel;
 };
 

@@ -37,3 +37,71 @@ inline KnobLook& knobLook()
     return look;
 }
 
+//==============================================================================
+/** A slider with an FL-style right-click menu: "Reset" puts it back to its
+    default (its double-click value). The reset goes through onDragStart and
+    onValueChange like a normal move, so it can be undone and is sent to the
+    other PCs. Alt+click and double-click also reset. */
+class ResetSlider  : public juce::Slider
+{
+public:
+    using juce::Slider::Slider;
+
+    /** Optional text for the menu, e.g. "0 dB" or "centre". */
+    std::function<juce::String()> describeDefault;
+
+    void resetToDefault()
+    {
+        if (! isDoubleClickReturnEnabled())
+            return;
+
+        if (onDragStart)
+            onDragStart();
+
+        setValue (getDoubleClickReturnValue(), juce::sendNotificationSync);
+
+        if (onDragEnd)
+            onDragEnd();
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        rightClick = e.mods.isPopupMenu();
+
+        if (rightClick)
+            showMenu();
+        else
+            juce::Slider::mouseDown (e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override   { if (! rightClick) juce::Slider::mouseDrag (e); }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! rightClick)
+            juce::Slider::mouseUp (e);
+
+        rightClick = false;
+    }
+
+private:
+    bool rightClick = false;
+
+    void showMenu()
+    {
+        juce::PopupMenu m;
+        auto text = juce::String ("Reset");
+
+        if (describeDefault)
+            text << " (" << describeDefault() << ")";
+
+        m.addItem (1, text, isEnabled() && isDoubleClickReturnEnabled());
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
+                         [safe = juce::Component::SafePointer<ResetSlider> (this)] (int result)
+                         {
+                             if (result == 1 && safe != nullptr)
+                                 safe->resetToDefault();
+                         });
+    }
+};
+

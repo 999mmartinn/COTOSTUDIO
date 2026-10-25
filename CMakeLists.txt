@@ -45,7 +45,8 @@ target_sources(SyncTest PRIVATE
     Source/Playlist.cpp
     Source/MixerRouter.cpp
     Source/Mixer.cpp
-    Source/AssetStore.cpp)
+    Source/AssetStore.cpp
+    Source/Recorder.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1
@@ -57,6 +58,19 @@ target_compile_definitions(SyncTest PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_MP3AUDIOFORMAT=1
     JUCE_DISPLAY_SPLASH_SCREEN=0)
+
+# ASIO: the low-latency Windows driver of most audio interfaces. Steinberg's ASIO
+# SDK is GPLv3 (dual-licensed) since October 2025; the Windows build downloads it
+# and passes its folder here. Without it the app uses Windows Audio (WASAPI).
+set(SYNCTEST_ASIO_SDK "" CACHE PATH "ASIO SDK folder (the one containing common/iasiodrv.h)")
+
+if (WIN32 AND SYNCTEST_ASIO_SDK AND EXISTS "${SYNCTEST_ASIO_SDK}/common/iasiodrv.h")
+    target_compile_definitions(SyncTest PRIVATE JUCE_ASIO=1)
+    target_include_directories(SyncTest PRIVATE "${SYNCTEST_ASIO_SDK}/common")
+    message(STATUS "ASIO support: ON (${SYNCTEST_ASIO_SDK})")
+else()
+    message(STATUS "ASIO support: OFF (no ASIO SDK given)")
+endif()
 
 # The Linux build only exists so the sync logic can be tested on a headless
 # Linux box; it turns off desktop pieces that need extra system libraries.

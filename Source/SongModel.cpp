@@ -751,6 +751,56 @@ juce::ValueTree placeAudioChannel (te::Edit& edit, const te::AudioTrack& channel
                          juce::jmax (0.05, getAssetSeconds (edit, hash)));
 }
 
+int findFreeLane (te::Edit& edit, double startBeat, double endBeat)
+{
+    for (int lane = 0; lane < numLanes; ++lane)
+    {
+        bool busy = false;
+
+        for (auto& c : getClips (edit))
+            if ((int) c[ids::lane] == lane && (double) c[ids::start] < endBeat
+                 && (double) c[ids::start] + getClipLength (edit, c) > startBeat)
+                busy = true;
+
+        if (! busy)
+            return lane;
+    }
+
+    return numLanes - 1;
+}
+
+juce::ValueTree addRecordedTake (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& insertID,
+                                 double startSeconds, double offsetSeconds, double durationSeconds)
+{
+    auto* insert = findInsert (edit, insertID);
+    const auto base = (insert != nullptr ? insert->getName() : juce::String ("Recording")) + " take ";
+
+    // Next free take number for this insert.
+    int take = 1;
+
+    for (auto* t : getChannels (edit))
+        if (t->getName().startsWith (base))
+            take = juce::jmax (take, t->getName().fromFirstOccurrenceOf (base, false, false).getIntValue() + 1);
+
+    const auto name = base + juce::String (take);
+    addAsset (edit, r, name + ".flac");
+
+    auto* channel = addAudioChannel (edit, name);
+
+    if (channel == nullptr)
+        return {};
+
+    channel->state.setProperty (ids::asset, r.hash, um (edit));
+
+    if (insert != nullptr)
+        setRoute (edit, *channel, insertID);   // plays through the same effects you heard
+
+    const double startBeat = secondsToBeats (edit, startSeconds);
+    const double endBeat = secondsToBeats (edit, startSeconds + durationSeconds);
+    return addAudioClip (edit, r.hash, getChannelID (*channel), findFreeLane (edit, startBeat, endBeat),
+                         startBeat, offsetSeconds, durationSeconds);
+}
+
 juce::ValueTree addImportedAudio (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& name,
                                   int lane, double startBeat)
 {

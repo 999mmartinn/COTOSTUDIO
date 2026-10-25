@@ -4,7 +4,67 @@
 static const juce::Colour background (0xff1e2227), accent (0xfff28c28);
 
 //==============================================================================
-MainComponent::MainComponent (te::Engine& e) : engine (e)
+//==============================================================================
+/** Developer option for testing without a sound card: SyncTest --simulate-mic.
+    A fake interface (engine "hosted" device) with one input that sings a
+    wobbling tone, fed in real time. */
+struct MainComponent::SimulatedMic  : private juce::Timer
+{
+    explicit SimulatedMic (te::Engine& e) : engine (e), io (e.getDeviceManager().getHostedAudioDeviceInterface())
+    {
+        te::HostedAudioDeviceInterface::Parameters p;
+        p.sampleRate = 44100.0;
+        p.blockSize = 512;
+        p.inputChannels = 1;
+        p.outputChannels = 2;
+        io.initialise (p);
+        io.prepareToPlay (p.sampleRate, p.blockSize);
+        engine.getDeviceManager().dispatchPendingUpdates();
+        startTime = juce::Time::getMillisecondCounterHiRes();
+        startTimer (10);
+    }
+
+    ~SimulatedMic() override
+    {
+        stopTimer();
+        engine.getDeviceManager().deviceManager.closeAudioDevice();
+        engine.getDeviceManager().removeHostedAudioDeviceInterface();
+    }
+
+    void timerCallback() override
+    {
+        const auto due = (juce::int64) ((juce::Time::getMillisecondCounterHiRes() - startTime) * 44.1);
+        juce::MidiBuffer midi;
+
+        while (fed + 512 <= due)
+        {
+            juce::AudioBuffer<float> buffer (2, 512);
+            buffer.clear();
+
+            for (int i = 0; i < 512; ++i)
+            {
+                const double t = (double) (fed + i) / 44100.0;
+                const double wobble = 0.5 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * 1.5 * t);
+                buffer.setSample (0, i, (float) (0.4 * wobble * std::sin (juce::MathConstants<double>::twoPi * 220.0 * t)));
+            }
+
+            io.processBlock (buffer, midi);
+            fed += 512;
+        }
+    }
+
+    te::Engine& engine;
+    te::HostedAudioDeviceInterface& io;
+    double startTime = 0.0;
+    juce::int64 fed = 0;
+};
+
+
+//==============================================================================
+MainComponent::MainComponent (te::Engine& e)
+    : engine (e),
+      simulatedMic (juce::JUCEApplication::getCommandLineParameterArray().contains ("--simulate-mic")
+                      ? std::make_unique<SimulatedMic> (e) : nullptr)
 {
     juce::PropertiesFile::Options opts;
     opts.applicationName = "SyncTest";
@@ -19,7 +79,7 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
-             &patModeButton, &songModeButton, &playButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
+             &patModeButton, &songModeButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
              &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
@@ -118,6 +178,21 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
             // Stop returns to it, like FL.
             session.setPlaying (play, state.beatsToSeconds (state.getPlayStartBeat()));
         }
+
+        refresh();
+    };
+
+    recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f Rec"));
+    recordButton.setTooltip ("Record (R): records every armed mixer insert from the song start marker; "
+                             "the others play along. Press Stop or Space to finish");
+    recordButton.onClick = [this]
+    {
+        if (session.isRecording())
+            session.setPlaying (false, state.beatsToSeconds (state.songStartBeat));
+        else if (session.getRecorder().getNumArmed() == 0)
+            showRecordSetupMenu();
+        else if (session.startRecording (state.beatsToSeconds (state.songStartBeat)))
+            appendLog ("Recording... press Stop or Space to finish");
 
         refresh();
     };
@@ -229,10 +304,12 @@ MainComponent::MainComponent (te::Engine& e) : engine (e)
     appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
                 + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
     setSize (1280, 900);
+    startTimerHz (5);
 }
 
 MainComponent::~MainComponent()
 {
+    stopTimer();
     unwatchEdit();
 }
 
@@ -319,6 +396,10 @@ void MainComponent::refresh()
     {
         playButton.setButtonText (edit->getTransport().isPlaying() ? "Stop" : "Play");
 
+        const bool recording = session.isRecording();
+        recordButton.setColour (juce::TextButton::buttonColourId, recording ? juce::Colour (0xffd03a3a) : juce::Colour (0xff3a414a));
+        recordButton.setColour (juce::TextButton::textColourOffId, recording ? juce::Colours::white : juce::Colour (0xffe06060));
+
         if (auto* tempo = edit->tempoSequence.getTempo (0))
             if (! tempoSlider.isMouseButtonDown())
                 tempoSlider.setValue (tempo->getBpm(), juce::dontSendNotification);
@@ -355,6 +436,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('y', cmd, 0)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
+    if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
     if (key == juce::KeyPress::F9Key)                                               { bottomTabs.setCurrentTabIndex (1); return true; }
 
@@ -419,6 +501,78 @@ void MainComponent::showPatternMenu()
     });
 }
 
+void MainComponent::timerCallback()
+{
+    // Recording starts/ends a moment after the button (the engine applies it).
+    const bool recording = session.isRecording();
+
+    if (recording != lastRecording)
+    {
+        lastRecording = recording;
+        refresh();
+    }
+}
+
+void MainComponent::showRecordSetupMenu()
+{
+    // Nothing armed yet: offer to make a "Vocals" insert recording from an input.
+    auto inputs = session.getRecorder().getInputs();
+
+    juce::PopupMenu m;
+    m.addSectionHeader ("Nothing is armed. Record from:");
+
+    for (int i = 0; i < inputs.size(); ++i)
+        m.addItem (100 + i, inputs[i].name);
+
+    if (inputs.isEmpty())
+        m.addItem (-1, "(no inputs found)", false);
+
+    m.addSeparator();
+    m.addItem (1, "Audio settings...");
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (recordButton), [this, inputs] (int r)
+    {
+        auto* edit = state.getEdit();
+
+        if (r == 1)
+            showAudioSettings();
+
+        if (edit == nullptr || ! juce::isPositiveAndBelow (r - 100, inputs.size()))
+            return;
+
+        // A free name: Vocals, Vocals 2...
+        juce::String name ("Vocals");
+
+        for (int n = 2;; ++n)
+        {
+            bool used = false;
+
+            for (auto* t : song::getInserts (*edit))
+                if (t->getName() == name)
+                    used = true;
+
+            if (! used)
+                break;
+
+            name = "Vocals " + juce::String (n);
+        }
+
+        state.beginAction();
+
+        if (auto* insert = song::addInsert (*edit, name))
+        {
+            const auto id = insert->itemID.toString();
+            session.getRecorder().setInputFor (id, inputs[r - 100].id);
+            state.selectedInsert = id;
+            bottomTabs.setCurrentTabIndex (1);
+            appendLog ("Insert \"" + name + "\" records from " + inputs[r - 100].name
+                        + " (you hear it through its effects). Add autotune/EQ to it if you like, then press Rec.");
+        }
+
+        refresh();
+    });
+}
+
 void MainComponent::showPluginScanner()
 {
     auto& pm = engine.getPluginManager();
@@ -480,24 +634,7 @@ void MainComponent::resized()
 
     r.removeFromTop (8);
     auto bar = r.removeFromTop (28);
-    patModeButton.setBounds (bar.removeFromLeft (48));
-    songModeButton.setBounds (bar.removeFromLeft (56));
-    bar.removeFromLeft (6);
-    playButton.setBounds (bar.removeFromLeft (70));
-    bar.removeFromLeft (12);
-    tempoLabel.setBounds (bar.removeFromLeft (36));
-    tempoSlider.setBounds (bar.removeFromLeft (110));
-    bar.removeFromLeft (16);
-    patternLabel.setBounds (bar.removeFromLeft (56));
-    patternBox.setBounds (bar.removeFromLeft (150));
-    bar.removeFromLeft (4);
-    newPatternButton.setBounds (bar.removeFromLeft (28));
-    bar.removeFromLeft (4);
-    patternMenuButton.setBounds (bar.removeFromLeft (32));
-    bar.removeFromLeft (8);
-    lengthBox.setBounds (bar.removeFromLeft (80));
-    bar.removeFromLeft (8);
-    playingLabel.setBounds (bar.removeFromLeft (130));
+    // Right-hand buttons first so they always fit; the "now playing" label gets what is left.
     audioButton.setBounds (bar.removeFromRight (124));
     bar.removeFromRight (6);
     scanButton.setBounds (bar.removeFromRight (116));
@@ -505,6 +642,28 @@ void MainComponent::resized()
     redoButton.setBounds (bar.removeFromRight (56));
     bar.removeFromRight (4);
     undoButton.setBounds (bar.removeFromRight (56));
+    bar.removeFromRight (8);
+
+    patModeButton.setBounds (bar.removeFromLeft (48));
+    songModeButton.setBounds (bar.removeFromLeft (56));
+    bar.removeFromLeft (6);
+    playButton.setBounds (bar.removeFromLeft (70));
+    bar.removeFromLeft (4);
+    recordButton.setBounds (bar.removeFromLeft (64));
+    bar.removeFromLeft (12);
+    tempoLabel.setBounds (bar.removeFromLeft (36));
+    tempoSlider.setBounds (bar.removeFromLeft (110));
+    bar.removeFromLeft (12);
+    patternLabel.setBounds (bar.removeFromLeft (56));
+    patternBox.setBounds (bar.removeFromLeft (130));
+    bar.removeFromLeft (4);
+    newPatternButton.setBounds (bar.removeFromLeft (28));
+    bar.removeFromLeft (4);
+    patternMenuButton.setBounds (bar.removeFromLeft (32));
+    bar.removeFromLeft (8);
+    lengthBox.setBounds (bar.removeFromLeft (80));
+    bar.removeFromLeft (8);
+    playingLabel.setBounds (bar);
 
     r.removeFromTop (8);
     logView.setBounds (r.removeFromBottom (70));

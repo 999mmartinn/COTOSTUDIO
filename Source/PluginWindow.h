@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "EditSync.h"
+#include "Look.h"
 
 namespace te = tracktion;
 
@@ -27,6 +28,14 @@ public:
                 return ap->valueToString (range.getStart() + (float) v * range.getLength());
             };
             row->slider.setValue (ap->getCurrentNormalisedValue(), juce::dontSendNotification);
+
+            if (auto def = ap->getDefaultValue())
+            {
+                auto range = ap->getValueRange();
+                row->slider.setDoubleClickReturnValue (true, (*def - range.getStart()) / juce::jmax (0.0001f, range.getLength()));
+                row->slider.describeDefault = [ap, d = *def] { return ap->valueToString (d); };
+            }
+
             row->slider.onDragStart = [&p = plugin] { p.edit.getUndoManager().beginNewTransaction(); };
             row->slider.onValueChange = [ap, s = &row->slider]
             {
@@ -62,7 +71,7 @@ private:
     struct Row
     {
         juce::Label label;
-        juce::Slider slider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+        ResetSlider slider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
         te::AutomatableParameter::Ptr param;
     };
 

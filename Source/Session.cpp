@@ -215,6 +215,15 @@ static juce::File defaultAssetFolder()
 Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
 {
     assets.onAssetAdded = [this] (const juce::String& hash) { handleAssetAdded (hash); };
+
+    recorder = std::make_unique<Recorder> (engine, assets);
+    recorder->onLog = [this] (const juce::String& s) { log (s); };
+    recorder->onTakeAdded = [this] (const juce::ValueTree&)
+    {
+        if (onRemoteChange)
+            onRemoteChange();   // refresh the screens
+    };
+
     startTimer (500);
 }
 
@@ -222,6 +231,7 @@ Session::~Session()
 {
     stopTimer();
     leave();
+    recorder.reset();   // detaches from the Edit while it still exists
     router.reset();
     compiler.reset();
     editSync.reset();
@@ -293,6 +303,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     if (onEditAboutToBeReplaced)
         onEditAboutToBeReplaced();
 
+    recorder->attachTo (nullptr);
     router.reset();
     compiler.reset();
     editSync.reset();
@@ -307,6 +318,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit)
     attachSync();
     compiler = std::make_unique<PatternCompiler> (*edit, assets);
     router = std::make_unique<MixerRouter> (*edit);
+    recorder->attachTo (edit.get());
 
     if (onEditReplaced)
         onEditReplaced();
@@ -506,7 +518,7 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
             return;
         }
 
-        if (++hashMismatchCount >= 2
+        if (++hashMismatchCount >= 2 && ! isRecording()
              && juce::Time::getMillisecondCounter() - lastResyncRequestTime > 3000)
         {
             lastResyncRequestTime = juce::Time::getMillisecondCounter();
@@ -605,14 +617,31 @@ void Session::applyTransport (const juce::ValueTree& msg)
 
     auto& transport = edit->getTransport();
     const bool shouldPlay = (bool) msg[ids::playing];
+    const bool recordingHere = isRecording();
 
-    if (! (bool) msg[ids::patternOnly])
+    if (msg[ids::recordingBy].toString().isNotEmpty())
+        log (msg[ids::recordingBy].toString() + " is recording - playing along");
+
+    // While this PC records, nobody else can move its playhead (it would break the take).
+    if (! (bool) msg[ids::patternOnly] && ! recordingHere)
         transport.setPosition (te::TimePosition::fromSeconds ((double) msg[ids::position]));
 
     if (shouldPlay && ! transport.isPlaying())
+    {
         transport.play (false);
+    }
     else if (! shouldPlay && transport.isPlaying())
-        transport.stop (false, false);
+    {
+        transport.stop (false, false);   // a shared Stop also ends a take here (it is kept)
+
+        if (recordingHere)
+        {
+            log ("Someone pressed Stop - saving your take");
+
+            if (compiler != nullptr)
+                compiler->compileNow();   // looping back on
+        }
+    }
 
     if (onTransportChanged)
         onTransportChanged();
@@ -626,7 +655,7 @@ juce::String Session::getPlayingPattern() const
     return compiler != nullptr ? compiler->getPattern() : juce::String();
 }
 
-void Session::sendTransport (bool patternOnly)
+void Session::sendTransport (bool patternOnly, const juce::String& recordingBy)
 {
     if (edit == nullptr)
         return;
@@ -635,7 +664,11 @@ void Session::sendTransport (bool patternOnly)
 
     juce::ValueTree msg (ids::MSG);
     msg.setProperty (ids::type, "transport", nullptr);
-    msg.setProperty (ids::playing, transport.isPlaying(), nullptr);
+    msg.setProperty (ids::playing, transport.isPlaying() || recordingBy.isNotEmpty(), nullptr);
+
+    if (recordingBy.isNotEmpty())
+        msg.setProperty (ids::recordingBy, recordingBy, nullptr);
+
     msg.setProperty (ids::position, transport.getPosition().inSeconds(), nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
     msg.setProperty (ids::songMode, isSongMode(), nullptr);
@@ -667,8 +700,12 @@ void Session::setPlaying (bool shouldPlay, double startSeconds)
     }
     else
     {
-        transport.stop (false, false);
+        const bool wasRecording = transport.isRecording();
+        transport.stop (false, false);   // a recording becomes a take (see Recorder)
         transport.setPosition (te::TimePosition::fromSeconds (startSeconds));
+
+        if (wasRecording && compiler != nullptr)
+            compiler->compileNow();      // looping back on
     }
 
     sendTransport (false);
@@ -677,9 +714,32 @@ void Session::setPlaying (bool shouldPlay, double startSeconds)
         onTransportChanged();
 }
 
+bool Session::startRecording (double startSeconds)
+{
+    if (edit == nullptr || isRecording())
+        return false;
+
+    if (compiler != nullptr)
+    {
+        compiler->setSongMode (true);   // takes land in the playlist
+        compiler->compileNow();
+    }
+
+    if (! recorder->start (startSeconds))
+        return false;
+
+    // Everyone else plays along from the same spot (and switches to SONG too).
+    sendTransport (false, peerName);
+
+    if (onTransportChanged)
+        onTransportChanged();
+
+    return true;
+}
+
 void Session::seek (double seconds)
 {
-    if (edit == nullptr)
+    if (edit == nullptr || isRecording())
         return;
 
     edit->getTransport().setPosition (te::TimePosition::fromSeconds (seconds));
@@ -751,6 +811,16 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
     auto state = msg.getChild (0).createCopy();
     const auto reason = msg[ids::reason].toString();
 
+    // Replacing the song object would end a recording: wait until the take is saved.
+    if (reason != "join" && (isRecording() || recorder->isBusy()))
+    {
+        if (! deferredSnapshot.isValid())
+            log ("A fresh copy of the song arrived; it will be applied once your take is saved");
+
+        deferredSnapshot = msg.createCopy();
+        return;
+    }
+
     if (reason != "join" && edit != nullptr)
     {
         ++resyncCount;
@@ -816,6 +886,13 @@ void Session::timerCallback()
 
     if (tick % 2 == 0)
         checkAssets();
+
+    if (deferredSnapshot.isValid() && ! isRecording() && ! recorder->isBusy())
+    {
+        auto msg = deferredSnapshot;
+        deferredSnapshot = {};
+        loadSnapshot (msg);
+    }
 
     if (tick % 3 != 0 || mode != Mode::hosting || editSync == nullptr)
         return;

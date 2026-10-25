@@ -9,6 +9,7 @@
 //==============================================================================
 class MainComponent  : public juce::Component,
                        public juce::DragAndDropContainer,
+                       private juce::Timer,
                        private juce::ValueTree::Listener,
                        private juce::AsyncUpdater
 {
@@ -22,10 +23,13 @@ public:
 
 private:
     te::Engine& engine;
+    struct SimulatedMic;                          // developer option --simulate-mic
+    std::unique_ptr<SimulatedMic> simulatedMic;   // declared first: outlives the session
     collab::Session session { engine };
     EditorState state { session };
     std::unique_ptr<juce::InterProcessLock> assetFolderLock;   // which copy on this PC we are
     juce::ApplicationProperties appProperties;
+    juce::TooltipWindow tooltipWindow { this, 700 };   // shows the help text on buttons and knobs
     juce::ValueTree watchedState;
 
     // Connection bar
@@ -35,6 +39,10 @@ private:
 
     // Transport / pattern bar
     juce::TextButton patModeButton { "PAT" }, songModeButton { "SONG" };
+    juce::TextButton recordButton;
+    bool lastRecording = false;
+    void showRecordSetupMenu();
+    void timerCallback() override;
     juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
                      undoButton { "Undo" }, redoButton { "Redo" },
                      scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };

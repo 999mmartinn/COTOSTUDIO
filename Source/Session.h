@@ -2,6 +2,7 @@
 
 #include "EditSync.h"
 #include "AssetStore.h"
+#include "Recorder.h"
 #include <deque>
 
 class PatternCompiler;
@@ -102,6 +103,12 @@ public:
     void setPlayingPattern (const juce::String& patternSid);
     juce::String getPlayingPattern() const;
 
+    /** Records every armed insert from this position (switches to SONG mode).
+        Everyone else plays along from the same spot. False if nothing is armed. */
+    bool startRecording (double startSeconds);
+    bool isRecording() const                     { return recorder != nullptr && recorder->isRecording(); }
+    Recorder& getRecorder() noexcept             { return *recorder; }
+
     /** PAT / SONG mode, shared like play/stop. */
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
@@ -142,6 +149,8 @@ private:
 
     te::Engine& engine;
     AssetStore assets;
+    std::unique_ptr<Recorder> recorder;
+    juce::ValueTree deferredSnapshot;   // a fresh copy that arrived while recording
     std::atomic<int> uploadLimit { 0 };
     std::unique_ptr<te::Edit> edit;
     std::unique_ptr<EditSync> editSync;
@@ -170,7 +179,7 @@ private:
     void broadcast (const juce::ValueTree& msg, PeerConnection* except);
     void applyOps (const juce::ValueTree& msg, PeerConnection* from);
     void applyTransport (const juce::ValueTree& msg);
-    void sendTransport (bool patternOnly);
+    void sendTransport (bool patternOnly, const juce::String& recordingBy = {});
     void sendSnapshotTo (PeerConnection&, const juce::String& reason);
     void loadSnapshot (const juce::ValueTree& msg);
     void log (const juce::String&);

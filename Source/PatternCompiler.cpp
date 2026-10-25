@@ -180,7 +180,8 @@ void PatternCompiler::compileNow()
     if (transport.getLoopRange() != range)
         transport.setLoopRange (range);
 
-    transport.looping = true;
+    // While recording the take just runs on (looping would start a second take).
+    transport.looping = ! transport.isRecording();
 }
 
 void PatternCompiler::compileAudio (te::AudioTrack& track)

@@ -5,6 +5,33 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 4b – Recording (v0.6)**
+* Every mixer insert now has an **input** box (which socket of your audio
+  interface feeds it, e.g. *Input 1* = the mic on a UMC22's first input) and a
+  round **arm** button. Picking an input arms it. You hear the input through
+  that insert's effects (autotune, EQ...) while you sing.
+  Inputs and arming belong to your PC only: your mic is yours, and nobody
+  else's song changes when you pick one.
+* Press **● Rec** (or **R**): every armed insert records from the playlist's
+  green start marker, in SONG mode, and everyone else plays along. Press Rec
+  again, Stop or Space to finish.
+* Nothing armed yet? Rec offers your inputs and makes a **Vocals** insert that
+  records from the one you pick (add your autotune to it, then press Rec).
+* Each take becomes a new audio channel (*Vocals take 1, 2...*) routed to that
+  insert, so it plays back through the same effects you heard, with a clip
+  exactly where you recorded it. The take is sent to everyone like an imported
+  file.
+* While you record, nobody can move your playhead and their edits keep
+  arriving; a Stop from anyone ends your take (it is kept).
+* **ASIO** (Windows build): in *Audio settings* choose type **ASIO** and your
+  interface's driver (for Behringer: *UMC ASIO Driver*) for the lowest delay,
+  which matters when you sing through autotune. If you hear yourself twice,
+  turn off your interface's *Direct Monitor*. Use headphones so the beat doesn't
+  leak into the mic.
+* **Right-click any knob or fader → Reset** (volume 0 dB, pan centre, master
+  -3 dB), like FL; also in the built-in plugins' panels. Help text now shows
+  when you hover over buttons and knobs.
+
 **Step 4a – Audio clips + file sharing (v0.5)**
 * **Drop audio files** (WAV, MP3, FLAC, AIFF, OGG) from Explorer onto a playlist
   lane, or press **Import audio...**. Each file gets its own **audio channel**
@@ -144,7 +171,10 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 * Audio files are sent person to person through the host. A joiner's file goes
   to the host first, then to the others, so the host's upload speed matters for
   big files (a 3-minute stereo recording is roughly 15-30 MB as FLAC).
-* Not yet: recording (next step), solo and send knobs, saving projects, chat.
+* Recording: one take per armed insert each time you press Rec; inputs are
+  mono; no count-in, punch-in or loop recording yet. The engine places takes
+  using the latency your interface's driver reports.
+* Not yet: solo and send knobs, saving projects, chat.
   Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 
@@ -154,7 +184,9 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, Play/Stop,
-the playlist, the mixer, audio file sharing (each simulated PC has its own
+the playlist, the mixer, recording from a simulated sound card (the take must
+line up with the song to the exact sample, and survive other people's edits),
+audio file sharing (each simulated PC has its own
 folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no
 files), leaving and rejoining. The Windows build on GitHub runs this automatically.
 
@@ -169,3 +201,8 @@ cmake --build build --config Release
 ```
 
 `external/tracktion_engine` is a git submodule (it brings JUCE with it).
+For ASIO, download Steinberg's ASIO SDK (https://www.steinberg.net/asiosdk,
+GPLv3 or proprietary licence) and add `-DSYNCTEST_ASIO_SDK=<its folder>`.
+Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
+
+ASIO is a trademark and software of Steinberg Media Technologies GmbH.

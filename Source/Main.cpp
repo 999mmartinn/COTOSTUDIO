@@ -3,6 +3,17 @@
 #include "SelfTest.h"
 #include "DrumSynthPlugin.h"
 
+#include "Recorder.h"
+
+/** Engine settings: raw recordings go to this copy's own folder (see Recorder). */
+struct AppEngineBehaviour  : public te::EngineBehaviour
+{
+    juce::File getFileForNewAudioRecording (te::Track& track, const juce::String& extension) override
+    {
+        return Recorder::newRecordingFile (track.edit, extension);
+    }
+};
+
 class SyncTestApplication  : public juce::JUCEApplication
 {
 public:
@@ -12,8 +23,12 @@ public:
 
     void initialise (const juce::String&) override
     {
-        engine = std::make_unique<te::Engine> ("SyncTest", std::make_unique<AppUIBehaviour>(), nullptr);
+        engine = std::make_unique<te::Engine> ("SyncTest", std::make_unique<AppUIBehaviour>(),
+                                               std::make_unique<AppEngineBehaviour>());
         engine->getPluginManager().createBuiltInType<DrumSynthPlugin>();
+
+        // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
+        engine->getDeviceManager().setAllWaveInputsToNumChannels (1);
 
         auto args = getCommandLineParameterArray();
 

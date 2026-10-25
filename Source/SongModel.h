@@ -180,6 +180,14 @@ namespace song
     /** Places a full-length clip of an audio channel's file on the playlist. */
     juce::ValueTree placeAudioChannel (te::Edit&, const te::AudioTrack& channel, int lane, double startBeat);
 
+    /** First playlist lane with nothing between these beats (the last lane if all are busy). */
+    int findFreeLane (te::Edit&, double startBeat, double endBeat);
+
+    /** A finished recording: its file, a new audio channel ("<insert> take N") routed to
+        that insert, and a playlist clip exactly where it was recorded. */
+    juce::ValueTree addRecordedTake (te::Edit&, const AssetStore::ImportResult&, const juce::String& insertID,
+                                     double startSeconds, double offsetSeconds, double durationSeconds);
+
     juce::ValueTree addImportedAudio (te::Edit&, const AssetStore::ImportResult&, const juce::String& name,
                                       int lane, double startBeat);
 

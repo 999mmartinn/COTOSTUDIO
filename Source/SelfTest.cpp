@@ -23,6 +23,68 @@ namespace
     };
 }
 
+namespace
+{
+    /** A sound card simulated through the engine's "hosted" audio device: one mono
+        input (the "microphone") that the test feeds by hand, and a stereo output. */
+    struct SimulatedSoundCard
+    {
+        static constexpr double sampleRate = 44100.0;
+        static constexpr int blockSize = 512;
+
+        explicit SimulatedSoundCard (te::Engine& e)
+            : engine (e), io (e.getDeviceManager().getHostedAudioDeviceInterface())
+        {
+            // Blocks are fed faster than real time: don't let the CPU guard mute them.
+            engine.getDeviceManager().setCpuLimitBeforeMuting (1000.0);
+
+            te::HostedAudioDeviceInterface::Parameters p;
+            p.sampleRate = sampleRate;
+            p.blockSize = blockSize;
+            p.inputChannels = 1;
+            p.outputChannels = 2;
+            io.initialise (p);
+            io.prepareToPlay (sampleRate, blockSize);
+            engine.getDeviceManager().dispatchPendingUpdates();
+        }
+
+        ~SimulatedSoundCard()
+        {
+            engine.getDeviceManager().deviceManager.closeAudioDevice();
+            engine.getDeviceManager().removeHostedAudioDeviceInterface();
+        }
+
+        /** Sings into the "mic": a sine of this level for this long (level 0 = silence).
+            Always whole blocks, like a real sound card (the hosted device holds back
+            partial blocks, which would blur the timing checks). 437.31 Hz so the wave's
+            phase never repeats within the test and identifies each input sample. */
+        void feed (double seconds, float level, double frequency = 437.31)
+        {
+            const int total = juce::jmax (1, (int) std::ceil (seconds * sampleRate / blockSize)) * blockSize;
+            juce::MidiBuffer midi;
+
+            for (int done = 0; done < total;)
+            {
+                const int n = juce::jmin (blockSize, total - done);
+                juce::AudioBuffer<float> buffer (2, n);
+                buffer.clear();
+
+                for (int i = 0; i < n; ++i)
+                    buffer.setSample (0, i, level * (float) std::sin (juce::MathConstants<double>::twoPi * frequency
+                                                                       * (double) (samplesFed + i) / sampleRate));
+
+                io.processBlock (buffer, midi);
+                samplesFed += n;
+                done += n;
+            }
+        }
+
+        te::Engine& engine;
+        te::HostedAudioDeviceInterface& io;
+        juce::int64 samplesFed = 0;
+    };
+}
+
 class SelfTest::Impl  : private juce::Timer
 {
 public:
@@ -60,6 +122,7 @@ private:
     te::Engine& engine;
     std::function<void (int)> finished;
     juce::File pluginFile, dumpDir;
+    std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     collab::Session host { engine }, peer1 { engine }, peer2 { engine };
     std::vector<Step> steps;
     size_t current = 0;
@@ -74,6 +137,11 @@ private:
     juce::File testRoot, toneFile, voiceFile, bigFile;
     juce::String toneHash, voiceHash, bigHash;
     bool bigStillTransferring = false;
+
+    // Recording
+    juce::String vocalsID, takeHash;
+    bool recordStarted = false;
+    juce::int64 fedAtTakeStart = -1;   // which input sample was playing at the take's start (measured)
     static constexpr int port = 47811;
 
     te::Edit& H()  { return *host.getEdit(); }
@@ -195,6 +263,36 @@ private:
                 return c;
 
         return {};
+    }
+
+    static juce::ValueTree clipOfChannel (te::Edit& e, const juce::String& channelName)
+    {
+        if (auto* t = ch (e, channelName))
+            for (auto& c : song::getClips (e))
+                if (song::isAudioClip (c) && c[song::ids::ch].toString() == song::getChannelID (*t))
+                    return c;
+
+        return {};
+    }
+
+    /** Peak level of an audio file between two times (seconds); -1 if unreadable. */
+    static float peakOf (const juce::File& f, double from, double to, double* lengthOut = nullptr)
+    {
+        juce::AudioFormatManager fm;
+        fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (f));
+
+        if (reader == nullptr)
+            return -1.0f;
+
+        if (lengthOut != nullptr)
+            *lengthOut = (double) reader->lengthInSamples / reader->sampleRate;
+
+        const auto start = (juce::int64) (from * reader->sampleRate);
+        const int num = (int) ((to - from) * reader->sampleRate);
+        juce::AudioBuffer<float> buffer ((int) reader->numChannels, num);
+        reader->read (&buffer, 0, num, start, true, true);
+        return buffer.getMagnitude (0, num);
     }
 
     juce::StringArray compiledAudio (collab::Session& s, const juce::String& channelName)
@@ -948,6 +1046,157 @@ private:
                     && everywhere ([this] (te::Edit& e) { return ch (e, "voice") == nullptr && ! audioClipOf (e, voiceHash).isValid(); });
             },
             8000, 600 });
+
+        //==============================================================================
+        // Recording (a simulated sound card with one mic input; peer 2 records)
+        steps.push_back ({ "Recording: simulated sound card; peer 2 makes insert 'Vocals', picks the mic input and arms it (stays on peer 2)",
+            [this]
+            {
+                soundCard = std::make_unique<SimulatedSoundCard> (engine);
+                auto* vocals = song::addInsert (P2(), "Vocals");
+                vocalsID = vocals->itemID.toString();
+                auto inputs = peer2.getRecorder().getInputs();
+                std::cout << "    inputs on this PC: " << inputs.size() << (inputs.isEmpty() ? juce::String() : " (" + inputs[0].name + ")")
+                          << std::endl;
+
+                if (! inputs.isEmpty())
+                    peer2.getRecorder().setInputFor (vocalsID, inputs[0].id);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return insert (e, "Vocals") != nullptr; })
+                    && peer2.getRecorder().getNumArmed() == 1
+                    && host.getRecorder().getNumArmed() == 0 && host.getRecorder().getInputFor (vocalsID).isEmpty()
+                    && peer1.getRecorder().getNumArmed() == 0
+                    && hashesEqual();   // choosing an input changed nothing in the shared song
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Recording: peer 2 presses Rec at beat 8 -> recording; host and peer 1 play along in SONG mode",
+            [this] { recordStarted = peer2.startRecording (P2().tempoSequence.toTime (te::BeatPosition::fromBeats (8.0)).inSeconds()); },
+            [this]
+            {
+                return recordStarted && peer2.isRecording()
+                    && H().getTransport().isPlaying() && P1().getTransport().isPlaying()
+                    && host.isSongMode() && peer1.isSongMode();
+            },
+            8000 });
+
+        steps.push_back ({ "Recording: 1 s of loud tone goes in; meanwhile host and peer 1 edit -> arrives at peer 2, still recording",
+            [this]
+            {
+                const auto fedBefore = soundCard->samplesFed;
+
+                soundCard->feed (1.0, 0.5f);
+
+                // Where the song really was after that second: from that, which input sample
+                // was going in while the song played the take's start position (beat 8).
+                if (auto* ctx = P2().getTransport().getCurrentPlaybackContext())
+                {
+                    const double played = ctx->getPosition().inSeconds()
+                                           - P2().tempoSequence.toTime (te::BeatPosition::fromBeats (8.0)).inSeconds();
+                    fedAtTakeStart = soundCard->samplesFed - (juce::int64) std::llround (played * SimulatedSoundCard::sampleRate);
+                    std::cout << "    playhead moved " << played << " s while " << (soundCard->samplesFed - fedBefore)
+                              << " samples went in -> the song's beat 8 met input sample " << fedAtTakeStart << std::endl;
+                }
+
+                song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Hat"), 11, true);
+                song::setStep (P1(), pat (P1(), "Pattern 1"), *ch (P1(), "Clap"), 13, true);
+            },
+            [this]
+            {
+                return hasStep (P2(), "Pattern 1", "Hat", 11) && hasStep (P2(), "Pattern 1", "Clap", 13)
+                    && peer2.isRecording() && hashesEqual();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Recording: 1 s of quieter tone, peer 2 stops -> 'Vocals take 1' routed to 'Vocals', clip at beat 8, on every PC",
+            [this]
+            {
+                soundCard->feed (1.0, 0.25f);
+                peer2.setPlaying (false, P2().tempoSequence.toTime (te::BeatPosition::fromBeats (8.0)).inSeconds());
+            },
+            [this]
+            {
+                soundCard->feed (0.01, 0.0f);   // keep the (stopped) engine ticking
+
+                auto clip = clipOfChannel (P2(), "Vocals take 1");
+                takeHash = clip[song::ids::asset].toString();
+
+                if (! clip.isValid())
+                    return false;
+
+                const bool ok = everywhere ([this] (te::Edit& e)
+                {
+                    auto* take = ch (e, "Vocals take 1");
+                    auto c = clipOfChannel (e, "Vocals take 1");
+                    return take != nullptr && song::isAudioChannel (*take) && c.isValid()
+                        && song::resolveRoute (e, *take) == insert (e, "Vocals")
+                        && c[song::ids::asset].toString() == takeHash
+                        && std::abs ((double) c[song::ids::start] - 8.0) < 0.01
+                        && std::abs ((double) c[song::ids::duration] - 2.0) < 0.03;
+                })
+                && hasVerified (host, takeHash) && hasVerified (peer1, takeHash)
+                && ! peer2.isRecording() && ! H().getTransport().isPlaying()
+                && hashesEqual() && compiledEqualEverywhere();
+
+                if (ok)
+                    std::cout << "    take: start beat " << (double) clip[song::ids::start] << ", "
+                              << (double) clip[song::ids::duration] << " s, offset " << (double) clip[song::ids::offset] << " s" << std::endl;
+
+                return ok;
+            },
+            20000 });
+
+        steps.push_back ({ "Recording: the take holds exactly what went in and lines up to the sample with what was playing - host's copy",
+            {},
+            [this]
+            {
+                auto file = host.getAssetStore().getFile (takeHash);
+                double length = 0.0;
+                const float start = peakOf (file, 0.0, 0.02, &length);
+                const float first = peakOf (file, 0.1, 0.9);
+                const float second = peakOf (file, 1.1, 1.9);
+                std::cout << "    length " << length << " s, peak in first 20 ms " << start << ", first second "
+                          << first << ", second second " << second << std::endl;
+
+                // Alignment: which input sample is the take's first one? (match the sine's phase)
+                juce::AudioFormatManager fm;
+                fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+                juce::int64 firstSample = -1;
+
+                if (reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b (1, 256);
+                    reader->read (&b, 0, 256, 0, true, false);
+                    double bestError = 1.0e9;
+
+                    for (int k = 0; k < 4096; ++k)
+                    {
+                        double err = 0.0;
+
+                        for (int j = 0; j < 256; ++j)
+                            err += std::abs (b.getSample (0, j) - 0.5 * std::sin (juce::MathConstants<double>::twoPi * 437.31
+                                                                                   * (double) (k + j) / SimulatedSoundCard::sampleRate));
+
+                        if (err < bestError)
+                        {
+                            bestError = err;
+                            firstSample = k;
+                        }
+                    }
+                }
+
+                auto clip = clipOfChannel (H(), "Vocals take 1");
+                const auto expected = fedAtTakeStart + (juce::int64) std::llround ((double) clip[song::ids::offset] * SimulatedSoundCard::sampleRate);
+                std::cout << "    the take starts with input sample " << firstSample << "; the song was at beat 8 at input sample "
+                          << expected << " -> " << (firstSample == expected ? "lined up exactly" : "OFF") << std::endl;
+
+                return std::abs (length - 2.0) < 0.03 && start > 0.4f
+                    && std::abs (first - 0.5f) < 0.03f && std::abs (second - 0.25f) < 0.03f
+                    && firstSample == expected;
+            } });
 
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
             [this]
