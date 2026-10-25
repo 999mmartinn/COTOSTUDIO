@@ -111,6 +111,9 @@ public:
     /** Hash of the shared state (local-only data excluded). */
     juce::int64 computeHash() const;
 
+    /** How many third-party plugin knobs are being watched (and so sent when moved). */
+    int getNumListenedParameters() const noexcept   { return (int) listenedParams.size(); }
+
     /** Gives notes (and other list items without an engine ID) a sync ID so
         two people can edit the same list at once. Call on the host's song. */
     void assignMissingSyncIDs();
@@ -135,6 +138,7 @@ private:
     juce::ValueTree root;
     int applyingDepth = 0;
     int tick = 0;
+    juce::int64 pluginSignature = 0;   // cheap fingerprint of which plugins/knobs exist
     Stats stats;
     std::map<juce::String, int> sentKinds;
     bool trace = false;

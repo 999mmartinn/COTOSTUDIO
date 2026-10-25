@@ -59,7 +59,9 @@ public:
                 select();
         };
 
-        name.setTooltip ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete");
+        name.setTooltip ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete."
+                         " Audio channels: drag onto the playlist to place the file");
+        name.addMouseListener (this, false);   // to start dragging audio channels
         addAndMakeVisible (mute);
         addAndMakeVisible (name);
 
@@ -87,6 +89,10 @@ public:
     void select()
     {
         rack.state.selectedChannel = channelID;
+
+        // An audio channel becomes what the playlist places on click; any other
+        // channel means you're working on patterns again.
+        rack.state.placeAudioChannel = isAudio() ? channelID : juce::String();
 
         if (rack.state.onSelectionChanged)
             rack.state.onSelectionChanged();
@@ -206,6 +212,9 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        if (e.eventComponent != this)
+            return;   // events from the name button (only listened to for dragging)
+
         auto pattern = rack.state.getPattern();
         const int step = stepAt (e.position, song::getNumSteps (pattern));
         auto* t = getTrack();
@@ -229,6 +238,20 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        // Dragging an audio channel's name onto the playlist places its file.
+        if (e.eventComponent == &name)
+        {
+            if (e.getDistanceFromDragStart() > 6 && isAudio())
+                if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor (this))
+                    if (! container->isDragAndDropActive())
+                        container->startDragging ("audioChannel:" + channelID, &name);
+
+            return;
+        }
+
+        if (e.eventComponent != this)
+            return;
+
         // Drag across steps to paint them like in FL.
         auto pattern = rack.state.getPattern();
         const int step = stepAt (e.position, song::getNumSteps (pattern));

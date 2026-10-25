@@ -13,12 +13,37 @@ struct EditorState
     juce::String selectedChannel;   // channel (track) ID
     double startBeat = 0.0;         // where Play starts in PAT mode (marker on the piano-roll ruler)
     double songStartBeat = 0.0;     // where Play starts in SONG mode (marker on the playlist ruler)
-    double playlistSnapBeats = 4.0; // playlist snap: bar / beat / step
+    double playlistSnapBeats = 4.0; // playlist snap: bar / beat / step, 0 = none
+    juce::String placeAudioChannel; // if set, clicking empty playlist space places this audio
+                                    // channel's file; otherwise the viewed pattern
     juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
 
     std::function<void()> onSelectionChanged;
 
     te::Edit* getEdit() const                { return session.getEdit(); }
+
+    /** The audio channel the playlist places on click, or nullptr (= place the pattern). */
+    te::AudioTrack* getPlaceAudioChannel() const
+    {
+        auto* edit = getEdit();
+        auto* t = edit != nullptr && placeAudioChannel.isNotEmpty() ? song::findChannel (*edit, placeAudioChannel) : nullptr;
+        return t != nullptr && song::isAudioChannel (*t) ? t : nullptr;
+    }
+
+    /** Snaps a beat to the playlist grid (rounding down); Alt held = no snap, like FL. */
+    double snapPlaylistBeat (double beat) const
+    {
+        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : playlistSnapBeats;
+        beat = juce::jmax (0.0, beat);
+        return grid > 0.0 ? std::floor (beat / grid + 1.0e-6) * grid : beat;
+    }
+
+    /** Same, rounding to the nearest grid line. */
+    double snapPlaylistBeatNearest (double beat) const
+    {
+        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : playlistSnapBeats;
+        return snapPlaylistBeat (beat + grid * 0.5);
+    }
 
     juce::ValueTree getPattern() const
     {

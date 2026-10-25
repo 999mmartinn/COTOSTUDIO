@@ -482,7 +482,14 @@ private:
                     song::addEffect (*ch (H(), "Synth"), *found[0]);
                 }
             },
-            [this] { return effectKnob (H()) >= 0 && effectKnob (P1()) >= 0 && effectKnob (P2()) >= 0; },
+            [this]
+            {
+                // Loaded on every PC, and every PC is watching its knobs (so moves are sent).
+                return effectKnob (H()) >= 0 && effectKnob (P1()) >= 0 && effectKnob (P2()) >= 0
+                    && host.getSync()->getNumListenedParameters() > 0
+                    && peer1.getSync()->getNumListenedParameters() > 0
+                    && peer2.getSync()->getNumListenedParameters() > 0;
+            },
             15000, 600, ! havePlugin });
 
         steps.push_back ({ "Knob turned in that plugin's window on the host -> peers follow",
@@ -896,6 +903,28 @@ private:
                                && std::abs ((double) voice[song::ids::duration] - 0.5) < 1.0e-9;
                        })
                     && compiledAudio (peer2, "tone").joinIntoString (",").contains (">0.500");
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Audio: peer 2 deletes the tone clip, then places it again from its channel, off the grid (beat 1.37)",
+            [this]
+            {
+                song::removeClip (P2(), audioClipOf (P2(), toneHash));
+                P2().getUndoManager().beginNewTransaction();
+                song::placeAudioChannel (P2(), *ch (P2(), "tone"), 5, 1.37);
+            },
+            [this]
+            {
+                return hashesEqual() && compiledEqualEverywhere()
+                    && everywhere ([this] (te::Edit& e)
+                       {
+                           auto tone = audioClipOf (e, toneHash);
+                           return song::getChannelAsset (e, *ch (e, "tone")) == toneHash
+                               && std::abs ((double) tone[song::ids::start] - 1.37) < 1.0e-9
+                               && (int) tone[song::ids::lane] == 5
+                               && (double) tone[song::ids::offset] == 0.0
+                               && std::abs ((double) tone[song::ids::duration] - 2.0) < 0.01;
+                       });
             },
             8000, 600 });
 

@@ -8,6 +8,7 @@
 
 //==============================================================================
 class MainComponent  : public juce::Component,
+                       public juce::DragAndDropContainer,
                        private juce::ValueTree::Listener,
                        private juce::AsyncUpdater
 {

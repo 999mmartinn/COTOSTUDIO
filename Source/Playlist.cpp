@@ -19,10 +19,47 @@ public:
 //==============================================================================
 class Playlist::Lanes  : public juce::Component,
                         public juce::FileDragAndDropTarget,
+                        public juce::DragAndDropTarget,
                         public juce::ChangeListener
 {
 public:
     Lanes (Playlist& p) : owner (p), state (p.state) {}
+
+    // An audio channel dragged from the channel rack: drop it to place its file.
+    static juce::String draggedChannel (const SourceDetails& d)
+    {
+        auto text = d.description.toString();
+        return text.startsWith ("audioChannel:") ? text.fromFirstOccurrenceOf (":", false, false) : juce::String();
+    }
+
+    bool isInterestedInDragSource (const SourceDetails& d) override   { return draggedChannel (d).isNotEmpty(); }
+
+    void itemDragMove (const SourceDetails& d) override
+    {
+        dropPreview = { laneAtY (d.localPosition.y), snap (beatAtX (d.localPosition.x)), draggedChannel (d) };
+        repaint();
+    }
+
+    void itemDragExit (const SourceDetails&) override   { dropPreview = {}; repaint(); }
+
+    void itemDropped (const SourceDetails& d) override
+    {
+        dropPreview = {};
+        auto* edit = state.getEdit();
+        auto* channel = edit != nullptr ? findChannel (*edit, draggedChannel (d)) : nullptr;
+
+        if (channel != nullptr)
+        {
+            state.beginAction();
+            placeAudioChannel (*edit, *channel, laneAtY (d.localPosition.y), snap (beatAtX (d.localPosition.x)));
+            state.selectedChannel = state.placeAudioChannel = getChannelID (*channel);
+
+            if (state.onSelectionChanged)
+                state.onSelectionChanged();
+        }
+
+        repaint();
+    }
 
     // Audio files dragged in from Explorer
     bool isInterestedInFileDrag (const juce::StringArray& files) override
@@ -50,7 +87,8 @@ public:
     float xForBeat (double beat) const   { return (float) (beat * owner.pixelsPerBeat); }
     double beatAtX (float x) const       { return juce::jmax (0.0, (double) x / owner.pixelsPerBeat); }
     int laneAtY (float y) const          { return juce::jlimit (0, numLanes - 1, (int) (y / laneHeight)); }
-    double snap (double beat) const      { return std::floor (beat / state.playlistSnapBeats + 1.0e-6) * state.playlistSnapBeats; }
+    double snap (double beat) const        { return state.snapPlaylistBeat (beat); }
+    double snapNearest (double beat) const { return state.snapPlaylistBeatNearest (beat); }
 
     juce::Rectangle<float> clipBounds (const juce::ValueTree& clip) const
     {
@@ -170,6 +208,22 @@ public:
                         juce::Justification::centredLeft, true);
         }
 
+        // Where an audio channel dragged from the channel rack would land
+        if (dropPreview.lane >= 0)
+        {
+            if (auto* t = findChannel (*edit, dropPreview.channelID))
+            {
+                const double seconds = juce::jmax (0.05, getAssetSeconds (*edit, getChannelAsset (*edit, *t)));
+                const double endBeat = secondsToBeats (*edit, beatsToSeconds (*edit, dropPreview.beat) + seconds);
+                const juce::Rectangle<float> r (xForBeat (dropPreview.beat), (float) (dropPreview.lane * laneHeight) + 1.5f,
+                                                xForBeat (endBeat) - xForBeat (dropPreview.beat), (float) laneHeight - 3.0f);
+                g.setColour (juce::Colours::white.withAlpha (0.12f));
+                g.fillRoundedRectangle (r, 3.0f);
+                g.setColour (juce::Colours::white.withAlpha (0.8f));
+                g.drawRoundedRectangle (r, 3.0f, 1.5f);
+            }
+        }
+
         // Start marker and playhead
         g.setColour (juce::Colour (0xff6fd06f).withAlpha (0.5f));
         g.drawVerticalLine ((int) xForBeat (state.songStartBeat), 0.0f, (float) getHeight());
@@ -283,12 +337,24 @@ public:
         }
         else
         {
-            auto pattern = state.getPattern();
+            // Place what is selected: an audio channel's file, or else the viewed pattern.
+            if (auto* audio = state.getPlaceAudioChannel())
+            {
+                dragClip = placeAudioChannel (*edit, *audio, laneAtY (e.position.y), snap (beatAtX (e.position.x)));
+            }
+            else
+            {
+                auto pattern = state.getPattern();
 
-            if (! pattern.isValid())
+                if (! pattern.isValid())
+                    return;
+
+                dragClip = addClip (*edit, pattern[ids::sid].toString(), laneAtY (e.position.y), snap (beatAtX (e.position.x)));
+            }
+
+            if (! dragClip.isValid())
                 return;
 
-            dragClip = addClip (*edit, pattern[ids::sid].toString(), laneAtY (e.position.y), snap (beatAtX (e.position.x)));
             dragMode = DragMode::move;
             grabStart = dragClip[ids::start];
             grabBeat = beatAtX (e.position.x);
@@ -310,7 +376,7 @@ public:
 
         if (dragMode == DragMode::move)
         {
-            const double newStart = juce::jmax (0.0, snap (grabStart + beatAtX (e.position.x) - grabBeat + state.playlistSnapBeats * 0.5));
+            const double newStart = juce::jmax (0.0, snapNearest (grabStart + beatAtX (e.position.x) - grabBeat));
             const int newLane = laneAtY (e.position.y);
 
             if (std::abs (newStart - (double) dragClip[ids::start]) > 1.0e-6)
@@ -327,7 +393,7 @@ public:
 
             if (dragMode == DragMode::resize)
             {
-                const double endBeat = snap (beatAtX (e.position.x) + state.playlistSnapBeats * 0.5);
+                const double endBeat = snapNearest (beatAtX (e.position.x));
                 const double duration = juce::jlimit (0.05, juce::jmax (0.05, fileSeconds - grabOffset), beatsToSeconds (*edit, endBeat) - startSeconds);
 
                 if (std::abs (duration - (double) dragClip[ids::duration]) > 1.0e-6)
@@ -336,7 +402,7 @@ public:
             else   // trimStart: move the left edge, keeping the right edge where it is
             {
                 const double endSeconds = startSeconds + grabDuration;
-                double newStartSeconds = beatsToSeconds (*edit, snap (beatAtX (e.position.x) + state.playlistSnapBeats * 0.5));
+                double newStartSeconds = beatsToSeconds (*edit, snapNearest (beatAtX (e.position.x)));
                 newStartSeconds = juce::jlimit (startSeconds - grabOffset, endSeconds - 0.05, newStartSeconds);
                 newStartSeconds = juce::jmax (0.0, newStartSeconds);
 
@@ -354,7 +420,7 @@ public:
         else
         {
             const double start = dragClip[ids::start];
-            const double end = juce::jmax (start + stepBeats, snap (beatAtX (e.position.x) + state.playlistSnapBeats * 0.5));
+            const double end = juce::jmax (start + stepBeats, snapNearest (beatAtX (e.position.x)));
 
             if (std::abs (end - start - getClipLength (*edit, dragClip)) > 1.0e-6)
                 dragClip.setProperty (ids::length, end - start, um);
@@ -370,9 +436,15 @@ public:
         if (dragClip.isValid() && clickedExisting && ! moved)
         {
             if (isAudioClip (dragClip))
+            {
                 state.selectedChannel = dragClip[ids::ch].toString();
+                state.placeAudioChannel = state.selectedChannel;
+            }
             else
+            {
                 state.viewedPattern = dragClip[ids::pattern].toString();
+                state.placeAudioChannel = {};
+            }
 
             if (state.onSelectionChanged)
                 state.onSelectionChanged();
@@ -393,6 +465,7 @@ private:
     Playlist& owner;
     EditorState& state;
     juce::ValueTree dragClip;
+    struct DropPreview { int lane = -1; double beat = 0.0; juce::String channelID; } dropPreview;
     enum class DragMode { move, resize, trimStart } dragMode = DragMode::move;
     double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0;
     bool moved = false, clickedExisting = false;
@@ -448,7 +521,7 @@ public:
     void setStart (float x, bool seekIfPlaying)
     {
         const double beat = juce::jmax (0.0, (double) (x + (float) owner.viewport->getViewPositionX()) / owner.pixelsPerBeat);
-        state.songStartBeat = std::floor (beat / state.playlistSnapBeats + 1.0e-6) * state.playlistSnapBeats;
+        state.songStartBeat = state.snapPlaylistBeat (beat);
 
         if (seekIfPlaying && state.session.isSongMode())
             if (auto* edit = state.getEdit())
@@ -549,10 +622,13 @@ Playlist::Playlist (EditorState& s) : state (s)
     snapBox.addItem ("Snap: bar", 1);
     snapBox.addItem ("Snap: beat", 2);
     snapBox.addItem ("Snap: step", 3);
+    snapBox.addItem ("Snap: none", 4);
     snapBox.setSelectedId (1, juce::dontSendNotification);
+    snapBox.setTooltip ("Grid that clips snap to. Hold Alt while dragging to move freely");
     snapBox.onChange = [this]
     {
-        state.playlistSnapBeats = snapBox.getSelectedId() == 1 ? 4.0 : snapBox.getSelectedId() == 2 ? 1.0 : stepBeats;
+        const int id = snapBox.getSelectedId();
+        state.playlistSnapBeats = id == 1 ? 4.0 : id == 2 ? 1.0 : id == 3 ? stepBeats : 0.0;
     };
     addAndMakeVisible (snapBox);
 
@@ -620,6 +696,7 @@ void Playlist::importFiles (const juce::Array<juce::File>& files, int lane, doub
                 if (clip.isValid())
                 {
                     safe->state.selectedChannel = clip[ids::ch].toString();
+                    safe->state.placeAudioChannel = safe->state.selectedChannel;
                     safe->state.session.logMessage ("Added " + file.getFileName() + " ("
                                                      + juce::String (result.lengthSeconds, 1) + " s) - it is being sent to the others");
 
@@ -633,8 +710,9 @@ void Playlist::importFiles (const juce::Array<juce::File>& files, int lane, doub
 
 void Playlist::refresh()
 {
-    title.setText ("Playlist - click to place \"" + state.getPattern()[ids::name].toString()
-                     + "\", drag to move, drag edges to resize, right-click to delete, drop audio files here, Ctrl+wheel to zoom",
+    auto* audio = state.getPlaceAudioChannel();
+    title.setText ("Playlist - click to place \"" + (audio != nullptr ? audio->getName() : state.getPattern()[ids::name].toString())
+                     + "\", drag to move, drag edges to resize, right-click to delete, Alt: no snap, drop audio files here",
                    juce::dontSendNotification);
     layoutContent();
     lanes->repaint();

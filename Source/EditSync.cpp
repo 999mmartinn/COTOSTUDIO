@@ -826,10 +826,20 @@ void EditSync::timerCallback()
 {
     flushPendingParams();
 
-    // Plugin instances (and so their parameters) are created asynchronously,
-    // so re-check which parameters exist a couple of times per second.
-    if (++tick % 5 == 0)
+    // Plugin instances (and so their knobs) appear asynchronously. A cheap check
+    // every tick notices new ones within ~30 ms, so an early knob move isn't
+    // missed; the full check a few times a second catches anything else.
+    juce::int64 signature = 0;
+
+    for (auto plugin : te::getAllPlugins (edit, false))
+        if (dynamic_cast<te::ExternalPlugin*> (plugin) != nullptr)
+            signature = signature * 31 + (juce::int64) (juce::pointer_sized_int) plugin + plugin->getNumAutomatableParameters();
+
+    if (signature != pluginSignature || ++tick % 5 == 0)
+    {
+        pluginSignature = signature;
         refreshParameterListeners();
+    }
 }
 
 //==============================================================================

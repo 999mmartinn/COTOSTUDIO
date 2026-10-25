@@ -723,6 +723,34 @@ juce::ValueTree addAudioClip (te::Edit& edit, const juce::String& hash, const ju
     return c;
 }
 
+juce::String getChannelAsset (te::Edit& edit, const te::AudioTrack& channel)
+{
+    auto hash = channel.state[ids::asset].toString();
+
+    if (hash.isNotEmpty())
+        return hash;
+
+    // Older songs: find it through one of the channel's clips.
+    const auto channelID = getChannelID (channel);
+
+    for (auto& c : getClips (edit))
+        if (isAudioClip (c) && c[ids::ch].toString() == channelID)
+            return c[ids::asset].toString();
+
+    return {};
+}
+
+juce::ValueTree placeAudioChannel (te::Edit& edit, const te::AudioTrack& channel, int lane, double startBeat)
+{
+    const auto hash = getChannelAsset (edit, channel);
+
+    if (! isAudioChannel (channel) || hash.isEmpty())
+        return {};
+
+    return addAudioClip (edit, hash, getChannelID (channel), lane, startBeat, 0.0,
+                         juce::jmax (0.05, getAssetSeconds (edit, hash)));
+}
+
 juce::ValueTree addImportedAudio (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& name,
                                   int lane, double startBeat)
 {
@@ -732,6 +760,7 @@ juce::ValueTree addImportedAudio (te::Edit& edit, const AssetStore::ImportResult
     if (channel == nullptr)
         return {};
 
+    channel->state.setProperty (ids::asset, r.hash, um (edit));
     return addAudioClip (edit, r.hash, getChannelID (*channel), lane, startBeat, 0.0, r.lengthSeconds);
 }
 

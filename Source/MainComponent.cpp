@@ -261,6 +261,7 @@ void MainComponent::unwatchEdit()
 void MainComponent::selectPattern (const juce::String& sid)
 {
     state.viewedPattern = sid;
+    state.placeAudioChannel = {};   // the playlist places this pattern again
 
     // FL pattern mode: while playing, switching pattern switches what plays (for everyone).
     if (auto* edit = state.getEdit())

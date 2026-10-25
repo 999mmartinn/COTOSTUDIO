@@ -11,8 +11,15 @@ Built step by step, with stability first.
   (in the channel rack, routable to a mixer insert like any channel) and a clip
   in the playlist showing its waveform. Audio clips play in **SONG** mode.
 * Drag an audio clip to move it; drag its **left or right edge to trim** it.
-  Right-click deletes it. Clicking it selects its channel. Trimming is in
-  seconds, so changing the tempo never stretches your audio.
+  Right-click deletes it. Trimming is in seconds, so changing the tempo never
+  stretches your audio.
+* **Placing it again** (v0.5.1): drag the audio channel's name from the channel
+  rack onto a playlist lane (an outline shows where it lands). Or click the
+  audio channel (or one of its clips) and then click an empty spot in the
+  playlist: like with patterns, the playlist places what you selected last
+  (its title says what). Choosing a pattern switches back to placing patterns.
+* **Snap: none** in the playlist's snap menu moves clips freely, and holding
+  **Alt** while dragging ignores the snap for that drag (like FL).
 * **The file is sent to everyone automatically** in the background (as FLAC,
   lossless and about half the size of WAV). Until it arrives, others see
   "receiving NN%" or "waiting for the file..." on the clip; it starts playing
@@ -125,8 +132,9 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
   same knob, or reorder tracks), the last change wins. Rarely the copies can
   briefly differ; the fingerprint check catches it and the joiner gets a fresh
   copy within a few seconds.
-* A knob turned in the first half-second after a plugin is inserted may not be
-  sent (the plugin is still loading). Closing its window sends its full state.
+* A knob turned in the very first instant after a plugin finishes loading
+  (a few hundredths of a second) may not be sent. Closing its window sends its
+  full state anyway.
 * Plugin *audio* isn't compared, only settings. A plugin that behaves
   differently on two PCs (different version) will sound different.
 * What the engine plays is generated on each PC from the shared patterns

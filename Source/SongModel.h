@@ -175,6 +175,11 @@ namespace song
     juce::ValueTree addAudioClip (te::Edit&, const juce::String& hash, const juce::String& channelID,
                                   int lane, double startBeat, double offsetSeconds, double durationSeconds);
     /** Adds an imported file to the song: its asset entry, a new audio channel and a clip. */
+    /** The audio file an audio channel plays (remembered even when all its clips are deleted). */
+    juce::String getChannelAsset (te::Edit&, const te::AudioTrack& channel);
+    /** Places a full-length clip of an audio channel's file on the playlist. */
+    juce::ValueTree placeAudioChannel (te::Edit&, const te::AudioTrack& channel, int lane, double startBeat);
+
     juce::ValueTree addImportedAudio (te::Edit&, const AssetStore::ImportResult&, const juce::String& name,
                                       int lane, double startBeat);
 
