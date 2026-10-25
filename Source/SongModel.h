@@ -71,6 +71,9 @@ namespace song
         SONG_DECLARE_ID (from)
         SONG_DECLARE_ID (to)
         SONG_DECLARE_ID (db)
+        SONG_DECLARE_ID (APOINT)
+        SONG_DECLARE_ID (plugin)
+        SONG_DECLARE_ID (param)
         #undef SONG_DECLARE_ID
     }
 
@@ -167,6 +170,31 @@ namespace song
     void setSendLevel (te::Edit&, juce::ValueTree send, double db);
     double getSendLevel (const juce::ValueTree& send);
     constexpr double minSendDb = -60.0, maxSendDb = 6.0;   // minSendDb counts as off
+
+    //==============================================================================
+    // Automation clips (FL-style): playlist clips (PCLIP kind="auto") that move one
+    // knob over time: plugin = the plugin's ID, param = the knob's ID, length in beats,
+    // APOINT children: b = beat within the clip, v = value 0..1 (of the knob's range).
+    // Shared like any clip; each PC turns them into engine automation in SONG mode
+    // (see PatternCompiler), so they play in SONG mode only, like FL.
+    bool isAutomationClip (const juce::ValueTree& clip);
+    juce::ValueTree addAutomationClip (te::Edit&, const juce::String& pluginID, const juce::String& paramID,
+                                       int lane, double startBeat, double lengthBeats, float startValue01);
+    /** The clip's points, sorted by time. */
+    juce::Array<juce::ValueTree> getAutomationPoints (const juce::ValueTree& clip);
+    juce::ValueTree addAutomationPoint (te::Edit&, juce::ValueTree clip, double beat, float value01);
+    void moveAutomationPoint (te::Edit&, juce::ValueTree point, double beat, float value01);
+    void removeAutomationPoint (te::Edit&, juce::ValueTree point);
+    /** The clip's value (0..1) at a beat within it (straight lines between points, held at the ends). */
+    float getAutomationValueAt (const juce::ValueTree& clip, double beatInClip);
+    /** The knob a clip moves (nullptr if its plugin is gone). */
+    te::AutomatableParameter* findAutomationTarget (te::Edit&, const juce::ValueTree& clip);
+    te::AutomatableParameter* findParameter (te::Edit&, const juce::String& pluginID, const juce::String& paramID);
+    /** "Kick - Volume", "Master - Volume", "Synth - Reverb: Room Size"... */
+    juce::String describeParameter (te::Edit&, const juce::String& pluginID, const juce::String& paramID);
+    juce::String describeAutomationTarget (te::Edit&, const juce::ValueTree& clip);
+    /** Plugins that automation clips move (their knob values differ between PCs while they play). */
+    juce::StringArray getAutomatedPlugins (te::Edit&);
 
     /** True if sound from insert fromID reaches insert toID (through routes and sends). */
     bool feeds (te::Edit&, const juce::String& fromID, const juce::String& toID);

@@ -339,6 +339,8 @@ public:
         fader.setTooltip (isMaster() ? "Volume (right-click: reset to -3 dB)" : "Volume (right-click: reset to 0 dB)");
         fader.describeDefault = [this] { return juce::String (isMaster() ? "-3 dB" : "0 dB"); };
         pan.onDragStart = [this] { mixer.state.beginAction(); };
+        mixer.state.enableAutomation (fader, [this] { return (te::Plugin*) getVolume(); }, "volume");
+        mixer.state.enableAutomation (pan, [this] { return (te::Plugin*) getVolume(); }, "pan");
         pan.onValueChange = [this]
         {
             if (auto* v = getVolume())

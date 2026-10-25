@@ -23,8 +23,10 @@ public:
             addAndMakeVisible (s);
         }
 
-        volume.setTooltip ("Volume (right-click: reset to 0 dB)");
-        pan.setTooltip ("Pan (right-click: reset to centre)");
+        volume.setTooltip ("Volume (right-click: reset to 0 dB, or automate it)");
+        pan.setTooltip ("Pan (right-click: reset to centre, or automate it)");
+        rack.state.enableAutomation (volume, [this] { return (te::Plugin*) getVolume(); }, "volume");
+        rack.state.enableAutomation (pan, [this] { return (te::Plugin*) getVolume(); }, "pan");
         volume.describeDefault = [] { return juce::String ("0 dB"); };
         pan.describeDefault = [] { return juce::String ("centre"); };
         volume.setDoubleClickReturnValue (true, 0.0);   // replaced in refresh() with the real default

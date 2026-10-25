@@ -161,6 +161,9 @@ void removeClip (te::Edit& edit, juce::ValueTree clip)
 
 double getClipLength (te::Edit& edit, const juce::ValueTree& clip)
 {
+    if (isAutomationClip (clip))
+        return juce::jmax (stepBeats, (double) clip.getProperty (ids::length, 16.0));
+
     if (isAudioClip (clip))
     {
         const double start = clip[ids::start];
@@ -560,6 +563,159 @@ bool feeds (te::Edit& edit, const juce::String& fromID, const juce::String& toID
     }
 
     return false;
+}
+
+//==============================================================================
+// Automation clips
+static const juce::String autoKind ("auto");
+
+bool isAutomationClip (const juce::ValueTree& clip)
+{
+    return clip[ids::kind].toString() == autoKind;
+}
+
+juce::ValueTree addAutomationClip (te::Edit& edit, const juce::String& pluginID, const juce::String& paramID,
+                                   int lane, double startBeat, double lengthBeats, float startValue01)
+{
+    juce::ValueTree c (ids::PCLIP);
+    c.setProperty (ids::sid, newSyncID(), nullptr);
+    c.setProperty (ids::kind, autoKind, nullptr);
+    c.setProperty (ids::plugin, pluginID, nullptr);
+    c.setProperty (ids::param, paramID, nullptr);
+    c.setProperty (ids::lane, juce::jlimit (0, numLanes - 1, lane), nullptr);
+    c.setProperty (ids::start, juce::jmax (0.0, startBeat), nullptr);
+    c.setProperty (ids::length, juce::jmax (stepBeats, lengthBeats), nullptr);
+
+    // A flat line at the knob's value: two points, one at each end.
+    for (double b : { 0.0, lengthBeats })
+    {
+        juce::ValueTree p (ids::APOINT);
+        p.setProperty (ids::sid, newSyncID(), nullptr);
+        p.setProperty (ids::b, b, nullptr);
+        p.setProperty (ids::v, juce::jlimit (0.0f, 1.0f, startValue01), nullptr);
+        c.appendChild (p, nullptr);
+    }
+
+    getPlaylist (edit, true).appendChild (c, um (edit));
+    return c;
+}
+
+juce::Array<juce::ValueTree> getAutomationPoints (const juce::ValueTree& clip)
+{
+    juce::Array<juce::ValueTree> points;
+
+    for (auto p : clip)
+        if (p.hasType (ids::APOINT))
+            points.add (p);
+
+    std::stable_sort (points.begin(), points.end(), [] (const juce::ValueTree& a, const juce::ValueTree& b)
+                      { return (double) a[ids::b] < (double) b[ids::b]; });
+    return points;
+}
+
+juce::ValueTree addAutomationPoint (te::Edit& edit, juce::ValueTree clip, double beat, float value01)
+{
+    juce::ValueTree p (ids::APOINT);
+    p.setProperty (ids::sid, newSyncID(), nullptr);
+    p.setProperty (ids::b, juce::jmax (0.0, beat), nullptr);
+    p.setProperty (ids::v, juce::jlimit (0.0f, 1.0f, value01), nullptr);
+    clip.appendChild (p, um (edit));
+    return p;
+}
+
+void moveAutomationPoint (te::Edit& edit, juce::ValueTree point, double beat, float value01)
+{
+    if (std::abs ((double) point[ids::b] - beat) > 1.0e-9)
+        point.setProperty (ids::b, juce::jmax (0.0, beat), um (edit));
+
+    if (std::abs ((float) point[ids::v] - value01) > 1.0e-6f)
+        point.setProperty (ids::v, juce::jlimit (0.0f, 1.0f, value01), um (edit));
+}
+
+void removeAutomationPoint (te::Edit& edit, juce::ValueTree point)
+{
+    auto parent = point.getParent();
+
+    if (parent.isValid())
+        parent.removeChild (point, um (edit));
+}
+
+float getAutomationValueAt (const juce::ValueTree& clip, double beat)
+{
+    auto points = getAutomationPoints (clip);
+
+    if (points.isEmpty())
+        return 0.0f;
+
+    if (beat <= (double) points.getFirst()[ids::b])
+        return points.getFirst()[ids::v];
+
+    for (int i = 1; i < points.size(); ++i)
+    {
+        const double b0 = points[i - 1][ids::b], b1 = points[i][ids::b];
+
+        if (beat <= b1)
+        {
+            const float v0 = points[i - 1][ids::v], v1 = points[i][ids::v];
+            return b1 - b0 < 1.0e-9 ? v1 : v0 + (v1 - v0) * (float) ((beat - b0) / (b1 - b0));
+        }
+    }
+
+    return points.getLast()[ids::v];
+}
+
+te::AutomatableParameter* findParameter (te::Edit& edit, const juce::String& pluginID, const juce::String& paramID)
+{
+    if (auto plugin = te::findPluginForID (edit, te::EditItemID::fromVar (pluginID)))
+        if (auto param = plugin->getAutomatableParameterByID (paramID))
+            return param.get();
+
+    return nullptr;
+}
+
+te::AutomatableParameter* findAutomationTarget (te::Edit& edit, const juce::ValueTree& clip)
+{
+    return isAutomationClip (clip) ? findParameter (edit, clip[ids::plugin].toString(), clip[ids::param].toString()) : nullptr;
+}
+
+juce::String describeParameter (te::Edit& edit, const juce::String& pluginID, const juce::String& paramID)
+{
+    auto plugin = te::findPluginForID (edit, te::EditItemID::fromVar (pluginID));
+    auto* param = findParameter (edit, pluginID, paramID);
+
+    if (plugin == nullptr || param == nullptr)
+        return "(control not here)";
+
+    juce::String owner = "Master";
+
+    if (auto* track = plugin->getOwnerTrack())
+        if (! track->isMasterTrack())
+            owner = track->getName();
+
+    auto name = param->getParameterName();
+
+    if (dynamic_cast<te::VolumeAndPanPlugin*> (plugin.get()) == nullptr)
+        name = plugin->getName() + ": " + name;
+    else
+        name = name.substring (0, 1).toUpperCase() + name.substring (1);
+
+    return owner + " - " + name;
+}
+
+juce::String describeAutomationTarget (te::Edit& edit, const juce::ValueTree& clip)
+{
+    return describeParameter (edit, clip[ids::plugin].toString(), clip[ids::param].toString());
+}
+
+juce::StringArray getAutomatedPlugins (te::Edit& edit)
+{
+    juce::StringArray result;
+
+    for (auto& c : getClips (edit))
+        if (isAutomationClip (c))
+            result.addIfNotAlreadyThere (c[ids::plugin].toString());
+
+    return result;
 }
 
 //==============================================================================

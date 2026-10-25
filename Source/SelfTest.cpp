@@ -230,6 +230,43 @@ private:
     bool exportDone = false;
     Exporter::Result exportResult;
     juce::int64 fedAtTake2Start = -1;
+
+    // Automation
+    juce::String autoSid;
+    int sentBeforeAutomation = 0;
+    float autoEarly = -1.0f, autoLate = -1.0f, autoQuiet = -1.0f, autoLoud = -1.0f;
+
+    juce::ValueTree autoClip (te::Edit& e)
+    {
+        for (auto& c : song::getClips (e))
+            if (c[song::ids::sid].toString() == autoSid)
+                return c;
+
+        return {};
+    }
+
+    static te::AutomatableParameter* kickVolume (te::Edit& e)
+    {
+        return song::getVolumePlugin (*ch (e, "Kick"))->volParam.get();
+    }
+
+    float renderPeakBetween (te::Edit& e, juce::StringArray trackNames, double fromBeat, double toBeat)
+    {
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("synctest-render", ".wav");
+        juce::BigInteger tracks;
+        auto all = te::getAllTracks (e);
+
+        for (int i = 0; i < all.size(); ++i)
+            if (trackNames.contains (all[i]->getName()))
+                tracks.setBit (i);
+
+        if (! te::Renderer::renderToFile ("test", file, e, e.getTransport().getLoopRange(), tracks, true, true, {}, false))
+            return -1.0f;
+
+        const float peak = peakOf (file, timeOfBeat (e, fromBeat), timeOfBeat (e, toBeat));
+        file.deleteFile();
+        return peak;
+    }
     double preRollSeconds = 0.0;
 
     static juce::String outputOf (te::Edit& e, te::AudioTrack* t)
@@ -1443,6 +1480,114 @@ private:
         steps.push_back ({ "Metronome: peer 2 turns it on -> only on peer 2; the song didn't change",
             [this] { peer2.setMetronome (true); },
             [this] { return P2().clickTrackEnabled.get() && ! H().clickTrackEnabled.get() && ! P1().clickTrackEnabled.get() && hashesEqual(); },
+            8000, 600 });
+
+        //==============================================================================
+        // Automation clips (shared; each PC plays them in SONG mode)
+        steps.push_back ({ "Automation: peer 1 makes an automation clip for the Kick's volume (a ramp up across bar 1, track 10) -> everywhere",
+            [this]
+            {
+                auto* vp = song::getVolumePlugin (*ch (P1(), "Kick"));
+                auto clip = song::addAutomationClip (P1(), vp->itemID.toString(), "volume", 9, 0.0, 4.0, 0.0f);
+                autoSid = clip[song::ids::sid].toString();
+                auto points = song::getAutomationPoints (clip);
+                song::moveAutomationPoint (P1(), points.getLast(), 4.0, 1.0f);
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([this] (te::Edit& e)
+                {
+                    auto clip = autoClip (e);
+                    auto points = song::getAutomationPoints (clip);
+                    return song::isAutomationClip (clip) && points.size() == 2
+                        && (float) points.getLast()[song::ids::v] == 1.0f
+                        && song::findAutomationTarget (e, clip) == kickVolume (e)
+                        && song::describeAutomationTarget (e, clip) == "Kick - Volume";
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Automation plays in SONG mode: the host and peer 2 switch to SONG and build the Kick's volume curve themselves; peer 1 (PAT) has none",
+            [this] { host.setSongMode (true); peer2.setSongMode (true); },
+            [this]
+            {
+                auto h = host.getCompiler()->describeCompiledAutomation (*kickVolume (H()));
+                auto p2 = peer2.getCompiler()->describeCompiledAutomation (*kickVolume (P2()));
+                const bool local = (bool) kickVolume (H())->getCurve().state[song::ids::generated]
+                                && ! collab::EditSync::filteredCopy (H().state, false).toXmlString().contains ("AUTOMATIONCURVE");
+
+                if (h.size() >= 2)
+                    std::cout << "    host's curve: " << h.joinIntoString (", ") << std::endl;
+
+                return h.size() >= 2 && h == p2 && kickVolume (P1())->getCurve().getNumPoints() == 0 && local && hashesEqual();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Automation: the host's Kick volume follows the curve as the song plays; nothing is sent; the copies stay identical",
+            [this]
+            {
+                sentBeforeAutomation = host.getSync()->getStats().sent + host.getSync()->getStats().paramsSent;
+                resyncsBefore = peer1.getResyncCount() + peer2.getResyncCount();
+                auto* vol = kickVolume (H());
+
+                vol->updateToFollowCurve (te::TimePosition::fromSeconds (timeOfBeat (H(), 0.5)));
+                autoEarly = vol->getCurrentNormalisedValue();
+                vol->updateToFollowCurve (te::TimePosition::fromSeconds (timeOfBeat (H(), 3.5)));
+                autoLate = vol->getCurrentNormalisedValue();
+            },
+            [this]
+            {
+                const int sent = host.getSync()->getStats().sent + host.getSync()->getStats().paramsSent;
+                std::cout << "    kick volume at beat 0.5: " << autoEarly << ", at beat 3.5: " << autoLate
+                          << "; ops sent meanwhile: " << (sent - sentBeforeAutomation) << std::endl;
+                return std::abs (autoEarly - 0.125f) < 0.02f && std::abs (autoLate - 0.875f) < 0.02f
+                    && sent == sentBeforeAutomation && hashesEqual()
+                    && peer1.getResyncCount() + peer2.getResyncCount() == resyncsBefore;
+            },
+            8000, 2000 });
+
+        steps.push_back ({ "Automation: peer 2 adds a point (beat 2, 50%) -> everywhere, and the SONG-mode PCs rebuild the curve",
+            [this] { song::addAutomationPoint (P2(), autoClip (P2()), 2.0, 0.5f); },
+            [this]
+            {
+                auto h = host.getCompiler()->describeCompiledAutomation (*kickVolume (H()));
+                return hashesEqual() && everywhere ([this] (te::Edit& e) { return song::getAutomationPoints (autoClip (e)).size() == 3; })
+                    && h == peer2.getCompiler()->describeCompiledAutomation (*kickVolume (P2()))
+                    && h.joinIntoString (",").contains (juce::String (timeOfBeat (H(), 2.0), 3) + "=0.500");
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Automation is audible: rendering the Kick on the host, the kicks early in the bar are much quieter than the late ones",
+            {},
+            [this]
+            {
+                autoQuiet = renderPeakBetween (H(), { "Kick", "Drums" }, 0.4, 1.2);
+                autoLoud = renderPeakBetween (H(), { "Kick", "Drums" }, 2.9, 3.7);
+                std::cout << "    kick peak early in the bar " << autoQuiet << ", late " << autoLoud << std::endl;
+                return autoLoud > 0.05f && autoQuiet < autoLoud * 0.5f;
+            } });
+
+        steps.push_back ({ "Automation: peer 1 deletes the clip -> gone everywhere, and nobody's Kick volume has a curve any more",
+            [this] { song::removeClip (P1(), autoClip (P1())); },
+            [this]
+            {
+                return hashesEqual() && everywhere ([this] (te::Edit& e) { return ! autoClip (e).isValid(); })
+                    && kickVolume (H())->getCurve().getNumPoints() == 0 && kickVolume (P2())->getCurve().getNumPoints() == 0;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Back in PAT mode, the host moves the Kick's volume by hand -> sent to everyone again",
+            [this]
+            {
+                host.setSongMode (false);
+                peer2.setSongMode (false);
+                kickVolume (H())->setNormalisedParameter (0.3f, juce::sendNotification);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return std::abs (kickVolume (e)->getCurrentNormalisedValue() - 0.3f) < 1.0e-4f; })
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
             8000, 600 });
 
         //==============================================================================

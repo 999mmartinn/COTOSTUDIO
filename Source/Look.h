@@ -50,6 +50,9 @@ public:
     /** Optional text for the menu, e.g. "0 dB" or "centre". */
     std::function<juce::String()> describeDefault;
 
+    /** If set, the right-click menu offers "Create automation clip" (FL-style). */
+    std::function<void()> onCreateAutomation;
+
     void resetToDefault()
     {
         if (! isDoubleClickReturnEnabled())
@@ -96,11 +99,20 @@ private:
             text << " (" << describeDefault() << ")";
 
         m.addItem (1, text, isEnabled() && isDoubleClickReturnEnabled());
+
+        if (onCreateAutomation)
+            m.addItem (2, "Create automation clip");
+
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this).withMousePosition(),
                          [safe = juce::Component::SafePointer<ResetSlider> (this)] (int result)
                          {
-                             if (result == 1 && safe != nullptr)
+                             if (safe == nullptr)
+                                 return;
+
+                             if (result == 1)
                                  safe->resetToDefault();
+                             else if (result == 2 && safe->onCreateAutomation)
+                                 safe->onCreateAutomation();
                          });
     }
 };

@@ -5,6 +5,7 @@
 #include "PianoRoll.h"
 #include "Playlist.h"
 #include "Mixer.h"
+#include "AutomationEditor.h"
 #include "Browser.h"
 #include "Exporter.h"
 #include "Look.h"
@@ -109,6 +110,8 @@ private:
     ChannelRack rack { engine, state };
     PianoRoll pianoRoll { state };
     Mixer mixer { engine, state };
+    AutomationEditor automationEditor { state };
+    void createAutomation (const juce::String& pluginID, const juce::String& paramID);
     juce::TabbedComponent bottomTabs { juce::TabbedButtonBar::TabsAtTop };   // Piano roll (F7) / Mixer (F9)
     juce::TextEditor logView;
 

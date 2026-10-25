@@ -218,6 +218,12 @@ public:
                 continue;
             }
 
+            if (isAutomationClip (clip))
+            {
+                paintAutomationClip (g, *edit, clip, r);
+                continue;
+            }
+
             auto pattern = findPattern (*edit, clip[ids::pattern].toString());
 
             const auto colour = pattern.isValid() ? patternColour (pattern) : juce::Colours::grey;
@@ -293,6 +299,46 @@ public:
             g.setColour (juce::Colours::white.withAlpha (0.85f));
             g.drawVerticalLine ((int) xForBeat (playBeat), 0.0f, (float) getHeight());
         }
+    }
+
+    void paintAutomationClip (juce::Graphics& g, te::Edit& edit, const juce::ValueTree& clip, juce::Rectangle<float> r)
+    {
+        const juce::Colour colour (0xff45c4b0);
+        const bool selected = state.selectedAutomation == clip[ids::sid].toString();
+        g.setColour (colour.withAlpha (0.18f));
+        g.fillRoundedRectangle (r, 3.0f);
+        g.setColour (colour);
+        g.drawRoundedRectangle (r, 3.0f, selected ? 2.0f : 1.0f);
+
+        // The curve across the clip.
+        const double len = getClipLength (edit, clip);
+        auto body = r.reduced (2.0f, 3.0f).withTrimmedTop (9.0f);
+        juce::Path path;
+        const int steps = juce::jlimit (2, 400, (int) r.getWidth() / 3);
+
+        for (int i = 0; i <= steps; ++i)
+        {
+            const double b = len * i / steps;
+            const float x = body.getX() + body.getWidth() * (float) i / (float) steps;
+            const float y = body.getBottom() - getAutomationValueAt (clip, b) * body.getHeight();
+
+            if (i == 0) path.startNewSubPath (x, y);
+            else        path.lineTo (x, y);
+        }
+
+        g.setColour (colour.brighter (0.3f));
+        g.strokePath (path, juce::PathStrokeType (1.5f));
+
+        for (auto& p : getAutomationPoints (clip))
+            if ((double) p[ids::b] <= len)
+                g.fillEllipse (juce::Rectangle<float> (4.0f, 4.0f)
+                                 .withCentre ({ body.getX() + body.getWidth() * (float) ((double) p[ids::b] / len),
+                                                body.getBottom() - (float) p[ids::v] * body.getHeight() }));
+
+        g.setColour (juce::Colours::white);
+        g.setFont (10.0f);
+        g.drawText (describeAutomationTarget (edit, clip), r.reduced (4.0f, 0.0f).withHeight (11.0f).toNearestInt(),
+                    juce::Justification::centredLeft, true);
     }
 
     void paintAudioClip (juce::Graphics& g, te::Edit& edit, const juce::ValueTree& clip, juce::Rectangle<float> r)
@@ -493,6 +539,17 @@ public:
         // an audio clip's channel.
         if (dragClip.isValid() && clickedExisting && ! moved)
         {
+            if (isAutomationClip (dragClip))
+            {
+                state.selectedAutomation = dragClip[ids::sid].toString();
+                dragClip = {};
+
+                if (state.onAutomationSelected)
+                    state.onAutomationSelected();
+
+                return;
+            }
+
             if (isAudioClip (dragClip))
             {
                 state.selectedChannel = dragClip[ids::ch].toString();
@@ -647,6 +704,11 @@ Playlist::Playlist (EditorState& s) : state (s)
     importButton.onClick = [this] { showImportDialog(); };
     addAndMakeVisible (importButton);
 
+    automateButton.setTooltip ("Make an automation clip for any knob: the one you moved last, or pick one "
+                               "(channels, mixer, plugins). Automation plays in SONG mode");
+    automateButton.onClick = [this] { showAutomateMenu(); };
+    addAndMakeVisible (automateButton);
+
     snapBox.addItem ("Snap: bar", 1);
     snapBox.addItem ("Snap: beat", 2);
     snapBox.addItem ("Snap: step", 3);
@@ -670,6 +732,100 @@ Playlist::~Playlist()
 
     for (auto& [hash, thumb] : thumbnails)
         thumb->removeAllChangeListeners();
+}
+
+void Playlist::showAutomateMenu()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    // Every knob that can be automated, grouped like the app: channels, then the mixer.
+    std::vector<std::pair<juce::String, juce::String>> targets;   // pluginID, paramID
+    juce::PopupMenu menu, channels, mixer;
+
+    auto addTarget = [&targets] (juce::PopupMenu& m, const juce::String& text, const juce::String& pluginID, const juce::String& paramID)
+    {
+        targets.push_back ({ pluginID, paramID });
+        m.addItem ((int) targets.size(), text);
+    };
+
+    auto addPluginKnobs = [&] (juce::PopupMenu& m, te::Plugin& plugin)
+    {
+        if (isGeneratedPlugin (&plugin) || dynamic_cast<te::LevelMeterPlugin*> (&plugin) != nullptr)
+            return;
+
+        if (auto* vp = dynamic_cast<te::VolumeAndPanPlugin*> (&plugin))
+        {
+            addTarget (m, "Volume", vp->itemID.toString(), "volume");
+            addTarget (m, "Pan", vp->itemID.toString(), "pan");
+            return;
+        }
+
+        juce::PopupMenu knobs;
+
+        for (auto* param : plugin.getAutomatableParameters())
+            addTarget (knobs, param->getParameterName(), plugin.itemID.toString(), param->paramID);
+
+        if (knobs.getNumItems() > 0)
+            m.addSubMenu (plugin.getName(), knobs);
+    };
+
+    for (auto* t : getChannels (*edit))
+    {
+        juce::PopupMenu sub;
+
+        for (auto* p : t->pluginList.getPlugins())
+            addPluginKnobs (sub, *p);
+
+        channels.addSubMenu (t->getName(), sub);
+    }
+
+    {
+        juce::PopupMenu master;
+
+        if (auto vp = edit->getMasterVolumePlugin())
+            addPluginKnobs (master, *vp);
+
+        for (auto* p : getMasterEffects (*edit))
+            addPluginKnobs (master, *p);
+
+        mixer.addSubMenu ("Master", master);
+    }
+
+    for (auto* insert : getInserts (*edit))
+    {
+        juce::PopupMenu sub;
+
+        for (auto* p : insert->pluginList.getPlugins())
+            addPluginKnobs (sub, *p);
+
+        mixer.addSubMenu (juce::String (getInsertNumber (*edit, *insert)) + " " + insert->getName(), sub);
+    }
+
+    // The knob you moved last (ours, or a plugin's).
+    for (auto& last : { state.lastTweaked, state.session.getSync() != nullptr ? state.session.getSync()->getLastTweakedParameter()
+                                                                              : juce::String() })
+    {
+        const auto pluginID = last.upToFirstOccurrenceOf ("|", false, false), paramID = last.fromFirstOccurrenceOf ("|", false, false);
+
+        if (last.isNotEmpty() && findParameter (*edit, pluginID, paramID) != nullptr)
+            addTarget (menu, "Last moved: " + describeParameter (*edit, pluginID, paramID), pluginID, paramID);
+    }
+
+    if (menu.getNumItems() == 0)
+        menu.addItem (-1, "(move a knob, then come back here to automate it)", false);
+
+    menu.addSeparator();
+    menu.addSubMenu ("Channels", channels);
+    menu.addSubMenu ("Mixer", mixer);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (automateButton), [this, targets] (int r)
+    {
+        if (r >= 1 && r <= (int) targets.size() && state.createAutomation)
+            state.createAutomation (targets[(size_t) r - 1].first, targets[(size_t) r - 1].second);
+    });
 }
 
 void Playlist::showImportDialog()
@@ -792,6 +948,8 @@ void Playlist::resized()
     snapBox.setBounds (top.removeFromRight (110));
     top.removeFromRight (6);
     importButton.setBounds (top.removeFromRight (120));
+    top.removeFromRight (6);
+    automateButton.setBounds (top.removeFromRight (100));
     title.setBounds (top);
     r.removeFromTop (2);
 

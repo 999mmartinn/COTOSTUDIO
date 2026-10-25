@@ -38,6 +38,9 @@ public:
     /** The audio this PC plays for an audio channel, as "asset@start+duration>offset" strings (for tests). */
     juce::StringArray describeCompiledAudio (te::AudioTrack&) const;
 
+    /** Automation this PC plays for a knob, as "seconds=value" strings (for tests). */
+    juce::StringArray describeCompiledAutomation (te::AutomatableParameter&) const;
+
 private:
     te::Edit& edit;
     AssetStore& assets;
@@ -46,6 +49,8 @@ private:
 
     void handleAsyncUpdate() override                       { compileNow(); }
     void compileAudio (te::AudioTrack&);
+    void compileAutomation();
+    std::map<juce::String, juce::String> compiledCurves;   // "plugin|param" -> what its curve holds now
     void changed (const juce::ValueTree&);
 
     void valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier&) override   { changed (v); }

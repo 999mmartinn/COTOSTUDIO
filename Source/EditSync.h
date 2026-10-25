@@ -117,6 +117,8 @@ public:
 
     /** How many third-party plugin knobs are being watched (and so sent when moved). */
     int getNumListenedParameters() const noexcept   { return (int) listenedParams.size(); }
+    /** True if this change of a plugin's stored value is automation moving a knob (not someone's hand). */
+    bool isAutomationWrite (const juce::ValueTree& pluginState, const juce::Identifier& prop) const;
 
     /** Gives notes (and other list items without an engine ID) a sync ID so
         two people can edit the same list at once. Call on the host's song. */
@@ -134,7 +136,15 @@ public:
     //==============================================================================
     static bool isLocalNode (const juce::ValueTree&);
     static bool isLocalProperty (const juce::ValueTree& node, const juce::Identifier&, bool forHash);
-    static juce::ValueTree filteredCopy (const juce::ValueTree&, bool forHash);
+    /** pluginsWithoutKnobs: plugins whose knob values are left out (they're under automation,
+        which each PC plays on its own, so their values legitimately differ). */
+    static juce::ValueTree filteredCopy (const juce::ValueTree&, bool forHash, const juce::StringArray* pluginsWithoutKnobs = nullptr);
+
+    /** Plugins that automation clips in the song move (from the shared playlist). */
+    static juce::StringArray findAutomatedPlugins (const juce::ValueTree& root);
+
+    /** The last third-party plugin knob moved by hand on this PC: "pluginID|paramID". */
+    juce::String getLastTweakedParameter() const    { return lastTweaked; }
     static juce::String describeFirstDifference (const juce::ValueTree& a, const juce::ValueTree& b);
 
 private:
@@ -143,6 +153,7 @@ private:
     int applyingDepth = 0;
     int tick = 0;
     juce::int64 pluginSignature = 0;   // cheap fingerprint of which plugins/knobs exist
+    juce::String lastTweaked;
     Stats stats;
     std::map<juce::String, int> sentKinds;
     bool trace = false;

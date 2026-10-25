@@ -268,6 +268,14 @@ MainComponent::MainComponent (te::Engine& e)
     const auto tabColour = juce::Colour (0xff2a2f36);
     bottomTabs.addTab ("Piano roll  (F7)", tabColour, &pianoRoll, false);
     bottomTabs.addTab ("Mixer  (F9)", tabColour, &mixer, false);
+    bottomTabs.addTab ("Automation", tabColour, &automationEditor, false);
+
+    state.createAutomation = [this] (const juce::String& pluginID, const juce::String& paramID) { createAutomation (pluginID, paramID); };
+    state.onAutomationSelected = [this]
+    {
+        bottomTabs.setCurrentTabIndex (2);
+        refresh();
+    };
     bottomTabs.setTabBarDepth (26);
     bottomTabs.setOutline (0);
 
@@ -564,6 +572,7 @@ void MainComponent::refresh()
     rack.refresh();
     pianoRoll.refresh();
     mixer.refresh();
+    automationEditor.refresh();
 }
 
 void MainComponent::undo (bool redo)
@@ -804,6 +813,31 @@ void MainComponent::refreshTempo()
     tempoSlider.setTooltip (pending != 0.0 ? "Waiting for everyone to accept " + juce::String (pending, 0) + " BPM "
                                                "(the song is still at " + juce::String (tempo->getBpm(), 0) + ")"
                                            : "Tempo. In a session everyone else has to accept a change (it is part of the song)");
+}
+
+void MainComponent::createAutomation (const juce::String& pluginID, const juce::String& paramID)
+{
+    auto* edit = state.getEdit();
+    auto* param = edit != nullptr ? song::findParameter (*edit, pluginID, paramID) : nullptr;
+
+    if (param == nullptr)
+        return;
+
+    // Like FL: a new clip on a free track, across the whole song, starting at the knob's current value.
+    const double length = juce::jmax (16.0, song::getSongLengthBeats (*edit));
+    const float value = param->getCurrentNormalisedValue();
+
+    state.beginAction();
+    auto clip = song::addAutomationClip (*edit, pluginID, paramID, song::findFreeLane (*edit, 0.0, length), 0.0, length, value);
+
+    if (! clip.isValid())
+        return;
+
+    state.selectedAutomation = clip[song::ids::sid].toString();
+    bottomTabs.setCurrentTabIndex (2);
+    appendLog ("Automation clip for " + song::describeParameter (*edit, pluginID, paramID)
+                + ": shape it in the Automation tab. It plays in SONG mode, for everyone");
+    refresh();
 }
 
 void MainComponent::showRecordOptionsMenu (juce::Component* target)

@@ -2,6 +2,7 @@
 
 #include "Session.h"
 #include "SongModel.h"
+#include "Look.h"
 
 /** What this PC is looking at. Local only: two people can view different patterns. */
 struct EditorState
@@ -21,6 +22,36 @@ struct EditorState
     RackFilter rackFilter = RackFilter::all;   // which channels the rack shows (this PC only)
 
     std::function<void()> onSelectionChanged;
+
+    // Automation
+    juce::String selectedAutomation;          // automation clip sid shown in the Automation tab
+    juce::String lastTweaked;                 // "pluginID|paramID" of the last of our own knobs you moved
+    /** Makes an automation clip for a knob and opens it (set by the main window). */
+    std::function<void (const juce::String& pluginID, const juce::String& paramID)> createAutomation;
+    /** An automation clip was clicked: show it (set by the main window). */
+    std::function<void()> onAutomationSelected;
+
+    /** Hooks a volume/pan knob up to automation: right-click "Create automation clip",
+        and moving it makes it the "last tweaked" control. */
+    void enableAutomation (ResetSlider& knob, std::function<te::Plugin*()> getPlugin, const juce::String& paramID)
+    {
+        knob.onCreateAutomation = [this, getPlugin, paramID]
+        {
+            if (auto* p = getPlugin())
+                if (createAutomation)
+                    createAutomation (p->itemID.toString(), paramID);
+        };
+
+        auto previous = knob.onDragStart;
+        knob.onDragStart = [this, getPlugin, paramID, previous]
+        {
+            if (previous)
+                previous();
+
+            if (auto* p = getPlugin())
+                lastTweaked = p->itemID.toString() + "|" + paramID;
+        };
+    }
 
     te::Edit* getEdit() const                { return session.getEdit(); }
 

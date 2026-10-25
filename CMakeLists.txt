@@ -50,7 +50,8 @@ target_sources(SyncTest PRIVATE
     Source/Browser.cpp
     Source/ProjectFile.cpp
     Source/Exporter.cpp
-    Source/Mp3Encoder.cpp)
+    Source/Mp3Encoder.cpp
+    Source/AutomationEditor.cpp)
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)

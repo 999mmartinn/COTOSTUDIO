@@ -5,6 +5,24 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 8b – Automation clips (v0.11)**
+* **Right-click a volume or pan knob** (channel rack or mixer, master too) and
+  choose **Create automation clip**, like FL. For any other knob - instrument
+  and effect knobs, including your VST3 plugins - use **Automate...** in the
+  playlist: it offers the knob you moved last, or every knob by channel / mixer.
+* The clip goes on a free playlist track across the song, starting flat at the
+  knob's current value. Move it, resize it and delete it like any clip.
+* Click it to edit it in the new **Automation** tab (next to Piano roll and
+  Mixer): click to add a point (snaps to steps; Alt = free), drag points, and
+  right-click a point to delete it. Hovering shows the real value (e.g. dB).
+* Automation plays in **SONG mode** (like FL) and in exports of the song; the
+  knob follows it while the song plays. Between clips the knob holds the last
+  value; where clips overlap, the later one wins.
+* Shared with everyone like notes, but each PC plays it itself: a knob moved by
+  automation is never sent around (and isn't counted as a difference between
+  copies), so nothing floods the connection. Moving an automated knob by hand
+  in SONG mode only lasts until the automation moves it again.
+
 **Step 8a – Solo, sends, export, metronome (v0.10)**
 * **Solo**: right-click a channel's green light in the channel rack (like FL),
   or press **S** on a mixer insert. Soloing an insert keeps what flows into and
@@ -285,7 +303,8 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
   internet the others hear it a few hundredths of a second later.
 * Export ignores your solo (it exports the song as everyone has it); use stems
   to get single parts. Stems are rendered before the master's effects.
-* Not yet: automation (next step). Undo only undoes your own changes, and it
+* Automation points are straight lines between points (no curve shapes yet);
+  send levels can't be automated yet. Undo only undoes your own changes, and it
   starts fresh after opening a song.
 * Saving or opening a very big song (many long takes) can take a few seconds;
   the app keeps working meanwhile.
@@ -302,7 +321,9 @@ joining, Focus, a late joiner following a running share, everyone back where
 they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
 in a share), sends (built on each PC, loops refused, really audible), the
 metronome staying personal, recording with a count-in (lined up to the sample),
-export (mix + stems, a seamless pattern loop, MP3 on Windows),
+export (mix + stems, a seamless pattern loop, MP3 on Windows), automation
+clips (shared; built by each PC in SONG mode only; the knob follows the curve
+without anything being sent; audible in a render; point edits; deleting),
 the playlist, the mixer, saving and opening songs (a fourth PC opening the
 saved file must get the identical song and audio; the host switching songs
 for everyone; IDs staying unique), the people list and chat, split by channel (the song

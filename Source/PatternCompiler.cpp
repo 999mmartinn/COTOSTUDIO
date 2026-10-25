@@ -10,6 +10,12 @@ PatternCompiler::~PatternCompiler()
 {
     cancelPendingUpdate();
     edit.state.removeListener (this);
+
+    // Take our automation out of the engine (the knobs keep their last value).
+    for (auto& [key, sig] : compiledCurves)
+        if (auto* p = song::findParameter (edit, key.upToFirstOccurrenceOf ("|", false, false),
+                                           key.fromFirstOccurrenceOf ("|", false, false)))
+            p->getCurve().clear (nullptr);
 }
 
 void PatternCompiler::setPattern (const juce::String& sid)
@@ -44,9 +50,10 @@ void PatternCompiler::changed (const juce::ValueTree& v)
     if (compiling)
         return;
 
-    // Ignore anything happening inside our own generated clips.
+    // Ignore anything happening inside our own generated clips, and knob values
+    // (automation moves them all the time while playing; they don't change what's compiled).
     for (auto t = v; t.isValid(); t = t.getParent())
-        if ((bool) t[song::ids::generated])
+        if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN))
             return;
 
     triggerAsyncUpdate();
@@ -86,6 +93,8 @@ void PatternCompiler::compileNow()
 {
     cancelPendingUpdate();
     const juce::ScopedValueSetter<bool> svs (compiling, true);
+
+    compileAutomation();
 
     auto pattern = song::findPattern (edit, getPattern());
 
@@ -251,6 +260,127 @@ void PatternCompiler::compileAudio (te::AudioTrack& track)
     // Anything left is no longer wanted.
     for (auto& [sid, clip] : existing)
         clip->removeFromParent();
+}
+
+//==============================================================================
+void PatternCompiler::compileAutomation()
+{
+    // What each automated knob should do: SONG mode only (like FL), from every automation clip.
+    struct Clip { double start, end; juce::ValueTree tree; };
+    std::map<juce::String, std::vector<Clip>> byTarget;
+
+    if (songMode)
+        for (auto& c : song::getClips (edit))
+            if (song::isAutomationClip (c) && ! song::getAutomationPoints (c).isEmpty())
+            {
+                const double start = c[song::ids::start];
+                byTarget[c[song::ids::plugin].toString() + "|" + c[song::ids::param].toString()]
+                    .push_back ({ start, start + song::getClipLength (edit, c), c });
+            }
+
+    auto& ts = edit.tempoSequence;
+    std::map<juce::String, std::vector<std::pair<double, float>>> wanted;   // seconds, 0..1
+
+    for (auto& [key, clips] : byTarget)
+    {
+        std::sort (clips.begin(), clips.end(), [] (const Clip& a, const Clip& b) { return a.start < b.start; });
+        std::vector<std::pair<double, float>> beats;   // beat, 0..1
+
+        for (size_t i = 0; i < clips.size(); ++i)
+        {
+            auto& c = clips[i];
+            // A later clip takes over where it starts (overlaps: the later one wins).
+            const double end = i + 1 < clips.size() ? juce::jmin (c.end, clips[i + 1].start) : c.end;
+
+            if (end <= c.start)
+                continue;
+
+            // Between clips the knob holds the value the previous clip ended on.
+            if (! beats.empty())
+                beats.push_back ({ juce::jmax (beats.back().first, c.start - 1.0e-4), beats.back().second });
+
+            beats.push_back ({ c.start, song::getAutomationValueAt (c.tree, 0.0) });
+
+            for (auto& p : song::getAutomationPoints (c.tree))
+            {
+                const double b = c.start + (double) p[song::ids::b];
+
+                if (b > c.start && b < end)
+                    beats.push_back ({ b, (float) p[song::ids::v] });
+            }
+
+            beats.push_back ({ end, song::getAutomationValueAt (c.tree, end - c.start) });
+        }
+
+        auto& out = wanted[key];
+
+        for (auto& [b, v] : beats)
+            out.push_back ({ ts.toTime (te::BeatPosition::fromBeats (b)).inSeconds(), v });
+    }
+
+    // Apply: only knobs whose curve actually changes are touched.
+    juce::StringArray keys;
+
+    for (auto& [key, sig] : compiledCurves)
+        keys.addIfNotAlreadyThere (key);
+
+    for (auto& [key, points] : wanted)
+        keys.addIfNotAlreadyThere (key);
+
+    for (auto& key : keys)
+    {
+        auto* param = song::findParameter (edit, key.upToFirstOccurrenceOf ("|", false, false),
+                                           key.fromFirstOccurrenceOf ("|", false, false));
+        auto it = wanted.find (key);
+        juce::String signature;
+
+        if (it != wanted.end())
+            for (auto& [t, v] : it->second)
+                signature << juce::String (t, 6) << "=" << juce::String (v, 6) << ";";
+
+        if (param == nullptr)
+        {
+            compiledCurves.erase (key);
+            continue;
+        }
+
+        auto existing = compiledCurves.find (key);
+
+        if ((existing == compiledCurves.end() && signature.isEmpty())
+             || (existing != compiledCurves.end() && existing->second == signature))
+            continue;
+
+        auto& curve = param->getCurve();
+
+        // Built on this PC only: marked generated so it's never sent, and kept out of
+        // everyone's undo history.
+        curve.state.setProperty (song::ids::generated, true, nullptr);
+        curve.clear (nullptr);
+
+        if (it != wanted.end())
+        {
+            for (auto& [t, v] : it->second)
+                curve.addPoint (te::TimePosition::fromSeconds (t), param->valueRange.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, v)), 0.0f, nullptr);
+
+            compiledCurves[key] = signature;
+        }
+        else
+        {
+            compiledCurves.erase (key);
+        }
+    }
+}
+
+juce::StringArray PatternCompiler::describeCompiledAutomation (te::AutomatableParameter& param) const
+{
+    juce::StringArray out;
+    auto& curve = param.getCurve();
+
+    for (int i = 0; i < curve.getNumPoints(); ++i)
+        out.add (juce::String (curve.getPointTime (i).inSeconds(), 3) + "="
+                  + juce::String (param.valueRange.convertTo0to1 (curve.getPointValue (i)), 3));
+
+    return out;
 }
 
 juce::StringArray PatternCompiler::describeCompiledAudio (te::AudioTrack& track) const

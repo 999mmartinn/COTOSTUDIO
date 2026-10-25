@@ -72,13 +72,19 @@ bool EditSync::isLocalProperty (const juce::ValueTree&, const juce::Identifier& 
     return false;
 }
 
-juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
+juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash, const juce::StringArray* pluginsWithoutKnobs)
 {
     juce::ValueTree copy (v.getType());
+
+    const bool skipKnobs = pluginsWithoutKnobs != nullptr && v.hasType (te::IDs::PLUGIN)
+                            && pluginsWithoutKnobs->contains (v[te::IDs::id].toString());
 
     for (int i = 0; i < v.getNumProperties(); ++i)
     {
         auto name = v.getPropertyName (i);
+
+        if (skipKnobs && name != te::IDs::type && name != te::IDs::id)
+            continue;
 
         if (! isLocalProperty (v, name, forHash))
             copy.setProperty (name, v.getProperty (name), nullptr);
@@ -86,12 +92,13 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash)
 
     for (const auto& child : v)
         if (! isLocalNode (child))
-            copy.appendChild (filteredCopy (child, forHash), nullptr);
+            copy.appendChild (filteredCopy (child, forHash, pluginsWithoutKnobs), nullptr);
 
     // The order of notes inside a pattern (ours: PATTERN, the engine's: SEQUENCE) doesn't change the music, and two
     // people adding notes at the same moment can end up with them in a different
     // order: don't count that as a difference.
-    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")))
+    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")
+                     || v.hasType ("PCLIP") || v.hasType ("SENDS")))
     {
         struct ByKey
         {
@@ -311,6 +318,9 @@ void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identif
 {
     if (applyingDepth > 0 || isLocalProperty (v, prop, false) || isInsideLocal (v))
         return;
+
+    if (isAutomationWrite (v, prop))
+        return;   // automation playing on this PC, not an edit
 
     if (prop == stateProperty)
     {
@@ -751,6 +761,11 @@ void EditSync::parameterChanged (te::AutomatableParameter& param, float newValue
 
     auto pluginID = plugin->itemID.toString();
     auto key = pluginID + "|" + param.paramID;
+    lastTweaked = key;
+
+    // An automated knob belongs to the automation (each PC plays it): moves aren't sent.
+    if (param.hasAutomationPoints())
+        return;
 
     // Ignore the plugin echoing back a value we just received.
     if (auto it = lastRemoteParam.find (key); it != lastRemoteParam.end())
@@ -877,14 +892,55 @@ void EditSync::assignMissingSyncIDs()
     visit (root);
 }
 
+juce::StringArray EditSync::findAutomatedPlugins (const juce::ValueTree& root)
+{
+    // Automation clips: SONGMODEL/PLAYLIST/PCLIP kind="auto" plugin=... (see SongModel.h).
+    juce::StringArray result;
+    auto playlist = root.getChildWithName ("SONGMODEL").getChildWithName ("PLAYLIST");
+
+    for (auto c : playlist)
+        if (c["kind"].toString() == "auto")
+            result.addIfNotAlreadyThere (c["plugin"].toString());
+
+    return result;
+}
+
+bool EditSync::isAutomationWrite (const juce::ValueTree& v, const juce::Identifier& prop) const
+{
+    if (! v.hasType (te::IDs::PLUGIN))
+        return false;
+
+    const auto value = v[prop];
+
+    if (! (value.isDouble() || value.isInt() || value.isInt64()))
+        return false;
+
+    auto plugin = te::findPluginForID (edit, te::EditItemID::fromVar (v[te::IDs::id]));
+
+    if (plugin == nullptr)
+        return false;
+
+    // The engine writes an automated knob's current value into the plugin's state
+    // as it plays. Those writes are this PC's playback, not anyone's edit.
+    const float f = (float) (double) value;
+
+    for (auto* param : plugin->getAutomatableParameters())
+        if (param->hasAutomationPoints() && std::abs (param->getCurrentValue() - f) < 1.0e-6f)
+            return true;
+
+    return false;
+}
+
 juce::int64 EditSync::computeHash() const
 {
-    return filteredCopy (root, true).toXmlString().hashCode64();
+    const auto automated = findAutomatedPlugins (root);
+    return filteredCopy (root, true, &automated).toXmlString().hashCode64();
 }
 
 juce::int64 EditSync::computeContentHash() const
 {
-    auto copy = filteredCopy (root, true);
+    const auto automated = findAutomatedPlugins (root);
+    auto copy = filteredCopy (root, true, &automated);
     juce::StringArray parts;
 
     for (auto child : copy)

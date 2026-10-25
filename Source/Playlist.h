@@ -43,7 +43,8 @@ private:
     std::unique_ptr<ScrollViewport> viewport;
     juce::Label title;
     juce::ComboBox snapBox;
-    juce::TextButton importButton { "Import audio..." };
+    juce::TextButton importButton { "Import audio..." }, automateButton { "Automate..." };
+    void showAutomateMenu();
     std::unique_ptr<juce::FileChooser> chooser;
     juce::ThreadPool importPool { 1 };
 
