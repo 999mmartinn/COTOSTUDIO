@@ -48,7 +48,15 @@ target_sources(SyncTest PRIVATE
     Source/AssetStore.cpp
     Source/Recorder.cpp
     Source/Browser.cpp
-    Source/ProjectFile.cpp)
+    Source/ProjectFile.cpp
+    Source/Exporter.cpp
+    Source/Mp3Encoder.cpp)
+
+# MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
+if (WIN32)
+    target_sources(SyncTest PRIVATE Source/Mp3WriterWin.cpp)
+    target_link_libraries(SyncTest PRIVATE mfplat mfreadwrite mfuuid)
+endif()
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1

@@ -5,6 +5,29 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 8a – Solo, sends, export, metronome (v0.10)**
+* **Solo**: right-click a channel's green light in the channel rack (like FL),
+  or press **S** on a mixer insert. Soloing an insert keeps what flows into and
+  out of it audible. Solo is **yours** (it changes what you hear, not the song);
+  people following your share hear your solo too. Yellow = soloed; a faded
+  insert / dark light = silent because of a solo.
+* **Sends** (mixer, button under each insert): feed other inserts too, each at
+  its own level - e.g. send several inserts to one "Reverb" insert. Knob per
+  send (right-click: reset to 0 dB, all the way down = off), x to remove,
+  "+ Send to...". Shared with everyone; loops are refused. The send happens after
+  the insert's fader; the receiving insert's effects process it.
+* **Export audio** (File menu or **Ctrl+R**): the whole song or the current
+  pattern (as a seamless loop), as WAV 24/16-bit, FLAC or **MP3** 320/192 kbps
+  (MP3 uses Windows' own encoder). Optionally **stems**: one file per mixer
+  insert plus one for channels that go straight to the master, in a
+  "<name> - stems" folder. Song exports let reverbs ring out at the end.
+  It renders a private copy in the background (with a progress bar and Cancel),
+  so nobody's changes end up half-way in the file, and it uses your plugins and
+  audio files (anything missing on your PC is silent; it tells you).
+* **Metronome**: the **Click** button (only you hear it). Right-click Click or
+  Rec for a **count-in** of 1 or 2 bars before recording; the take still starts
+  exactly at the marker (checked to the sample).
+
 **Step 7 – Playing on your own, sharing, Focus, tempo approval (v0.9)**
 * **Your playback is yours now.** PAT/SONG, Play/Stop, where the playhead is and
   which pattern loops only change on your PC. Everyone can listen to a
@@ -260,7 +283,9 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
   hear them (as before).
 * Sharing follows the person sharing as fast as the network allows: on the
   internet the others hear it a few hundredths of a second later.
-* Not yet: solo and send knobs. Undo only undoes your own changes, and it
+* Export ignores your solo (it exports the song as everyone has it); use stems
+  to get single parts. Stems are rendered before the master's effects.
+* Not yet: automation (next step). Undo only undoes your own changes, and it
   starts fresh after opening a song.
 * Saving or opening a very big song (many long takes) can take a few seconds;
   the app keeps working meanwhile.
@@ -274,7 +299,10 @@ plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, personal
 playback, sharing it (following in sync, only the sharer controls it, leaving,
 joining, Focus, a late joiner following a running share, everyone back where
-they were afterwards), tempo approval (accept, decline, no answer),
+they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
+in a share), sends (built on each PC, loops refused, really audible), the
+metronome staying personal, recording with a count-in (lined up to the sample),
+export (mix + stems, a seamless pattern loop, MP3 on Windows),
 the playlist, the mixer, saving and opening songs (a fourth PC opening the
 saved file must get the identical song and audio; the host switching songs
 for everyone; IDs staying unique), the people list and chat, split by channel (the song

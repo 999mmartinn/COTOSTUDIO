@@ -4,12 +4,15 @@
 
 #include "SelfTest.h"
 #include <iostream>
+#include <thread>
+#include <mutex>
 #include "Session.h"
 #include "SongModel.h"
 #include "PatternCompiler.h"
 #include "DrumSynthPlugin.h"
 #include "MixerRouter.h"
 #include "ProjectFile.h"
+#include "Exporter.h"
 
 namespace
 {
@@ -51,6 +54,7 @@ namespace
 
         ~SimulatedSoundCard()
         {
+            stopFeeding();
             engine.getDeviceManager().deviceManager.closeAudioDevice();
             engine.getDeviceManager().removeHostedAudioDeviceInterface();
         }
@@ -80,9 +84,68 @@ namespace
             }
         }
 
+        /** Like a real interface: keeps processing blocks of tone on its own thread
+            (a little faster than real time) until stopFeeding(). After each block it notes
+            where this Edit's playhead was, so the test can tell which input sample was
+            going in at any song position. */
+        void startFeeding (float level, te::Edit& editToWatch)
+        {
+            stopFeeding();
+            keepFeeding = true;
+            watched = &editToWatch;
+
+            feeder = std::thread ([this, level]
+            {
+                while (keepFeeding)
+                {
+                    feed ((double) blockSize / sampleRate, level);
+
+                    if (auto* ctx = watched->getTransport().getCurrentPlaybackContext())
+                    {
+                        const std::lock_guard<std::mutex> lock (marksLock);
+                        marks.push_back ({ samplesFed, ctx->getPosition().inSeconds() });
+                    }
+
+                    std::this_thread::sleep_for (std::chrono::milliseconds (5));
+                }
+            });
+        }
+
+        void stopFeeding()
+        {
+            keepFeeding = false;
+
+            if (feeder.joinable())
+                feeder.join();
+        }
+
+        /** The input sample going in when the playhead was at this time (from a block
+            played after that time, while the song ran without jumps). -1 if unknown. */
+        juce::int64 inputSampleAt (double seconds)
+        {
+            const std::lock_guard<std::mutex> lock (marksLock);
+
+            for (auto& m : marks)
+                if (m.second > seconds + 0.05)
+                    return m.first - (juce::int64) std::llround ((m.second - seconds) * sampleRate);
+
+            return -1;
+        }
+
+        double lastPosition()
+        {
+            const std::lock_guard<std::mutex> lock (marksLock);
+            return marks.empty() ? -1.0 : marks.back().second;
+        }
+
         te::Engine& engine;
         te::HostedAudioDeviceInterface& io;
-        juce::int64 samplesFed = 0;
+        std::atomic<juce::int64> samplesFed { 0 };
+        std::thread feeder;
+        std::atomic<bool> keepFeeding { false };
+        te::Edit* watched = nullptr;
+        std::mutex marksLock;
+        std::vector<std::pair<juce::int64, double>> marks;
     };
 }
 
@@ -159,6 +222,67 @@ private:
     std::map<collab::Session*, juce::StringArray> patternOffers;
     juce::String shareError { "not done" };
     double shareOffset = 0.0;
+
+    // Solo, sends, export, count-in
+    juce::String sendsCheck;
+    float sendOpen = 0.0f, sendClosed = 0.0f;
+    std::unique_ptr<Exporter> exporter;
+    bool exportDone = false;
+    Exporter::Result exportResult;
+    juce::int64 fedAtTake2Start = -1;
+    double preRollSeconds = 0.0;
+
+    static juce::String outputOf (te::Edit& e, te::AudioTrack* t)
+    {
+        return t != nullptr ? t->getOutput().getOutputName() : juce::String ("?");
+    }
+
+    static int countGenerated (te::AudioTrack* t, bool sends)
+    {
+        int n = 0;
+
+        if (t != nullptr)
+            for (auto* p : t->pluginList.getPlugins())
+                if (song::isGeneratedPlugin (p) && (sends ? dynamic_cast<te::AuxSendPlugin*> (p) != nullptr
+                                                          : dynamic_cast<te::AuxReturnPlugin*> (p) != nullptr))
+                    ++n;
+
+        return n;
+    }
+
+    void startExport (const juce::File& dest, bool song, Exporter::Format format, bool stems)
+    {
+        exportDone = false;
+        exportResult = {};
+        exporter = std::make_unique<Exporter> (engine, host.getAssetStore());
+
+        Exporter::Options o;
+        o.wholeSong = song;
+        o.patternSid = pat (H(), "Pattern 1")[song::ids::sid].toString();
+        o.format = format;
+        o.stems = stems;
+        o.destination = dest;
+        dest.getParentDirectory().deleteRecursively();
+
+        auto error = exporter->start (host.getSync()->createSnapshot(), o, [this] (const Exporter::Result& r)
+        {
+            exportResult = r;
+            exportDone = true;
+        });
+
+        if (error.isNotEmpty())
+        {
+            exportResult.error = error;
+            exportDone = true;
+        }
+    }
+
+    static double lengthOf (const juce::File& f)
+    {
+        double length = -1.0;
+        peakOf (f, 0.0, 0.01, &length);
+        return length;
+    }
     juce::int64 newSongHash = 0;
 
     int lastQuestion (collab::Session& s) { auto& a = tempoAsked[&s]; return a.isEmpty() ? 0 : a.getLast().id; }
@@ -1183,6 +1307,145 @@ private:
             8000, 1600 });
 
         //==============================================================================
+        // Solo (personal), sends (shared), metronome (personal)
+        steps.push_back ({ "Solo: peer 1 solos the Kick -> on peer 1 only the Kick (through Drums) sounds; the others hear everything; the song didn't change",
+            [this] { peer1.toggleSolo (song::getChannelID (*ch (P1(), "Kick")), false); },
+            [this]
+            {
+                return outputOf (P1(), ch (P1(), "Hat")) == "(none)" && outputOf (P1(), ch (P1(), "Clap")) == "(none)"
+                    && outputOf (P1(), ch (P1(), "Synth")) == "(none)" && engineDest (P1(), ch (P1(), "Kick")) == "Drums"
+                    && peer1.isSilencedBySolo (song::getChannelID (*ch (P1(), "Hat")))
+                    && outputOf (H(), ch (H(), "Hat")) != "(none)" && outputOf (P2(), ch (P2(), "Clap")) != "(none)"
+                    && hashesEqual();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Solo: peer 1 un-solos the Kick and solos insert 'Drums' -> Kick + Clap sound there, Hat/Snare/Synth don't",
+            [this]
+            {
+                peer1.toggleSolo (song::getChannelID (*ch (P1(), "Kick")), false);
+                peer1.toggleSolo (insert (P1(), "Drums")->itemID.toString(), true);
+            },
+            [this]
+            {
+                return engineDest (P1(), ch (P1(), "Kick")) == "Drums" && engineDest (P1(), ch (P1(), "Clap")) == "Drums"
+                    && outputOf (P1(), ch (P1(), "Hat")) == "(none)" && outputOf (P1(), ch (P1(), "Snare")) == "(none)"
+                    && outputOf (P1(), insert (P1(), "Drums")) != "(none)" && hashesEqual();
+            } });
+
+        steps.push_back ({ "Solo while sharing: peer 1 shares -> the host and peer 2 hear peer 1's solo too",
+            [this] { shareError = peer1.startSharing(); },
+            [this]
+            {
+                return shareError.isEmpty() && host.isFollowingShare() && peer2.isFollowingShare()
+                    && outputOf (H(), ch (H(), "Hat")) == "(none)" && outputOf (P2(), ch (P2(), "Synth")) == "(none)"
+                    && engineDest (H(), ch (H(), "Kick")) == "Drums";
+            } });
+
+        steps.push_back ({ "Peer 1 clears its solo and stops sharing -> everyone hears everything again, routing as before",
+            [this] { peer1.clearSolo(); peer1.stopSharing(); },
+            [this]
+            {
+                return ! host.isFollowingShare() && ! peer2.isFollowingShare() && ! peer1.isSharing()
+                    && everywhere ([] (te::Edit& e) { return outputOf (e, ch (e, "Hat")) != "(none)" && engineDest (e, ch (e, "Kick")) == "Drums"; })
+                    && engineRoutingMatchesEverywhere();
+            } });
+
+        steps.push_back ({ "Sends: peer 2 makes insert 'Reverb' and sends 'Drums' to it at -6 dB -> everywhere; each PC builds the send itself",
+            [this]
+            {
+                auto* reverb = song::addInsert (P2(), "Reverb");
+                song::addSend (P2(), insert (P2(), "Drums")->itemID.toString(), reverb->itemID.toString(), -6.0);
+            },
+            [this]
+            {
+                auto ok = everywhere ([] (te::Edit& e)
+                {
+                    auto sends = song::getSends (e);
+                    auto* drums = insert (e, "Drums");
+                    auto* reverb = insert (e, "Reverb");
+
+                    if (sends.size() != 1 || drums == nullptr || reverb == nullptr
+                         || std::abs (song::getSendLevel (sends[0]) + 6.0) > 1.0e-6
+                         || countGenerated (drums, true) != 1 || countGenerated (reverb, false) != 1)
+                        return false;
+
+                    for (auto* p : drums->pluginList.getPlugins())
+                        if (auto* send = dynamic_cast<te::AuxSendPlugin*> (p))
+                            return std::abs (send->getGainDb() + 6.0f) < 0.05f;
+
+                    return false;
+                });
+
+                // The engine's send/return plugins are never part of the shared song.
+                const bool notShared = ! collab::EditSync::filteredCopy (H().state, false).toXmlString().contains ("auxsend")
+                                    && song::getInsertEffects (*insert (H(), "Drums")).size() == 1;
+                return ok && notShared && hashesEqual();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Sends: loops are refused (Reverb can't send or route back into Drums)",
+            {},
+            [this]
+            {
+                const auto drums = insert (H(), "Drums")->itemID.toString(), reverb = insert (H(), "Reverb")->itemID.toString();
+                return ! song::canSendTo (H(), reverb, drums) && ! song::canRouteTo (H(), *insert (H(), "Reverb"), drums)
+                    && ! song::canSendTo (H(), drums, reverb)        // already sending there
+                    && song::canRouteTo (H(), *insert (H(), "Drums"), reverb);
+            } });
+
+        steps.push_back ({ "Sends: the Kick really reaches 'Reverb' through the send (Reverb fader down = quieter)",
+            [this] { host.getRouter()->applyNow(); },
+            [this]
+            {
+                auto vol = song::getVolumePlugin (*insert (H(), "Reverb"))->volParam;
+                const float original = vol->getCurrentValue();
+                sendOpen = renderPeakOf (H(), { "Kick", "Drums", "Reverb" });
+                vol->setNormalisedParameter (0.0f, juce::dontSendNotification);
+                sendClosed = renderPeakOf (H(), { "Kick", "Drums", "Reverb" });
+                vol->setParameter (original, juce::dontSendNotification);
+                std::cout << "    kick with the send: peak " << sendOpen << ", Reverb fader down: " << sendClosed << std::endl;
+                return sendOpen > sendClosed * 1.2f && sendClosed > 0.05f;
+            } });
+
+        steps.push_back ({ "Sends: the host turns the send down to -20 dB, peer 1 moves the Compressor in 'Drums' -> same everywhere",
+            [this]
+            {
+                song::setSendLevel (H(), song::getSends (H())[0], -20.0);
+                song::moveEffect (*song::getInsertEffects (*insert (P1(), "Drums"))[0], 1);   // nothing to pass: stays put
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    for (auto* p : insert (e, "Drums")->pluginList.getPlugins())
+                        if (auto* send = dynamic_cast<te::AuxSendPlugin*> (p))
+                            return std::abs (send->getGainDb() + 20.0f) < 0.05f
+                                && song::getInsertEffects (*insert (e, "Drums")).size() == 1;
+
+                    return false;
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Sends: peer 1 deletes 'Reverb' -> its send goes too, and so do the engine's send/return everywhere",
+            [this] { song::removeInsert (P1(), *insert (P1(), "Reverb")); },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    return insert (e, "Reverb") == nullptr && song::getSends (e).isEmpty()
+                        && countGenerated (insert (e, "Drums"), true) == 0;
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Metronome: peer 2 turns it on -> only on peer 2; the song didn't change",
+            [this] { peer2.setMetronome (true); },
+            [this] { return P2().clickTrackEnabled.get() && ! H().clickTrackEnabled.get() && ! P1().clickTrackEnabled.get() && hashesEqual(); },
+            8000, 600 });
+
+        //==============================================================================
         // Audio clips and file sharing
         steps.push_back ({ "Audio: host imports a 2 s WAV -> new audio channel + clip; the file reaches both peers (fingerprint checked)",
             [this]
@@ -1396,7 +1659,7 @@ private:
         steps.push_back ({ "Recording: 1 s of loud tone goes in; meanwhile host and peer 1 edit -> arrives at peer 2, still recording",
             [this]
             {
-                const auto fedBefore = soundCard->samplesFed;
+                const juce::int64 fedBefore = soundCard->samplesFed;
 
                 soundCard->feed (1.0, 0.5f);
 
@@ -1507,6 +1770,87 @@ private:
                 return std::abs (length - 2.0) < 0.03 && start > 0.4f
                     && std::abs (first - 0.5f) < 0.03f && std::abs (second - 0.25f) < 0.03f
                     && firstSample == expected;
+            } });
+
+        steps.push_back ({ "Recording with a 1-bar count-in: the interface runs on its own; peer 2 presses Rec at beat 16 -> the count-in plays first",
+            [this]
+            {
+                peer2.setMetronome (false);
+                peer2.setCountInBars (1);
+                soundCard->startFeeding (0.5f, P2());   // like a real interface: blocks keep coming
+                juce::Thread::sleep (100);
+                recordStarted = peer2.startRecording (timeOfBeat (P2(), 16.0));
+            },
+            [this]
+            {
+                return recordStarted && peer2.isRecording() && soundCard->lastPosition() >= 0.0
+                    && soundCard->lastPosition() < timeOfBeat (P2(), 16.0 - 3.9);
+            },
+            8000 });
+
+        steps.push_back ({ "Count-in: after the count-in and 1 s of singing, peer 2 stops -> 'Vocals take 2' starts exactly at beat 16",
+            {},
+            [this]
+            {
+                if (fedAtTake2Start < 0)
+                {
+                    if (soundCard->lastPosition() < timeOfBeat (P2(), 16.0) + 1.0)
+                        return false;   // still counting in / singing
+
+                    fedAtTake2Start = soundCard->inputSampleAt (timeOfBeat (P2(), 16.0));
+                    peer2.setPlaying (false, timeOfBeat (P2(), 16.0));
+                    return false;
+                }
+
+                auto clip = clipOfChannel (P2(), "Vocals take 2");
+
+                if (clip.isValid())
+                    soundCard->stopFeeding();
+
+                return clip.isValid() && std::abs ((double) clip[song::ids::start] - 16.0) < 0.01
+                    && (double) clip[song::ids::duration] > 0.9
+                    && hasVerified (host, clip[song::ids::asset].toString()) && hashesEqual();
+            },
+            30000 });
+
+        steps.push_back ({ "Count-in: take 2 lines up to the sample with what was playing (host's copy)",
+            {},
+            [this]
+            {
+                auto clip = clipOfChannel (H(), "Vocals take 2");
+                auto file = host.getAssetStore().getFile (clip[song::ids::asset].toString());
+                juce::AudioFormatManager fm;
+                fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+                const auto expected = fedAtTake2Start + (juce::int64) std::llround ((double) clip[song::ids::offset] * SimulatedSoundCard::sampleRate);
+                juce::int64 firstSample = -1;
+
+                if (reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b (1, 256);
+                    reader->read (&b, 0, 256, 0, true, false);
+                    double bestError = 1.0e9;
+
+                    for (juce::int64 k = expected - 4096; k < expected + 4096; ++k)
+                    {
+                        double err = 0.0;
+
+                        for (int j = 0; j < 256; ++j)
+                            err += std::abs (b.getSample (0, j) - 0.5 * std::sin (juce::MathConstants<double>::twoPi * 437.31
+                                                                                   * (double) (k + j) / SimulatedSoundCard::sampleRate));
+
+                        if (err < bestError)
+                        {
+                            bestError = err;
+                            firstSample = k;
+                        }
+                    }
+                }
+
+                std::cout << "    with count-in: the take starts with input sample " << firstSample << "; the song was at beat 16 at input sample "
+                          << expected << " -> " << (firstSample == expected ? "lined up exactly" : "OFF") << std::endl;
+                peer2.setCountInBars (0);
+                return firstSample == expected;
             } });
 
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
@@ -1839,6 +2183,80 @@ private:
                        });
             },
             8000, 600 });
+
+        //==============================================================================
+        // Export (on a private copy of the song, in the background)
+        steps.push_back ({ "Export: the host exports the song as 24-bit WAV + stems -> the mix and one file per insert; the shared song is untouched",
+            [this]
+            {
+                resyncsBefore = peer1.getResyncCount() + peer2.getResyncCount();
+                startExport (testRoot.getChildFile ("export").getChildFile ("mix.wav"), true, Exporter::Format::wav24, true);
+            },
+            [this]
+            {
+                if (! exportDone)
+                    return false;
+
+                if (! exportResult.ok())
+                {
+                    std::cout << "    error: " << exportResult.error << std::endl;
+                    return false;
+                }
+
+                auto mix = testRoot.getChildFile ("export").getChildFile ("mix.wav");
+                auto stems = testRoot.getChildFile ("export").getChildFile ("mix - stems");
+                const double songSeconds = timeOfBeat (H(), song::getSongLengthBeats (H()));
+                double length = 0.0;
+                const float peak = peakOf (mix, 0.0, juce::jmin (songSeconds, 20.0), &length);
+                const int numStems = stems.getNumberOfChildFiles (juce::File::findFiles, "*.wav");
+                const float drumsPeak = peakOf (stems.getChildFile ("01 Drums.wav"), 0.0, juce::jmin (songSeconds, 20.0));
+
+                std::cout << "    mix: " << length << " s (song " << songSeconds << " s), peak " << peak << "; "
+                          << numStems << " stems, Drums stem peak " << drumsPeak << std::endl;
+
+                return length >= songSeconds - 0.01 && length < songSeconds + 10.5 && peak > 0.05f
+                    && numStems == 1 + song::getInserts (H()).size() && drumsPeak > 0.01f
+                    && exportResult.files.size() == numStems + 1
+                    && hashesEqual() && peer1.getResyncCount() + peer2.getResyncCount() == resyncsBefore;
+            },
+            60000 });
+
+        steps.push_back ({ "Export: Pattern 1 as FLAC -> a seamless loop exactly one pattern long",
+            [this] { startExport (testRoot.getChildFile ("export-pattern").getChildFile ("loop.flac"), false, Exporter::Format::flac, false); },
+            [this]
+            {
+                if (! exportDone)
+                    return false;
+
+                auto file = testRoot.getChildFile ("export-pattern").getChildFile ("loop.flac");
+                const double expected = timeOfBeat (H(), song::getBars (pat (H(), "Pattern 1")) * 4.0);
+                const double length = lengthOf (file);
+                std::cout << "    loop: " << length << " s, pattern " << expected << " s" << std::endl;
+                return exportResult.ok() && std::abs (length - expected) < 0.001 && peakOf (file, 0.0, length) > 0.05f;
+            },
+            60000 });
+
+        steps.push_back ({ "Export: MP3 320 kbps (Windows' encoder) -> plays back at the right length",
+            [this] { startExport (testRoot.getChildFile ("export-mp3").getChildFile ("song.mp3"), true, Exporter::Format::mp3_320, false); },
+            [this]
+            {
+                if (! exportDone)
+                    return false;
+
+                if (! exportResult.ok())
+                {
+                    std::cout << "    error: " << exportResult.error << std::endl;
+                    return false;
+                }
+
+                auto file = testRoot.getChildFile ("export-mp3").getChildFile ("song.mp3");
+                const double songSeconds = timeOfBeat (H(), song::getSongLengthBeats (H()));
+                double length = 0.0;
+                const float peak = peakOf (file, 0.0, juce::jmin (songSeconds, 20.0), &length);
+                std::cout << "    mp3: " << juce::File::descriptionOfSizeInBytes (file.getSize()) << ", " << length << " s, peak " << peak << std::endl;
+                return length >= songSeconds - 0.05 && peak > 0.05f;
+            },
+            90000, 0, ! Exporter::canExportMp3() });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

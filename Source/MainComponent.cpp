@@ -79,12 +79,14 @@ MainComponent::MainComponent (te::Engine& e)
     recentFiles.setMaxNumberOfItems (8);
     recentFiles.restoreFromString (settings->getValue ("recentSongs"));
     portEditor.setText (settings->getValue ("port", "47800"));
+    session.setMetronome (settings->getBoolValue ("metronome", false));
+    session.setCountInBars (settings->getIntValue ("countInBars", 0));
     addressEditor.setText (settings->getValue ("address", "127.0.0.1"));
     portEditor.setInputRestrictions (5, "0123456789");
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &fileButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
-             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
+             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoLabel, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
              &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
@@ -226,10 +228,33 @@ MainComponent::MainComponent (te::Engine& e)
     };
 
     recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f Rec"));
-    recordButton.setTooltip ("Record (R): records every armed mixer insert from the song start marker; "
-                             "the others play along. Press Stop or Space to finish");
+    recordButton.setTooltip ("Record (R): records every armed mixer insert from the song start marker. "
+                             "Press Stop or Space to finish. Right-click: count-in");
+
+    clickButton.setClickingTogglesState (false);
+    clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4fb0f0));
+    clickButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    clickButton.setTooltip ("Metronome on/off (only you hear it). Right-click: count-in before recording");
+    clickButton.onClick = [this]
+    {
+        if (clickButton.wasRightClick())
+        {
+            showRecordOptionsMenu (&clickButton);
+            return;
+        }
+
+        session.setMetronome (! session.isMetronomeOn());
+        appProperties.getUserSettings()->setValue ("metronome", session.isMetronomeOn());
+        refresh();
+    };
     recordButton.onClick = [this]
     {
+        if (recordButton.wasRightClick())
+        {
+            showRecordOptionsMenu (&recordButton);
+            return;
+        }
+
         if (session.isRecording())
             session.setPlaying (false, state.beatsToSeconds (state.songStartBeat));
         else if (session.getRecorder().getNumArmed() == 0)
@@ -517,11 +542,14 @@ void MainComponent::refresh()
         shareButton.setToggleState (session.isSharing() || session.isFollowingShare(), juce::dontSendNotification);
         shareButton.setEnabled (inSession);
         focusButton.setToggleState (session.isFocus(), juce::dontSendNotification);
+        clickButton.setToggleState (session.isMetronomeOn(), juce::dontSendNotification);
+        clickButton.setButtonText (session.getCountInBars() > 0 ? "Click +" + juce::String (session.getCountInBars())
+                                                                : juce::String ("Click"));
 
         // Following someone's share: only they control playback.
         const bool control = session.canControlPlayback();
 
-        for (auto* b : { &playButton, &recordButton, &patModeButton, &songModeButton })
+        for (auto* b : std::initializer_list<juce::Button*> { &playButton, &recordButton, &patModeButton, &songModeButton })
             b->setEnabled (control);
 
         if (! session.isFollowingShare() && patternOffer != nullptr)
@@ -560,6 +588,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('s', cmd | juce::ModifierKeys::shiftModifier, 0))     { saveSong (true); return true; }
     if (key == juce::KeyPress ('o', cmd, 0))                                        { openSong(); return true; }
     if (key == juce::KeyPress ('n', cmd, 0))                                        { newSong(); return true; }
+    if (key == juce::KeyPress ('r', cmd, 0))                                        { showExportDialog(); return true; }
     if (key == juce::KeyPress ('y', cmd, 0)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
     if ((key == juce::KeyPress::spaceKey || key == juce::KeyPress ('r')) && ! session.canControlPlayback())
@@ -669,6 +698,9 @@ void MainComponent::timerCallback()
         autosave();
     }
 
+    if (exporter.isRunning())
+        exportProgress = exporter.getProgress();
+
     // A changed tempo is asked for once you stop clicking.
     if (tempoAskCountdown > 0 && --tempoAskCountdown == 0)
     {
@@ -772,6 +804,203 @@ void MainComponent::refreshTempo()
     tempoSlider.setTooltip (pending != 0.0 ? "Waiting for everyone to accept " + juce::String (pending, 0) + " BPM "
                                                "(the song is still at " + juce::String (tempo->getBpm(), 0) + ")"
                                            : "Tempo. In a session everyone else has to accept a change (it is part of the song)");
+}
+
+void MainComponent::showRecordOptionsMenu (juce::Component* target)
+{
+    juce::PopupMenu m;
+    const int bars = session.getCountInBars();
+    m.addSectionHeader ("Count-in before recording (metronome)");
+    m.addItem (1, "None", true, bars == 0);
+    m.addItem (2, "1 bar", true, bars == 1);
+    m.addItem (3, "2 bars", true, bars == 2);
+    m.addSeparator();
+    m.addItem (4, "Metronome while playing", true, session.isMetronomeOn());
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [this] (int r)
+    {
+        if (r >= 1 && r <= 3)
+        {
+            session.setCountInBars (r - 1);
+            appProperties.getUserSettings()->setValue ("countInBars", r - 1);
+            appendLog (r == 1 ? juce::String ("Count-in off: recording starts right away")
+                              : "Count-in: " + juce::String (r - 1) + " bar(s) of metronome before the take (it still starts at the marker)");
+        }
+        else if (r == 4)
+        {
+            session.setMetronome (! session.isMetronomeOn());
+            appProperties.getUserSettings()->setValue ("metronome", session.isMetronomeOn());
+        }
+
+        refresh();
+    });
+}
+
+//==============================================================================
+juce::File MainComponent::exportsFolder()
+{
+    return songsFolder().getChildFile ("Exports");
+}
+
+void MainComponent::showExportDialog()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr || exporter.isRunning())
+        return;
+
+    auto* w = new juce::AlertWindow ("Export audio",
+                                     "Renders on this PC with your plugins and audio files. "
+                                     "Changes made meanwhile (by anyone) don't get into it.",
+                                     juce::MessageBoxIconType::NoIcon);
+
+    const auto patternName = state.getPattern()[song::ids::name].toString();
+    w->addComboBox ("what", { "The whole song (playlist)", "Pattern \"" + patternName + "\" (as a seamless loop)" }, "What");
+
+    juce::StringArray formats;
+    juce::Array<Exporter::Format> formatValues;
+
+    for (auto f : { Exporter::Format::wav24, Exporter::Format::wav16, Exporter::Format::flac,
+                    Exporter::Format::mp3_320, Exporter::Format::mp3_192 })
+    {
+        const bool isMp3 = f == Exporter::Format::mp3_320 || f == Exporter::Format::mp3_192;
+
+        if (isMp3 && ! Exporter::canExportMp3())
+            continue;
+
+        formats.add (Exporter::describe (f));
+        formatValues.add (f);
+    }
+
+    w->addComboBox ("format", formats, "Format");
+    w->addComboBox ("stems", { "Just the mix", "The mix + one file per mixer insert (stems)" }, "Files");
+
+    auto* settings = appProperties.getUserSettings();
+    w->getComboBoxComponent ("what")->setSelectedItemIndex (session.isSongMode() ? 0 : 1, juce::dontSendNotification);
+    w->getComboBoxComponent ("format")->setSelectedItemIndex (juce::jlimit (0, formats.size() - 1, settings->getIntValue ("exportFormat", 0)),
+                                                              juce::dontSendNotification);
+    w->getComboBoxComponent ("stems")->setSelectedItemIndex (settings->getBoolValue ("exportStems", false) ? 1 : 0, juce::dontSendNotification);
+
+    w->addButton ("Export...", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    const auto patternSid = state.getPattern()[song::ids::sid].toString();
+
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this, w, formatValues, patternSid, patternName] (int result)
+    {
+        if (result != 1)
+            return;
+
+        Exporter::Options opts;
+        opts.wholeSong = w->getComboBoxComponent ("what")->getSelectedItemIndex() == 0;
+        opts.patternSid = patternSid;
+        opts.format = formatValues[juce::jmax (0, w->getComboBoxComponent ("format")->getSelectedItemIndex())];
+        opts.stems = w->getComboBoxComponent ("stems")->getSelectedItemIndex() == 1;
+
+        auto* s = appProperties.getUserSettings();
+        s->setValue ("exportFormat", w->getComboBoxComponent ("format")->getSelectedItemIndex());
+        s->setValue ("exportStems", opts.stems);
+
+        // Where: a file name (the stems go in a folder next to it).
+        exportsFolder().createDirectory();
+        const auto title = session.getSongTitle().isNotEmpty() ? session.getSongTitle() : juce::String ("Untitled");
+        const auto base = juce::File::createLegalFileName (opts.wholeSong ? title : title + " - " + patternName);
+        const auto ext = Exporter::extensionFor (opts.format);
+
+        fileChooser = std::make_unique<juce::FileChooser> ("Export to", exportsFolder().getChildFile (base + ext), "*" + ext);
+        fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                    | juce::FileBrowserComponent::warnAboutOverwriting,
+                                  [this, opts] (const juce::FileChooser& fc) mutable
+        {
+            if (fc.getResult() == juce::File())
+                return;
+
+            opts.destination = fc.getResult();
+            startExport (opts);
+        });
+    }), true);
+}
+
+void MainComponent::startExport (const Exporter::Options& opts)
+{
+    auto* sync = session.getSync();
+
+    if (sync == nullptr)
+        return;
+
+    const auto error = exporter.start (sync->createSnapshot(), opts, [this] (const Exporter::Result& r) { exportFinished (r); });
+
+    if (error.isNotEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export", error);
+        return;
+    }
+
+    appendLog ("Exporting to " + opts.destination.getFileName() + "...");
+    exportProgress = 0.0;
+
+    auto* w = new juce::AlertWindow ("Exporting...", opts.destination.getFileName(), juce::MessageBoxIconType::NoIcon);
+    w->addProgressBarComponent (exportProgress);
+    w->addButton ("Cancel", 0);
+    exportWindow = w;
+
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([this] (int)
+    {
+        if (exporter.isRunning())
+            exporter.cancel();   // Cancel pressed (the window also closes itself when done)
+    }), true);
+}
+
+void MainComponent::exportFinished (const Exporter::Result& r)
+{
+    if (exportWindow != nullptr)
+    {
+        auto w = exportWindow;
+        exportWindow = nullptr;
+        w->exitModalState (1);
+    }
+
+    if (r.cancelled)
+    {
+        appendLog ("Export cancelled");
+        return;
+    }
+
+    if (r.error.isNotEmpty())
+    {
+        appendLog ("Export failed: " + r.error);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export failed", r.error);
+        return;
+    }
+
+    juce::String text;
+    juce::int64 bytes = 0;
+
+    for (auto& f : r.files)
+        bytes += f.getSize();
+
+    const auto main = r.files.isEmpty() ? juce::File() : r.files.getFirst();
+    text << "Saved " << main.getFileName() << " (" << juce::File::descriptionOfSizeInBytes (main.getSize()) << ")";
+
+    if (r.files.size() > 1)
+        text << "\n+ " << (r.files.size() - 1) << " stems in \"" << main.getFileNameWithoutExtension() << " - stems\"";
+
+    if (r.missingAudio > 0)
+        text << "\n\nNote: " << r.missingAudio << " audio file(s) hadn't arrived on this PC yet, so they're silent in it.";
+
+    if (r.missingPlugins > 0)
+        text << "\n\nNote: " << r.missingPlugins << " plugin(s) aren't installed on this PC, so they're silent / bypassed in it.";
+
+    appendLog ("Exported " + main.getFullPathName() + " (" + juce::File::descriptionOfSizeInBytes (bytes) + " in total)");
+
+    auto* w = new juce::AlertWindow ("Export finished", text, juce::MessageBoxIconType::InfoIcon);
+    w->addButton ("Show in folder", 1);
+    w->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey));
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([main] (int button)
+    {
+        if (button == 1 && main.existsAsFile())
+            main.revealToUser();
+    }), true);
 }
 
 void MainComponent::showRecordSetupMenu()
@@ -898,6 +1127,8 @@ void MainComponent::showFileMenu()
     m.addItem (item (3, "Save", true, "Ctrl+S"));
     m.addItem (item (4, "Save as...", true, "Ctrl+Shift+S"));
     m.addSeparator();
+    m.addItem (item (6, "Export audio (WAV, FLAC, MP3)...", ! exporter.isRunning(), "Ctrl+R"));
+    m.addSeparator();
     m.addItem (5, "Open an automatic backup...", canReplace);
 
     if (! canReplace)
@@ -912,6 +1143,7 @@ void MainComponent::showFileMenu()
         else if (r == 2)   openSong();
         else if (r == 3)   saveSong (false);
         else if (r == 4)   saveSong (true);
+        else if (r == 6)   showExportDialog();
         else if (r == 5)
         {
             askToSaveChanges ([this]
@@ -1265,11 +1497,12 @@ void MainComponent::resized()
     playButton.setBounds (bar.removeFromLeft (64));
     bar.removeFromLeft (4);
     recordButton.setBounds (bar.removeFromLeft (60));
+    bar.removeFromLeft (4);
+    clickButton.setBounds (bar.removeFromLeft (58));
     bar.removeFromLeft (8);
     tempoLabel.setBounds (bar.removeFromLeft (34));
     tempoSlider.setBounds (bar.removeFromLeft (100));
     bar.removeFromLeft (8);
-    patternLabel.setBounds (bar.removeFromLeft (52));
     patternBox.setBounds (bar.removeFromLeft (120));
     bar.removeFromLeft (4);
     newPatternButton.setBounds (bar.removeFromLeft (28));

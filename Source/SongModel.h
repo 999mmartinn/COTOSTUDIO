@@ -66,6 +66,11 @@ namespace song
         SONG_DECLARE_ID (numChannels)
         SONG_DECLARE_ID (bytes)
         SONG_DECLARE_ID (title)
+        SONG_DECLARE_ID (SENDS)
+        SONG_DECLARE_ID (SEND)
+        SONG_DECLARE_ID (from)
+        SONG_DECLARE_ID (to)
+        SONG_DECLARE_ID (db)
         #undef SONG_DECLARE_ID
     }
 
@@ -148,6 +153,26 @@ namespace song
     te::AudioTrack* resolveRoute (te::Edit&, const te::AudioTrack&);
     bool canRouteTo (te::Edit&, const te::AudioTrack& source, const juce::String& targetID);
     bool setRoute (te::Edit&, te::AudioTrack& source, const juce::String& targetID);
+
+    /** Sends: an insert also feeds another insert, at its own level (like a reverb bus).
+        Stored as SONGMODEL/SENDS/SEND (from = insert ID, to = insert ID, db = level).
+        Each PC builds the engine's send/return plugins from these (see MixerRouter). */
+    juce::Array<juce::ValueTree> getSends (te::Edit&);
+    juce::Array<juce::ValueTree> getSendsFrom (te::Edit&, const juce::String& insertID);
+    /** False if it would make a loop (with routes and other sends), duplicates a send,
+        or either insert doesn't exist. */
+    bool canSendTo (te::Edit&, const juce::String& fromID, const juce::String& toID);
+    juce::ValueTree addSend (te::Edit&, const juce::String& fromID, const juce::String& toID, double db = 0.0);
+    void removeSend (te::Edit&, juce::ValueTree send);
+    void setSendLevel (te::Edit&, juce::ValueTree send, double db);
+    double getSendLevel (const juce::ValueTree& send);
+    constexpr double minSendDb = -60.0, maxSendDb = 6.0;   // minSendDb counts as off
+
+    /** True if sound from insert fromID reaches insert toID (through routes and sends). */
+    bool feeds (te::Edit&, const juce::String& fromID, const juce::String& toID);
+
+    /** Plugins MixerRouter builds on each PC (send/return): never sent, never an effect slot. */
+    bool isGeneratedPlugin (const te::Plugin*);
 
     /** Effect slots of an insert: every plugin except volume/meter. */
     juce::Array<te::Plugin*> getInsertEffects (te::AudioTrack&);

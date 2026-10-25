@@ -65,7 +65,7 @@ jobs:
           Get-Content selftest.txt
           # The key lines also go to the run's public annotations (GitHub shows only
           # about 10 per step, so just failures, totals and measurements).
-          Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|the take starts" |
+          Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|the take starts|mp3: |mix: |error: " |
             ForEach-Object { Write-Output "::notice::$($_.Line.Trim())" }
           exit $p.ExitCode
 

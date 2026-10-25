@@ -44,6 +44,13 @@ public:
 
     /** Starts recording every armed insert from this position. False if nothing is armed. */
     bool start (double startSeconds);
+
+    /** Bars of metronome before the take starts (0, 1 or 2). The take still starts
+        exactly at the start position. */
+    void setCountInBars (int bars)                       { countInBars = juce::jlimit (0, 2, bars); }
+    int getCountInBars() const noexcept                  { return countInBars; }
+    /** Where the playhead starts when recording (before the start position with a count-in). */
+    double getPreRollStart (double startSeconds) const;
     bool isRecording() const;
     /** True while takes are still being turned into shared files. */
     bool isBusy() const                                  { return pendingTakes > 0; }
@@ -61,6 +68,7 @@ private:
     te::Edit* edit = nullptr;
 
     struct Choice { juce::String inputID; bool armed = false; };
+    int countInBars = 0;
     std::map<juce::String, Choice> choices;   // insert ID -> this PC's choice
     std::atomic<int> pendingTakes { 0 };
     juce::ThreadPool pool { 1 };

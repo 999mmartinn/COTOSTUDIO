@@ -233,13 +233,27 @@ bool Recorder::start (double startSeconds)
     if (transport.isPlaying())
         transport.stop (false, false);
 
-    // No count-in, no looping: the take starts right where the song start marker is
-    // and simply runs on past the end of the song if you keep going.
-    edit->setCountInMode (te::Edit::CountIn::none);
+    // No looping: the take starts right where the song start marker is and simply runs
+    // on past the end of the song if you keep going. With a count-in, the engine starts
+    // that many bars earlier with the click, and the take still starts at the marker.
+    edit->setCountInMode (countInBars == 2 ? te::Edit::CountIn::twoBar
+                                           : countInBars == 1 ? te::Edit::CountIn::oneBar : te::Edit::CountIn::none);
     transport.looping = false;
     transport.setPosition (te::TimePosition::fromSeconds (juce::jmax (0.0, startSeconds)));
     transport.record (false, false);
     return true;
+}
+
+double Recorder::getPreRollStart (double startSeconds) const
+{
+    if (edit == nullptr || countInBars == 0)
+        return startSeconds;
+
+    // Same as the engine: the count-in beats plus half a beat before the start.
+    auto& ts = edit->tempoSequence;
+    const double beats = ts.getTimeSig (0)->numerator * countInBars + 0.5;
+    const auto start = ts.toBeats (te::TimePosition::fromSeconds (startSeconds));
+    return ts.toTime (start - te::BeatDuration::fromBeats (beats)).inSeconds();
 }
 
 //==============================================================================

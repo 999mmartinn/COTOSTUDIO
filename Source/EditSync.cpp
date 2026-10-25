@@ -15,6 +15,7 @@ static const juce::Identifier localNodeTypes[] =
     "TRANSPORT",                    // playhead, loop markers etc. (transport is synced separately)
     "OUTPUTDEVICES",                // a track's output device/route: per PC (applied from routeTo by MixerRouter)
     "AUDIOCLIP",                    // engine audio clips: built on each PC from the playlist (PatternCompiler)
+    "CLICKTRACK",                   // the metronome: each person turns their own on/off
 };
 
 // Properties that are per-machine wherever they appear.

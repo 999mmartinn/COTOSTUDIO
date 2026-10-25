@@ -325,6 +325,8 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit, bool assignSyncIDs
     compiler = std::make_unique<PatternCompiler> (*edit, assets);
     router = std::make_unique<MixerRouter> (*edit);
     recorder->attachTo (edit.get());
+    applySolo();
+    edit->clickTrackEnabled = metronome;   // personal: not part of the shared song
 
     // Our own new songs get their sync IDs now, before the window takes the song's
     // fingerprint (otherwise an untouched new song would look changed).
@@ -349,7 +351,7 @@ static const juce::Identifier ROSTER ("ROSTER"), PERSON ("PERSON"), LINE ("LINE"
                               hostID ("host"), yourID ("yourId"), textID ("text"), systemID ("system"), timeID ("time"),
                               focusID ("focus"), listeningID ("listening"), shareID ("share"), shareNoteID ("shareNote"),
                               sharerID ("sharer"), toID ("to"), bpmID ("bpm"), oldBpmID ("oldBpm"), resultID ("result"),
-                              yesID ("yes"), fromID_ ("from");
+                              yesID ("yes"), fromID_ ("from"), soloID ("solo");
 
 juce::Colour Session::personColour (int index)
 {
@@ -1050,6 +1052,12 @@ void Session::applyTransport (const juce::ValueTree& msg)
     if (msg.hasProperty (ids::songMode) && compiler != nullptr)
         compiler->setSongMode ((bool) msg[ids::songMode]);
 
+    if (msg.hasProperty (soloID))
+    {
+        sharedSolo = MixerRouter::Solo::fromString (msg[soloID].toString());
+        applySolo();
+    }
+
     auto& transport = edit->getTransport();
     const bool shouldPlay = (bool) msg[ids::playing];
     const bool recordingHere = isRecording();
@@ -1121,6 +1129,7 @@ void Session::sendTransport (bool patternOnly, const juce::String& recordingBy, 
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
     msg.setProperty (ids::songMode, isSongMode(), nullptr);
     msg.setProperty (ids::patternOnly, patternOnly, nullptr);
+    msg.setProperty (soloID, mySolo.toString(), nullptr);   // followers hear what you solo
 
     if (mode == Mode::hosting)
     {
@@ -1190,7 +1199,8 @@ bool Session::startRecording (double startSeconds)
     if (! recorder->start (startSeconds))
         return false;
 
-    // People following your share play along from the same spot (in SONG mode too).
+    // People following your share play along from the same spot (in SONG mode too;
+    // with a count-in, the engine has already put the playhead where the count-in starts).
     sendTransport (false, peerName);
 
     if (onTransportChanged)
@@ -1286,12 +1296,73 @@ void Session::restoreLocalPlayback (const LocalPlayback& p, bool resumePlaying)
 }
 
 //==============================================================================
+// Solo, metronome, count-in
+void Session::applySolo()
+{
+    if (router != nullptr)
+        router->setSolo (following ? sharedSolo : mySolo);
+
+    if (onRemoteChange)
+        onRemoteChange();   // the buttons show it
+}
+
+bool Session::toggleSolo (const juce::String& trackID, bool isInsert)
+{
+    if (following || trackID.isEmpty())
+        return false;   // the person sharing decides what everyone hears
+
+    auto& list = isInsert ? mySolo.inserts : mySolo.channels;
+
+    if (list.contains (trackID))
+        list.removeString (trackID);
+    else
+        list.add (trackID);
+
+    applySolo();
+    sendTransport (true);   // people following your share hear it too
+    return true;
+}
+
+bool Session::isSoloed (const juce::String& trackID) const
+{
+    const auto& s = following ? sharedSolo : mySolo;
+    return s.channels.contains (trackID) || s.inserts.contains (trackID);
+}
+
+bool Session::isSilencedBySolo (const juce::String& trackID) const
+{
+    return router != nullptr && router->isSilencedBySolo (trackID);
+}
+
+void Session::clearSolo()
+{
+    if (following || mySolo.isEmpty())
+        return;
+
+    mySolo = {};
+    applySolo();
+    sendTransport (true);
+}
+
+void Session::setMetronome (bool on)
+{
+    metronome = on;
+
+    if (edit != nullptr)
+        edit->clickTrackEnabled = on;
+}
+
+void Session::setCountInBars (int bars)     { recorder->setCountInBars (bars); }
+int Session::getCountInBars() const         { return recorder->getCountInBars(); }
+
+//==============================================================================
 // Sharing playback
 void Session::resetSessionOnlyState()
 {
     if (following)
     {
         following = false;
+        applySolo();
         restoreLocalPlayback (beforeShare, false);
     }
 
@@ -1459,6 +1530,7 @@ void Session::shareOwnerChanged (const juce::String& oldOwner)
     if (following)
     {
         following = false;
+        applySolo();
         restoreLocalPlayback (beforeShare, false);
         log ("The shared playback ended - back to your own (where you were before)");
     }
@@ -1502,6 +1574,8 @@ void Session::followShare (bool manual)
     beforeShare = captureLocalPlayback();
     following = true;
     lastOfferedPattern = {};
+    sharedSolo = {};
+    applySolo();   // what the person sharing solos (arrives with their playback)
 
     if (edit->getTransport().isPlaying())
         edit->getTransport().stop (false, false);   // until the shared playback arrives
@@ -1519,6 +1593,7 @@ void Session::unfollowShare (const juce::String& note)
         return;
 
     following = false;
+    applySolo();
     restoreLocalPlayback (beforeShare, false);
     log ("Left " + nameOf (shareOwner) + "'s playback - back to your own (where you were before)");
     sendPresence (note);

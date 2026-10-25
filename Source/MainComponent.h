@@ -6,6 +6,7 @@
 #include "Playlist.h"
 #include "Mixer.h"
 #include "Browser.h"
+#include "Exporter.h"
 #include "Look.h"
 
 //==============================================================================
@@ -78,15 +79,26 @@ private:
     void showTempoQuestion (const collab::Session::TempoQuestion&);
     void closeTempoQuestion (int id);
     void refreshTempo();
-    juce::TextButton recordButton;
+    MenuButton recordButton;
+    MenuButton clickButton { "Click" };    // metronome (right-click: count-in)
     bool lastRecording = false;
     void showRecordSetupMenu();
+    void showRecordOptionsMenu (juce::Component* target);
+
+    // Export (File > Export audio..., Ctrl+R)
+    Exporter exporter { engine, session.getAssetStore() };
+    juce::Component::SafePointer<juce::AlertWindow> exportWindow;
+    double exportProgress = 0.0;
+    void showExportDialog();
+    void startExport (const Exporter::Options&);
+    void exportFinished (const Exporter::Result&);
+    static juce::File exportsFolder();
     void timerCallback() override;
     juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
                      undoButton { "Undo" }, redoButton { "Redo" },
                      scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };
     juce::Slider tempoSlider { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
-    juce::Label tempoLabel { {}, "BPM" }, patternLabel { {}, "Pattern" }, playingLabel;
+    juce::Label tempoLabel { {}, "BPM" }, playingLabel;
     juce::ComboBox patternBox, lengthBox;
 
     Browser browser { state };

@@ -4,10 +4,10 @@
 #include "AssetStore.h"
 #include "Recorder.h"
 #include "ProjectFile.h"
+#include "MixerRouter.h"
 #include <deque>
 
 class PatternCompiler;
-class MixerRouter;
 
 namespace collab
 {
@@ -113,6 +113,22 @@ public:
     /** Records every armed insert from this position (switches to SONG mode).
         False if nothing is armed, or while you follow someone's share. */
     bool startRecording (double startSeconds);
+
+    //==============================================================================
+    // Solo: what you listen to. Personal like playback; people following your share
+    // hear your solo too. Ignored while you follow someone's share.
+    /** Solo on/off for a channel or a mixer insert (track ID). False if ignored. */
+    bool toggleSolo (const juce::String& trackID, bool isInsert);
+    bool isSoloed (const juce::String& trackID) const;
+    /** True if this track can't be heard on this PC right now because of a solo. */
+    bool isSilencedBySolo (const juce::String& trackID) const;
+    void clearSolo();
+
+    // Metronome (personal) and count-in before recording
+    void setMetronome (bool);
+    bool isMetronomeOn() const noexcept            { return metronome; }
+    void setCountInBars (int bars);
+    int getCountInBars() const;
 
     //==============================================================================
     // Sharing playback ("listen together") and Focus
@@ -313,6 +329,11 @@ private:
 
     LocalPlayback captureLocalPlayback() const;
     void restoreLocalPlayback (const LocalPlayback&, bool resumePlaying);
+
+    // Solo and metronome (this PC's)
+    MixerRouter::Solo mySolo, sharedSolo;   // sharedSolo: the solo of the share you follow
+    bool metronome = false;
+    void applySolo();
 
     // Sharing (see startSharing). The host decides who shares; everyone learns it from the roster.
     juce::String shareOwner;             // roster id of the person sharing ("" = nobody)

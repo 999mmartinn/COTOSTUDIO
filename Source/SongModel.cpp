@@ -294,9 +294,22 @@ void removeChannel (te::Edit& edit, te::AudioTrack& track)
     edit.deleteTrack (&track);
 }
 
+bool isGeneratedPlugin (const te::Plugin* p)
+{
+    return p != nullptr && (bool) p->state[ids::generated];
+}
+
+// Volume/meter and the sends built by MixerRouter: they sit after the effects.
 static bool isMixerUtility (te::Plugin* p)
 {
-    return dynamic_cast<te::VolumeAndPanPlugin*> (p) != nullptr || dynamic_cast<te::LevelMeterPlugin*> (p) != nullptr;
+    return dynamic_cast<te::VolumeAndPanPlugin*> (p) != nullptr || dynamic_cast<te::LevelMeterPlugin*> (p) != nullptr
+        || (isGeneratedPlugin (p) && dynamic_cast<te::AuxSendPlugin*> (p) != nullptr);
+}
+
+// Not an effect slot: utilities and anything MixerRouter built (the send return sits first).
+static bool isNotAnEffect (te::Plugin* p)
+{
+    return isMixerUtility (p) || isGeneratedPlugin (p);
 }
 
 te::Plugin* getInstrument (te::AudioTrack& track)
@@ -317,7 +330,7 @@ juce::Array<te::Plugin*> getEffects (te::AudioTrack& track)
     auto* instrument = getInstrument (track);
 
     for (auto* p : track.pluginList.getPlugins())
-        if (p != instrument && ! isMixerUtility (p))
+        if (p != instrument && ! isNotAnEffect (p))
             result.add (p);
 
     return result;
@@ -479,6 +492,11 @@ void removeInsert (te::Edit& edit, te::AudioTrack& insert)
         if (t->state[ids::routeTo].toString() == id)
             t->state.setProperty (ids::routeTo, juce::String(), um (edit));
 
+    // Its sends, and sends into it, go too.
+    for (auto s : getSends (edit))
+        if (s[ids::from].toString() == id || s[ids::to].toString() == id)
+            removeSend (edit, s);
+
     edit.deleteTrack (&insert);
 }
 
@@ -492,18 +510,138 @@ bool canRouteTo (te::Edit& edit, const te::AudioTrack& source, const juce::Strin
     if (targetID.isEmpty())
         return true;    // master is always fine
 
-    // Follow the chain from the target; reaching the source would make a loop.
-    auto* t = findInsert (edit, targetID);
+    if (findInsert (edit, targetID) == nullptr)
+        return false;
 
-    for (int guard = 0; t != nullptr && guard < 1000; ++guard)
+    // If the target's sound already comes back to the source (through routes or
+    // sends), routing the source into it would make a loop.
+    const auto sourceID = source.itemID.toString();
+    return targetID != sourceID && ! feeds (edit, targetID, sourceID);
+}
+
+bool feeds (te::Edit& edit, const juce::String& fromID, const juce::String& toID)
+{
+    if (fromID.isEmpty() || toID.isEmpty())
+        return false;
+
+    // Everything the sound of fromID flows into: its route, then its sends, recursively.
+    juce::StringArray toVisit { fromID }, visited;
+
+    while (! toVisit.isEmpty())
     {
-        if (t == &source)
-            return false;
+        const auto id = toVisit[toVisit.size() - 1];
+        toVisit.remove (toVisit.size() - 1);
 
-        t = findInsert (edit, getRoute (*t));
+        if (visited.contains (id) || visited.size() > 1000)
+            continue;
+
+        visited.add (id);
+
+        if (auto* t = findInsert (edit, id))
+        {
+            const auto route = getRoute (*t);
+
+            if (route == toID)
+                return true;
+
+            if (route.isNotEmpty())
+                toVisit.add (route);
+        }
+
+        for (auto s : getSendsFrom (edit, id))
+        {
+            const auto to = s[ids::to].toString();
+
+            if (to == toID)
+                return true;
+
+            toVisit.add (to);
+        }
     }
 
-    return findInsert (edit, targetID) != nullptr;
+    return false;
+}
+
+//==============================================================================
+static juce::ValueTree getSendList (te::Edit& edit, bool createIfMissing)
+{
+    auto model = getModel (edit);
+    auto list = model.getChildWithName (ids::SENDS);
+
+    if (! list.isValid() && createIfMissing)
+    {
+        list = juce::ValueTree (ids::SENDS);
+        model.appendChild (list, um (edit));
+    }
+
+    return list;
+}
+
+juce::Array<juce::ValueTree> getSends (te::Edit& edit)
+{
+    juce::Array<juce::ValueTree> result;
+
+    for (auto s : getSendList (edit, false))
+        if (s.hasType (ids::SEND))
+            result.add (s);
+
+    return result;
+}
+
+juce::Array<juce::ValueTree> getSendsFrom (te::Edit& edit, const juce::String& insertID)
+{
+    juce::Array<juce::ValueTree> result;
+
+    for (auto s : getSends (edit))
+        if (s[ids::from].toString() == insertID)
+            result.add (s);
+
+    return result;
+}
+
+bool canSendTo (te::Edit& edit, const juce::String& fromID, const juce::String& toID)
+{
+    if (fromID.isEmpty() || toID.isEmpty() || fromID == toID
+         || findInsert (edit, fromID) == nullptr || findInsert (edit, toID) == nullptr)
+        return false;
+
+    for (auto s : getSendsFrom (edit, fromID))
+        if (s[ids::to].toString() == toID)
+            return false;   // already sending there
+
+    return ! feeds (edit, toID, fromID);   // the target's sound must not come back
+}
+
+juce::ValueTree addSend (te::Edit& edit, const juce::String& fromID, const juce::String& toID, double db)
+{
+    if (! canSendTo (edit, fromID, toID))
+        return {};
+
+    juce::ValueTree s (ids::SEND);
+    s.setProperty (ids::sid, newSyncID(), nullptr);
+    s.setProperty (ids::from, fromID, nullptr);
+    s.setProperty (ids::to, toID, nullptr);
+    s.setProperty (ids::db, juce::jlimit (minSendDb, maxSendDb, db), nullptr);
+    getSendList (edit, true).appendChild (s, um (edit));
+    return s;
+}
+
+void removeSend (te::Edit& edit, juce::ValueTree send)
+{
+    auto parent = send.getParent();
+
+    if (parent.isValid())
+        parent.removeChild (send, um (edit));
+}
+
+void setSendLevel (te::Edit& edit, juce::ValueTree send, double db)
+{
+    send.setProperty (ids::db, juce::jlimit (minSendDb, maxSendDb, db), um (edit));
+}
+
+double getSendLevel (const juce::ValueTree& send)
+{
+    return juce::jlimit (minSendDb, maxSendDb, (double) send.getProperty (ids::db, 0.0));
 }
 
 te::AudioTrack* resolveRoute (te::Edit& edit, const te::AudioTrack& track)
@@ -526,7 +664,7 @@ juce::Array<te::Plugin*> getInsertEffects (te::AudioTrack& track)
     juce::Array<te::Plugin*> result;
 
     for (auto* p : track.pluginList.getPlugins())
-        if (! isMixerUtility (p))
+        if (! isNotAnEffect (p))
             result.add (p);
 
     return result;
@@ -635,8 +773,8 @@ void moveEffect (te::Plugin& plugin, int direction)
             continue;
 
         if (auto otherPlugin = te::findPluginForID (plugin.edit, te::EditItemID::fromVar (other[te::IDs::id])))
-            if (isMixerUtility (otherPlugin.get()))
-                return;     // never move past volume/meter
+            if (isNotAnEffect (otherPlugin.get()))
+                return;     // never move past volume/meter or the sends' return
 
         parent.moveChild (from, i, &plugin.edit.getUndoManager());
         return;

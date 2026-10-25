@@ -80,6 +80,237 @@ private:
 };
 
 //==============================================================================
+/** The sends of one insert: a level knob per send, remove buttons, "+ Send to...". */
+class SendsPanel  : public juce::Component,
+                    private juce::Timer
+{
+public:
+    SendsPanel (EditorState& s, const juce::String& id) : state (s), insertID (id)
+    {
+        title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        addAndMakeVisible (title);
+        addButton.setTooltip ("Feed another insert from this one too (e.g. a reverb or delay insert)");
+        addButton.onClick = [this] { showAddMenu(); };
+        addAndMakeVisible (addButton);
+        rebuild();
+        startTimerHz (8);
+    }
+
+    ~SendsPanel() override
+    {
+        for (auto* r : rows)
+            r->knob.setLookAndFeel (nullptr);
+    }
+
+private:
+    struct Row
+    {
+        juce::String sid;
+        juce::Label target, value;
+        ResetSlider knob { juce::Slider::RotaryHorizontalVerticalDrag, juce::Slider::NoTextBox };
+        juce::TextButton remove { juce::String::fromUTF8 ("\xc3\x97") };
+    };
+
+    EditorState& state;
+    const juce::String insertID;
+    juce::Label title;
+    juce::TextButton addButton { "+ Send to..." };
+    juce::OwnedArray<Row> rows;
+    juce::StringArray shownSids;
+
+    te::Edit* edit() const     { return state.getEdit(); }
+
+    juce::ValueTree findSend (const juce::String& sid) const
+    {
+        if (auto* e = edit())
+            for (auto s : getSendsFrom (*e, insertID))
+                if (s[ids::sid].toString() == sid)
+                    return s;
+
+        return {};
+    }
+
+    static double positionToDb (double pos)
+    {
+        const double db = te::volumeFaderPositionToDB ((float) pos);
+        return db <= minSendDb ? minSendDb : juce::jmin (maxSendDb, db);
+    }
+
+    static juce::String dbText (double db)
+    {
+        return db <= minSendDb ? juce::String ("off") : (db > 0 ? "+" : "") + juce::String (db, 1) + " dB";
+    }
+
+    void rebuild()
+    {
+        for (auto* r : rows)
+            r->knob.setLookAndFeel (nullptr);
+
+        rows.clear();
+        shownSids.clear();
+        auto* e = edit();
+        auto* insert = e != nullptr ? findInsert (*e, insertID) : nullptr;
+
+        if (insert == nullptr)
+            return;
+
+        title.setText ("Sends from " + juce::String (getInsertNumber (*e, *insert)) + " " + insert->getName(), juce::dontSendNotification);
+
+        for (auto s : getSendsFrom (*e, insertID))
+        {
+            auto* row = rows.add (new Row());
+            row->sid = s[ids::sid].toString();
+            shownSids.add (row->sid);
+
+            auto* target = findInsert (*e, s[ids::to].toString());
+            row->target.setText (target != nullptr ? "-> " + juce::String (getInsertNumber (*e, *target)) + " " + target->getName()
+                                                   : juce::String ("-> (gone)"), juce::dontSendNotification);
+
+            auto& k = row->knob;
+            k.setRange (0.0, 1.0);
+            k.setLookAndFeel (&knobLook());
+            k.setColour (juce::Slider::rotarySliderFillColourId, accent);
+            k.setDoubleClickReturnValue (true, te::decibelsToVolumeFaderPosition (0.0f));
+            k.describeDefault = [] { return juce::String ("0 dB"); };
+            k.setTooltip ("Send level (right-click: reset to 0 dB). All the way down = off");
+            k.setValue (te::decibelsToVolumeFaderPosition ((float) getSendLevel (s)), juce::dontSendNotification);
+            k.onDragStart = [this] { state.beginAction(); };
+            k.onValueChange = [this, row]
+            {
+                auto send = findSend (row->sid);
+
+                if (auto* e2 = edit(); e2 != nullptr && send.isValid())
+                    setSendLevel (*e2, send, positionToDb (row->knob.getValue()));
+
+                row->value.setText (dbText (positionToDb (row->knob.getValue())), juce::dontSendNotification);
+            };
+
+            row->value.setText (dbText (getSendLevel (s)), juce::dontSendNotification);
+            row->value.setJustificationType (juce::Justification::centredRight);
+            row->remove.setTooltip ("Remove this send");
+            row->remove.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff5a3030));
+            row->remove.onClick = [this, sid = row->sid]
+            {
+                auto send = findSend (sid);
+
+                if (auto* e2 = edit(); e2 != nullptr && send.isValid())
+                {
+                    state.beginAction();
+                    removeSend (*e2, send);
+                }
+
+                juce::MessageManager::callAsync ([self = juce::Component::SafePointer<SendsPanel> (this)]
+                                                 { if (self != nullptr) self->rebuild(); });
+            };
+
+            for (auto* c : std::initializer_list<juce::Component*> { &row->target, &row->value, &row->knob, &row->remove })
+                addAndMakeVisible (c);
+        }
+
+        setSize (330, 38 + rows.size() * 40 + 34);
+        resized();
+    }
+
+    void showAddMenu()
+    {
+        auto* e = edit();
+
+        if (e == nullptr)
+            return;
+
+        juce::PopupMenu m;
+        m.addSectionHeader ("Send to");
+        juce::StringArray targets;
+
+        for (auto* t : getInserts (*e))
+        {
+            const auto id = t->itemID.toString();
+
+            if (id == insertID)
+                continue;
+
+            targets.add (id);
+            const bool ok = canSendTo (*e, insertID, id);
+            m.addItem (targets.size(), juce::String (getInsertNumber (*e, *t)) + " " + t->getName()
+                                         + (ok ? juce::String() : "  (would loop, or already sent)"), ok);
+        }
+
+        if (targets.isEmpty())
+            m.addItem (-1, "(make another insert first: + Insert)", false);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addButton),
+                         [self = juce::Component::SafePointer<SendsPanel> (this), targets] (int r)
+        {
+            if (self == nullptr || ! juce::isPositiveAndBelow (r - 1, targets.size()))
+                return;
+
+            if (auto* e2 = self->edit())
+            {
+                self->state.beginAction();
+                addSend (*e2, self->insertID, targets[r - 1], 0.0);
+            }
+
+            self->rebuild();
+        });
+    }
+
+    void timerCallback() override
+    {
+        auto* e = edit();
+
+        if (e == nullptr || findInsert (*e, insertID) == nullptr)
+        {
+            if (auto* box = findParentComponentOfClass<juce::CallOutBox>())
+                box->dismiss();   // the insert (or the song) went away
+
+            return;
+        }
+
+        juce::StringArray sids;
+
+        for (auto s : getSendsFrom (*e, insertID))
+            sids.add (s[ids::sid].toString());
+
+        if (sids != shownSids)
+        {
+            rebuild();   // someone added or removed a send
+            return;
+        }
+
+        for (auto* row : rows)
+        {
+            auto send = findSend (row->sid);
+
+            if (send.isValid() && ! row->knob.isMouseButtonDown())
+            {
+                row->knob.setValue (te::decibelsToVolumeFaderPosition ((float) getSendLevel (send)), juce::dontSendNotification);
+                row->value.setText (dbText (getSendLevel (send)), juce::dontSendNotification);
+            }
+        }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (8);
+        title.setBounds (r.removeFromTop (22));
+        r.removeFromTop (6);
+
+        for (auto* row : rows)
+        {
+            auto line = r.removeFromTop (36);
+            row->remove.setBounds (line.removeFromRight (26).withSizeKeepingCentre (26, 24));
+            line.removeFromRight (4);
+            row->value.setBounds (line.removeFromRight (64));
+            row->knob.setBounds (line.removeFromRight (36));
+            row->target.setBounds (line);
+            r.removeFromTop (4);
+        }
+
+        addButton.setBounds (r.removeFromTop (26).removeFromLeft (120));
+    }
+};
+
+//==============================================================================
 class Mixer::Strip  : public juce::Component
 {
 public:
@@ -122,7 +353,7 @@ public:
                 showMenu();
         };
 
-        mute.setTooltip ("Mute");
+        mute.setTooltip ("Mute (for everyone)");
         mute.onClick = [this]
         {
             if (auto* t = getTrack())
@@ -131,6 +362,22 @@ public:
                 t->setMute (! t->isMuted (false));
             }
         };
+
+        solo.setButtonText ("S");
+        solo.setTooltip ("Solo: hear only this insert (and what flows into and out of it). "
+                         "Only on your PC - people following your share hear it too");
+        solo.onClick = [this]
+        {
+            auto& session = mixer.state.session;
+
+            if (! session.toggleSolo (insertID, true))
+                session.logMessage (session.getShareOwnerName() + " controls what you hear right now (leave their share to solo)");
+
+            mixer.refresh();
+        };
+
+        sends.setTooltip ("Sends: also feed other inserts from this one, each at its own level (e.g. a reverb insert)");
+        sends.onClick = [this] { showSends(); };
 
         input.setTooltip ("Audio input recorded into this insert (your interface / mic). "
                           "You hear it through this insert's effects");
@@ -162,7 +409,9 @@ public:
         if (! isMaster())
         {
             addAndMakeVisible (mute);
+            addAndMakeVisible (solo);
             addAndMakeVisible (route);
+            addAndMakeVisible (sends);
             addAndMakeVisible (input);
             addAndMakeVisible (arm);
         }
@@ -319,6 +568,16 @@ public:
             auto* dest = resolveRoute (*edit, *t);
             route.setButtonText (dest != nullptr ? "-> " + juce::String (getInsertNumber (*edit, *dest)) : juce::String ("-> Master"));
 
+            const int numSends = getSendsFrom (*edit, insertID).size();
+            sends.setButtonText (numSends > 0 ? "Sends (" + juce::String (numSends) + ")" : juce::String ("Sends"));
+            sends.setColour (juce::TextButton::buttonColourId, numSends > 0 ? juce::Colour (0xff3d5a6a) : juce::Colour (0xff3a414a));
+
+            // Solo is personal: yellow = soloed here; the strip fades when a solo elsewhere silences it.
+            const bool soloed = mixer.state.session.isSoloed (insertID);
+            solo.setColour (juce::TextButton::buttonColourId, soloed ? juce::Colour (0xfff0d040) : juce::Colour (0xff3a414a));
+            solo.setColour (juce::TextButton::textColourOffId, soloed ? juce::Colours::black : juce::Colours::white);
+            setAlpha (mixer.state.session.isSilencedBySolo (insertID) ? 0.45f : 1.0f);
+
             // This PC's recording input (not shared: everyone records their own mic).
             auto& rec = mixer.state.session.getRecorder();
             const auto inputID = rec.getInputFor (insertID);
@@ -403,7 +662,12 @@ public:
         {
             route.setBounds (r.removeFromBottom (22));
             r.removeFromBottom (3);
-            mute.setBounds (r.removeFromBottom (22));
+            sends.setBounds (r.removeFromBottom (22));
+            r.removeFromBottom (3);
+            auto muteRow = r.removeFromBottom (22);
+            solo.setBounds (muteRow.removeFromRight (24));
+            muteRow.removeFromRight (3);
+            mute.setBounds (muteRow);
             r.removeFromBottom (3);
         }
 
@@ -417,7 +681,16 @@ public:
     Mixer& mixer;
     const juce::String insertID;
     MenuButton name;
-    juce::TextButton mute, route, input, arm;
+    juce::TextButton mute, solo, route, sends, input, arm;
+
+    void showSends()
+    {
+        if (getTrack() == nullptr)
+            return;
+
+        auto panel = std::make_unique<SendsPanel> (mixer.state, insertID);
+        juce::CallOutBox::launchAsynchronously (std::move (panel), sends.getScreenBounds(), nullptr);
+    }
     MeterBar meter;
     ResetSlider fader, pan;
     juce::Label dbLabel;

@@ -43,14 +43,27 @@ public:
         };
 
         mute.setClickingTogglesState (false);
-        mute.setTooltip ("Mute");
+        mute.setTooltip ("Click: mute (for everyone). Right-click: solo (only what you hear)");
         mute.onClick = [this]
         {
-            if (auto* t = getTrack())
+            auto* t = getTrack();
+
+            if (t == nullptr)
+                return;
+
+            if (mute.wasRightClick())
             {
-                rack.state.beginAction();
-                t->setMute (! t->isMuted (false));
+                // Solo is personal, like FL's right-click on the mute light.
+                if (! rack.state.session.toggleSolo (channelID, false))
+                    rack.state.session.logMessage (rack.state.session.getShareOwnerName()
+                                                    + " controls what you hear right now (leave their share to solo)");
+
+                rack.refresh();
+                return;
             }
+
+            rack.state.beginAction();
+            t->setMute (! t->isMuted (false));
         };
 
         name.onClick = [this]
@@ -120,9 +133,15 @@ public:
             route.setColour (juce::TextButton::buttonColourId, dest != nullptr ? juce::Colour (0xff5a4a2a) : juce::Colour (0xff3a414a));
         }
 
+        // Light: green = on, grey = muted, yellow = soloed, dark = silent here because of a solo.
         const bool muted = t->isMuted (false);
-        mute.setButtonText (muted ? "" : "");
-        mute.setColour (juce::TextButton::buttonColourId, muted ? juce::Colour (0xff555555) : juce::Colour (0xff6fd06f));
+        const bool soloed = rack.state.session.isSoloed (channelID);
+        const bool silenced = rack.state.session.isSilencedBySolo (channelID);
+        mute.setButtonText ({});
+        mute.setColour (juce::TextButton::buttonColourId, muted ? juce::Colour (0xff555555)
+                                                        : soloed ? juce::Colour (0xfff0d040)
+                                                        : silenced ? juce::Colour (0xff2f4a2f)
+                                                                   : juce::Colour (0xff6fd06f));
 
         if (auto* v = getVolume())
         {
@@ -276,7 +295,8 @@ public:
     ChannelRack& rack;
     const juce::String channelID;
     const int index;
-    juce::TextButton mute, route;
+    MenuButton mute;
+    juce::TextButton route;
     MenuButton name;
     ResetSlider volume, pan;
     bool paintValue = true;
