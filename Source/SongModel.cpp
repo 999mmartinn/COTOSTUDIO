@@ -64,6 +64,17 @@ juce::String nextPatternName (te::Edit& edit)
     }
 }
 
+juce::String getTitle (te::Edit& edit)
+{
+    const auto t = getModel (edit)[ids::title].toString();
+    return t.isNotEmpty() ? t : juce::String ("Untitled");
+}
+
+void setTitle (te::Edit& edit, const juce::String& title)
+{
+    getModel (edit).setProperty (ids::title, title.trim().substring (0, 80), nullptr);
+}
+
 juce::ValueTree addPattern (te::Edit& edit, const juce::String& name, int bars)
 {
     static const juce::uint32 colours[] = { 0xff5fb85f, 0xff5f9fd8, 0xffd8a05f, 0xffc66fd0, 0xffd86f6f, 0xff6fd0c6 };

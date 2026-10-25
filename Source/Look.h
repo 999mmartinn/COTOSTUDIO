@@ -105,3 +105,24 @@ private:
     }
 };
 
+//==============================================================================
+/** A TextButton that remembers whether it was pressed with the right mouse button.
+    (On Windows the button is already released when onClick runs, so the global
+    modifier state can't tell a right-click from a left-click at that point.) */
+class MenuButton  : public juce::TextButton
+{
+public:
+    using juce::TextButton::TextButton;
+
+    bool wasRightClick() const noexcept     { return rightClick; }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        rightClick = e.mods.isPopupMenu();
+        juce::TextButton::mouseDown (e);
+    }
+
+private:
+    bool rightClick = false;
+};
+

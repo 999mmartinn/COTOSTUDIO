@@ -3,6 +3,7 @@
 #include "EditSync.h"
 #include "AssetStore.h"
 #include "Recorder.h"
+#include "ProjectFile.h"
 #include <deque>
 
 class PatternCompiler;
@@ -111,6 +112,25 @@ public:
     bool startRecording (double startSeconds);
     bool isRecording() const                     { return recorder != nullptr && recorder->isRecording(); }
     Recorder& getRecorder() noexcept             { return *recorder; }
+
+    //==============================================================================
+    // Song files (see ProjectFile.h)
+    /** Saves this PC's copy of the song (in the background). includeAudio: put every
+        audio file in it too, so it opens anywhere. */
+    void saveProject (const juce::File&, bool includeAudio, std::function<void (project::SaveResult)> onDone);
+    /** Opens a song file (in the background). Only when you're alone or hosting:
+        it replaces the song for everyone. onDone gets an error text, or "" if it worked. */
+    void openProject (const juce::File&, std::function<void (juce::String error)> onDone);
+    /** Starts a new song (the default one). Same rule as openProject. Returns an error or "". */
+    juce::String newProject();
+    bool canReplaceSong() const noexcept           { return mode == Mode::offline || mode == Mode::hosting; }
+    bool isBusyWithFile() const noexcept           { return fileJobsRunning > 0; }
+    /** Why the song was last replaced: "own" (new/open here), "join", "newSong" (the host
+        switched songs) or a resync reason. */
+    juce::String getLastReplaceReason() const      { return lastReplaceReason; }
+    juce::String getSongTitle() const;
+    /** This PC's Tailscale address (100.64.x.x - 100.127.x.x), or "" if Tailscale isn't running. */
+    static juce::String findTailscaleAddress();
 
     //==============================================================================
     // People and chat
@@ -227,7 +247,11 @@ private:
     void applyOps (const juce::ValueTree& msg, PeerConnection* from);
     void applyTransport (const juce::ValueTree& msg);
     void sendTransport (bool patternOnly, const juce::String& recordingBy = {});
-    void sendSnapshotTo (PeerConnection&, const juce::String& reason);
+    void sendSnapshotTo (PeerConnection&, const juce::String& reason, const juce::ValueTree& premade = {});
+    juce::String replaceSong (std::unique_ptr<te::Edit>, const juce::String& announcement);
+    juce::ThreadPool fileJobs { 1 };
+    std::atomic<int> fileJobsRunning { 0 };
+    juce::String lastReplaceReason { "own" };
     void loadSnapshot (const juce::ValueTree& msg);
     void log (const juce::String&);
     void statusChanged();

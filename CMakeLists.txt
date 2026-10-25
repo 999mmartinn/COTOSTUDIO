@@ -47,7 +47,8 @@ target_sources(SyncTest PRIVATE
     Source/Mixer.cpp
     Source/AssetStore.cpp
     Source/Recorder.cpp
-    Source/Browser.cpp)
+    Source/Browser.cpp
+    Source/ProjectFile.cpp)
 
 target_compile_definitions(SyncTest PRIVATE
     JUCE_PLUGINHOST_VST3=1

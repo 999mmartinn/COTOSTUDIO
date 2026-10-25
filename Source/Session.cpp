@@ -229,6 +229,7 @@ Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
 
 Session::~Session()
 {
+    fileJobs.removeAllJobs (true, 60000);
     stopTimer();
     leave();
     recorder.reset();   // detaches from the Edit while it still exists
@@ -272,7 +273,12 @@ juce::String Session::getStatusText() const
     switch (mode)
     {
         case Mode::offline:     return "Offline";
-        case Mode::hosting:     return "Hosting - " + juce::String (getNumConnectedPeers()) + " peer(s) connected";
+        case Mode::hosting:
+        {
+            const auto tailscale = findTailscaleAddress();
+            return "Hosting - " + juce::String (getNumConnectedPeers()) + " peer(s) connected"
+                     + (tailscale.isNotEmpty() ? " - friends join with " + tailscale : juce::String());
+        }
         case Mode::connecting:  return "Connecting...";
         case Mode::joined:      return juce::String ("Joined as peer ") + juce::String (peerIndex)
                                        + (lastHashMatched ? " - in sync" : " - checking sync...");
@@ -292,6 +298,7 @@ static void setUpLocalTransport (te::Edit& edit)
 
 void Session::createLocalEdit()
 {
+    lastReplaceReason = "own";
     auto newEdit = te::createEmptyEdit (engine, juce::File());
     song::createDefaultSong (*newEdit);
     installEdit (std::move (newEdit));
@@ -580,6 +587,10 @@ bool Session::startHosting (int port)
     mode = Mode::hosting;
     peerIndex = 0;
     log ("Hosting on port " + juce::String (port));
+
+    const auto tailscale = findTailscaleAddress();
+    log (tailscale.isNotEmpty() ? "Your friends join with your Tailscale address: " + tailscale
+                                : juce::String ("Tailscale isn't running on this PC; friends on your Wi-Fi can join with your local address"));
     rebuildRoster();
     statusChanged();
     return true;
@@ -1104,7 +1115,7 @@ void Session::setPlayingPattern (const juce::String& patternSid)
 }
 
 //==============================================================================
-void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
+void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason, const juce::ValueTree& premade)
 {
     if (editSync == nullptr)
         return;
@@ -1112,7 +1123,14 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
     flushOutgoing();
 
     // A fresh peer number on every snapshot keeps that peer's new IDs above
-    // every ID already in the song (see installEdit).
+    // every ID already in the song (see installEdit) - also above IDs made by
+    // people in earlier sessions, when the song was opened from a file.
+    uint64_t highestID = 0;
+
+    for (auto& id : te::EditItemID::findAllIDs (edit->state))
+        highestID = juce::jmax (highestID, id.getRawID());
+
+    nextPeerIndex = juce::jmax (nextPeerIndex, (int) (highestID / (uint64_t) idRangePerPeer) + 1);
     c.peerIndex = nextPeerIndex++;
     c.welcomed = true;
 
@@ -1124,9 +1142,189 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason)
     msg.setProperty (ids::position, edit->getTransport().getPosition().inSeconds(), nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);
     msg.setProperty (ids::songMode, isSongMode(), nullptr);
+    if (premade.isValid())
+    {
+        msg.appendChild (premade.createCopy(), nullptr);
+        c.sendTree (msg);
+        return;
+    }
+
     msg.appendChild (editSync->createSnapshot(), nullptr);
     c.sendTree (msg);
     flushOutgoing();   // plugin states written by the snapshot go to everyone else
+}
+
+//==============================================================================
+// Song files
+juce::String Session::getSongTitle() const
+{
+    return edit != nullptr ? song::getTitle (*edit) : juce::String();
+}
+
+juce::String Session::findTailscaleAddress()
+{
+    for (auto& a : juce::IPAddress::getAllAddresses (false))
+        if (a.address[0] == 100 && a.address[1] >= 64 && a.address[1] <= 127)
+            return a.toString();
+
+    return {};
+}
+
+juce::String Session::replaceSong (std::unique_ptr<te::Edit> newEdit, const juce::String& announcement)
+{
+    if (newEdit == nullptr)
+        return "Could not open the song";
+
+    deferredSnapshot = {};
+    lastReplaceReason = "own";
+    installEdit (std::move (newEdit));
+    editSync->assignMissingSyncIDs();
+
+    if (mode == Mode::hosting)
+    {
+        // One snapshot of the new song for everyone. Nothing about the new song may be
+        // sent before it (the others would apply it to the old song), so the changes
+        // collected while building it are dropped: they're all in the snapshot.
+        auto snapshot = editSync->createSnapshot();
+        pendingOps.removeAllChildren (nullptr);
+
+        juce::Array<PeerConnection*> targets;
+
+        {
+            const juce::ScopedLock sl (clients.getLock());
+
+            for (auto* c : clients)
+                if (c->welcomed && ! c->dead)
+                    targets.add (c);
+        }
+
+        for (auto* c : targets)
+            sendSnapshotTo (*c, "newSong", snapshot);
+
+        rebuildRoster();
+        broadcastSystemChat (peerName + " " + announcement);
+    }
+
+    statusChanged();
+    return {};
+}
+
+juce::String Session::newProject()
+{
+    if (! canReplaceSong())
+        return "Only the host can start a new song while you're connected";
+
+    if (isRecording())
+        return "Stop recording first";
+
+    if (edit != nullptr && edit->getTransport().isPlaying())
+        setPlaying (false, 0.0);
+
+    auto newEdit = te::createEmptyEdit (engine, juce::File());
+    song::createDefaultSong (*newEdit);
+    song::setTitle (*newEdit, "Untitled");
+    return replaceSong (std::move (newEdit), "started a new song");
+}
+
+void Session::openProject (const juce::File& file, std::function<void (juce::String)> onDone)
+{
+    if (! canReplaceSong())
+    {
+        onDone ("Only the host can open a song while you're connected (you can still save your copy)");
+        return;
+    }
+
+    if (isRecording())
+    {
+        onDone ("Stop recording first");
+        return;
+    }
+
+    ++fileJobsRunning;
+    juce::WeakReference<Session> weak (this);
+
+    fileJobs.addJob ([this, weak, file, onDone]
+    {
+        auto result = project::load (file, assets);   // reads the file, restores its audio (background)
+
+        juce::MessageManager::callAsync ([weak, result, file, onDone]
+        {
+            if (weak == nullptr)
+                return;
+
+            auto& self = *weak;
+            --self.fileJobsRunning;
+
+            if (! result.ok())
+            {
+                onDone (result.error);
+                return;
+            }
+
+            if (! self.canReplaceSong() || self.isRecording())
+            {
+                onDone ("Couldn't open it now (you joined a session or started recording meanwhile)");
+                return;
+            }
+
+            if (self.edit != nullptr && self.edit->getTransport().isPlaying())
+                self.setPlaying (false, 0.0);
+
+            // The file name is the song's name (set before loading, so it's simply part of the song).
+            auto state = result.song.createCopy();
+            const auto title = file.getFileNameWithoutExtension();
+
+            for (auto child : state)
+                if (child.hasType (song::ids::SONGMODEL))
+                    child.setProperty (song::ids::title, title, nullptr);
+
+            const auto error = self.replaceSong (te::loadEditFromState (self.engine, state),
+                                                 "opened \"" + title + "\"");
+
+            if (error.isEmpty())
+            {
+                self.log ("Opened \"" + title + "\"" + (result.audioRestored > 0 ? " (" + juce::String (result.audioRestored)
+                                                                                     + " audio files restored)" : juce::String()));
+
+                if (result.audioDamaged > 0)
+                    self.log (juce::String (result.audioDamaged) + " audio file(s) in it were damaged and were left out; "
+                              "they'll be fetched from the others if someone has them");
+            }
+
+            onDone (error);
+        });
+    });
+}
+
+void Session::saveProject (const juce::File& file, bool includeAudio, std::function<void (project::SaveResult)> onDone)
+{
+    if (edit == nullptr || editSync == nullptr)
+    {
+        project::SaveResult r;
+        r.error = "There is no song to save";
+        onDone (r);
+        return;
+    }
+
+    auto song = editSync->createSnapshot();   // also writes the plugins' current settings into it
+    const auto songHash = editSync->computeHash();
+    auto hashes = song::getAssetHashes (*edit);
+    ++fileJobsRunning;
+    juce::WeakReference<Session> weak (this);
+
+    fileJobs.addJob ([this, weak, file, song, hashes, includeAudio, by = peerName, onDone, songHash]
+    {
+        auto result = project::save (file, song, assets, hashes, includeAudio, by);
+        result.songHash = songHash;
+
+        juce::MessageManager::callAsync ([weak, result, onDone]
+        {
+            if (weak != nullptr)
+                --weak->fileJobsRunning;
+
+            onDone (result);
+        });
+    });
 }
 
 void Session::loadSnapshot (const juce::ValueTree& msg)
@@ -1147,7 +1345,11 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
         return;
     }
 
-    if (reason != "join" && edit != nullptr)
+    if (reason == "newSong")
+    {
+        log ("The host switched to another song");
+    }
+    else if (reason != "join" && edit != nullptr)
     {
         ++resyncCount;
         log ("Fresh copy received (" + reason + "). First difference was at "
@@ -1172,6 +1374,7 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
     hashMismatchCount = 0;
     lastHashMatched = true;
     mode = Mode::joined;
+    lastReplaceReason = reason;
     installEdit (std::move (newEdit));
 
     if (msg.hasProperty (ids::pattern))

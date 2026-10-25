@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 #include "PatternCompiler.h"
+#include "ProjectFile.h"
 
 static const juce::Colour background (0xff1e2227), accent (0xfff28c28);
 
@@ -75,12 +76,14 @@ MainComponent::MainComponent (te::Engine& e)
     auto* settings = appProperties.getUserSettings();
     session.setUserName (settings->getValue ("userName", juce::SystemStats::getComputerName()));
     browserVisible = settings->getBoolValue ("browserVisible", true);
+    recentFiles.setMaxNumberOfItems (8);
+    recentFiles.restoreFromString (settings->getValue ("recentSongs"));
     portEditor.setText (settings->getValue ("port", "47800"));
     addressEditor.setText (settings->getValue ("address", "127.0.0.1"));
     portEditor.setInputRestrictions (5, "0123456789");
 
     for (auto* c : std::initializer_list<juce::Component*> {
-             &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
+             &fileButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
              &patModeButton, &songModeButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
              &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
@@ -161,7 +164,26 @@ MainComponent::MainComponent (te::Engine& e)
     session.onRemoteChange = [this] { triggerAsyncUpdate(); };
     session.onTransportChanged = [this] { triggerAsyncUpdate(); };
     session.onEditAboutToBeReplaced = [this] { unwatchEdit(); };
-    session.onEditReplaced = [this] { watchEdit(); triggerAsyncUpdate(); };
+    session.onEditReplaced = [this]
+    {
+        watchEdit();
+
+        // A song from somewhere else (joining, or the host switched songs) isn't the
+        // file this PC was saving to; a fresh copy of the same song (resync) still is.
+        const auto reason = session.getLastReplaceReason();
+
+        if (! expectingOwnSong && (reason == "join" || reason == "newSong" || reason == "own"))
+        {
+            currentFile = juce::File();
+            savedHash = lastAutosaveHash = currentHash();
+            dirty = false;
+        }
+
+        triggerAsyncUpdate();
+    };
+
+    fileButton.setTooltip ("New, open and save songs (Ctrl+N / Ctrl+O / Ctrl+S)");
+    fileButton.onClick = [this] { showFileMenu(); };
 
     hostButton.onClick = [this]
     {
@@ -423,6 +445,7 @@ void MainComponent::refresh()
 
     refreshPatternControls();
     session.setViewingPattern (state.getPattern()[song::ids::sid].toString());   // the others see where you are
+    updateTitle();
     browser.refresh();
     playlist.refresh();
     rack.refresh();
@@ -448,6 +471,10 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     const auto cmd = juce::ModifierKeys::commandModifier;
 
     if (key == juce::KeyPress ('z', cmd, 0))                                        { undo (false); return true; }
+    if (key == juce::KeyPress ('s', cmd, 0))                                        { saveSong (false); return true; }
+    if (key == juce::KeyPress ('s', cmd | juce::ModifierKeys::shiftModifier, 0))     { saveSong (true); return true; }
+    if (key == juce::KeyPress ('o', cmd, 0))                                        { openSong(); return true; }
+    if (key == juce::KeyPress ('n', cmd, 0))                                        { newSong(); return true; }
     if (key == juce::KeyPress ('y', cmd, 0)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
@@ -529,6 +556,27 @@ void MainComponent::setBrowserVisible (bool shouldBeVisible)
 
 void MainComponent::timerCallback()
 {
+    // Unsaved changes: compare the song with how it was when last saved (every 2 s, if it changed).
+    if (++ticksSinceHashCheck >= 10 && songChanged)
+    {
+        ticksSinceHashCheck = 0;
+        songChanged = false;
+        const bool nowDirty = currentHash() != savedHash;
+
+        if (nowDirty != dirty)
+        {
+            dirty = nowDirty;
+            updateTitle();
+        }
+    }
+
+    // A backup every 3 minutes while there are changes.
+    if (++ticksSinceAutosave >= 5 * 180)
+    {
+        ticksSinceAutosave = 0;
+        autosave();
+    }
+
     // Recording starts/ends a moment after the button (the engine applies it).
     const bool recording = session.isRecording();
 
@@ -599,6 +647,354 @@ void MainComponent::showRecordSetupMenu()
     });
 }
 
+//==============================================================================
+// Song files
+juce::File MainComponent::songsFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("SyncTest Songs");
+}
+
+juce::File MainComponent::autosaveFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+             .getChildFile ("SyncTest").getChildFile ("Autosave");
+}
+
+juce::int64 MainComponent::currentHash() const
+{
+    auto* sync = const_cast<collab::Session&> (session).getSync();
+    return sync != nullptr ? sync->computeHash() : 0;
+}
+
+void MainComponent::updateTitle()
+{
+    auto* window = findParentComponentOfClass<juce::DocumentWindow>();
+
+    if (window == nullptr)
+        return;
+
+    auto title = session.getSongTitle() + (dirty ? " *" : "");
+
+    if (session.getMode() == collab::Session::Mode::joined)
+        title << "  (the host's song)";
+
+    title << "  -  SyncTest " << juce::JUCEApplication::getInstance()->getApplicationVersion();
+
+    if (window->getName() != title)
+        window->setName (title);
+}
+
+void MainComponent::showFileMenu()
+{
+    const bool canReplace = session.canReplaceSong();
+    juce::PopupMenu m, recent;
+
+    auto item = [] (int id, const juce::String& text, bool enabled, const juce::String& keys)
+    {
+        juce::PopupMenu::Item i (text);
+        i.itemID = id;
+        i.isEnabled = enabled;
+        i.shortcutKeyDescription = keys;
+        return i;
+    };
+
+    m.addItem (item (1, "New song", canReplace, "Ctrl+N"));
+    m.addItem (item (2, "Open...", canReplace, "Ctrl+O"));
+
+    recentFiles.createPopupMenuItems (recent, 100, false, true);
+
+    if (recent.getNumItems() == 0)
+        recent.addItem (-1, "(none yet)", false);
+
+    m.addSubMenu ("Open recent", recent, canReplace);
+    m.addSeparator();
+    m.addItem (item (3, "Save", true, "Ctrl+S"));
+    m.addItem (item (4, "Save as...", true, "Ctrl+Shift+S"));
+    m.addSeparator();
+    m.addItem (5, "Open an automatic backup...", canReplace);
+
+    if (! canReplace)
+    {
+        m.addSeparator();
+        m.addItem (-1, "(only the host can open or start songs during a session)", false);
+    }
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fileButton), [this] (int r)
+    {
+        if (r == 1)        newSong();
+        else if (r == 2)   openSong();
+        else if (r == 3)   saveSong (false);
+        else if (r == 4)   saveSong (true);
+        else if (r == 5)
+        {
+            askToSaveChanges ([this]
+            {
+                autosaveFolder().createDirectory();
+                fileChooser = std::make_unique<juce::FileChooser> ("Open an automatic backup", autosaveFolder(), "*.syncsong");
+                fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                          [this] (const juce::FileChooser& fc)
+                {
+                    if (fc.getResult().existsAsFile())
+                        openSongFile (fc.getResult());
+                });
+            });
+        }
+        else if (r >= 100)
+        {
+            const auto file = recentFiles.getFile (r - 100);
+            askToSaveChanges ([this, file] { openSongFile (file); });
+        }
+    });
+}
+
+void MainComponent::askToSaveChanges (std::function<void()> proceed)
+{
+    if (! dirty || session.getMode() == collab::Session::Mode::joined)
+    {
+        proceed();   // (a joiner's copy is the host's song: nothing of theirs to lose)
+        return;
+    }
+
+    auto options = juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, "Save changes?",
+                                                                    "Save the changes to \"" + session.getSongTitle() + "\" first?",
+                                                                    "Save", "Don't save", "Cancel", this);
+    juce::AlertWindow::showAsync (options, [safe = juce::Component::SafePointer<MainComponent> (this), proceed] (int result)
+    {
+        if (safe == nullptr)
+            return;
+
+        if (result == 1)
+            safe->saveSong (false, [proceed] (bool saved) { if (saved) proceed(); });
+        else if (result == 2)
+            proceed();
+    });
+}
+
+void MainComponent::newSong()
+{
+    if (! session.canReplaceSong())
+    {
+        appendLog ("Only the host can start a new song during a session");
+        return;
+    }
+
+    askToSaveChanges ([this]
+    {
+        const auto error = session.newProject();
+
+        if (error.isNotEmpty())
+        {
+            appendLog (error);
+            return;
+        }
+
+        currentFile = juce::File();
+        savedHash = lastAutosaveHash = currentHash();
+        dirty = false;
+        state.viewedPattern = state.selectedChannel = state.placeAudioChannel = state.selectedInsert = {};
+        appendLog ("New song");
+        refresh();
+    });
+}
+
+void MainComponent::openSong()
+{
+    if (! session.canReplaceSong())
+    {
+        appendLog ("Only the host can open a song during a session (you can still save your copy)");
+        return;
+    }
+
+    askToSaveChanges ([this]
+    {
+        songsFolder().createDirectory();
+        fileChooser = std::make_unique<juce::FileChooser> ("Open a song", currentFile.existsAsFile() ? currentFile : songsFolder(),
+                                                           juce::String ("*") + project::fileExtension);
+        fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this] (const juce::FileChooser& fc)
+        {
+            if (fc.getResult().existsAsFile())
+                openSongFile (fc.getResult());
+        });
+    });
+}
+
+void MainComponent::openSongFile (const juce::File& file)
+{
+    if (session.isBusyWithFile())
+    {
+        appendLog ("Still busy saving or opening the last song...");
+        return;
+    }
+
+    appendLog ("Opening " + file.getFileName() + "...");
+    expectingOwnSong = true;
+
+    session.openProject (file, [safe = juce::Component::SafePointer<MainComponent> (this), file] (juce::String error)
+    {
+        if (safe == nullptr)
+            return;
+
+        auto& self = *safe;
+        self.expectingOwnSong = false;
+
+        if (error.isNotEmpty())
+        {
+            self.appendLog ("Could not open " + file.getFileName() + ": " + error);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not open the song", error);
+            return;
+        }
+
+        self.currentFile = file.getParentDirectory() == autosaveFolder() ? juce::File() : file;   // backups: Save asks where
+        self.savedHash = self.lastAutosaveHash = self.currentHash();
+        self.dirty = false;
+        self.state.viewedPattern = self.state.selectedChannel = self.state.placeAudioChannel = self.state.selectedInsert = {};
+
+        if (self.currentFile != juce::File())
+        {
+            self.recentFiles.addFile (file);
+            self.appProperties.getUserSettings()->setValue ("recentSongs", self.recentFiles.toString());
+        }
+
+        self.refresh();
+    });
+}
+
+void MainComponent::saveSong (bool saveAs, std::function<void (bool)> then)
+{
+    if (session.isBusyWithFile())
+    {
+        appendLog ("Still busy saving or opening the last song...");
+
+        if (then)
+            then (false);
+
+        return;
+    }
+
+    if (! saveAs && currentFile != juce::File())
+    {
+        writeSong (currentFile, then);
+        return;
+    }
+
+    songsFolder().createDirectory();
+    const auto suggested = songsFolder().getChildFile (juce::File::createLegalFileName (session.getSongTitle()) + project::fileExtension);
+    fileChooser = std::make_unique<juce::FileChooser> ("Save the song", currentFile != juce::File() ? currentFile : suggested,
+                                                       juce::String ("*") + project::fileExtension);
+    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [this, then] (const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+
+        if (file == juce::File())
+        {
+            if (then)
+                then (false);
+
+            return;
+        }
+
+        writeSong (file.withFileExtension (project::fileExtension), then);
+    });
+}
+
+void MainComponent::writeSong (const juce::File& file, std::function<void (bool)> then)
+{
+    // The file name is the song's name (everyone sees it in their title bar).
+    const auto title = file.getFileNameWithoutExtension();
+
+    if (auto* edit = state.getEdit(); edit != nullptr && song::getTitle (*edit) != title)
+        song::setTitle (*edit, title);
+
+    appendLog ("Saving \"" + title + "\"...");
+
+    session.saveProject (file, true, [safe = juce::Component::SafePointer<MainComponent> (this), file, title, then]
+                                     (project::SaveResult result)
+    {
+        if (safe == nullptr)
+            return;
+
+        auto& self = *safe;
+
+        if (! result.ok())
+        {
+            self.appendLog ("Could not save: " + result.error);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not save the song", result.error);
+
+            if (then)
+                then (false);
+
+            return;
+        }
+
+        self.currentFile = file;
+        self.savedHash = result.songHash;
+        self.dirty = self.currentHash() != self.savedHash;   // changes made while it was saving stay unsaved
+        self.recentFiles.addFile (file);
+        self.appProperties.getUserSettings()->setValue ("recentSongs", self.recentFiles.toString());
+        self.updateTitle();
+
+        self.appendLog ("Saved \"" + title + "\" (" + juce::File::descriptionOfSizeInBytes (result.bytes)
+                         + (result.audioIncluded > 0 ? ", " + juce::String (result.audioIncluded) + " audio files inside" : juce::String())
+                         + ") to " + file.getParentDirectory().getFullPathName());
+
+        if (result.audioMissing > 0)
+            self.appendLog (juce::String (result.audioMissing) + " audio file(s) hadn't arrived on this PC yet and aren't in it");
+
+        if (then)
+            then (true);
+    });
+}
+
+void MainComponent::autosave()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr || session.isBusyWithFile() || session.isRecording())
+        return;
+
+    const auto hash = currentHash();
+
+    if (hash == savedHash || hash == lastAutosaveHash)
+        return;   // nothing new since the last save / backup
+
+    auto folder = autosaveFolder();
+    folder.createDirectory();
+    const auto file = folder.getChildFile (juce::File::createLegalFileName (session.getSongTitle() + " (backup "
+                                            + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ")")
+                                            + project::fileExtension);
+
+    // Song only: its audio files stay in this PC's audio folder anyway.
+    session.saveProject (file, false, [safe = juce::Component::SafePointer<MainComponent> (this), folder] (project::SaveResult result)
+    {
+        if (safe == nullptr)
+            return;
+
+        if (! result.ok())
+        {
+            safe->appendLog ("Automatic backup failed: " + result.error);
+            return;
+        }
+
+        safe->lastAutosaveHash = result.songHash;
+
+        // Keep the 10 newest backups.
+        auto backups = folder.findChildFiles (juce::File::findFiles, false, juce::String ("*") + project::fileExtension);
+        std::sort (backups.begin(), backups.end(), [] (const juce::File& a, const juce::File& b)
+                   { return a.getLastModificationTime() > b.getLastModificationTime(); });
+
+        for (int i = 10; i < backups.size(); ++i)
+            backups.getReference (i).deleteFile();
+    });
+}
+
+void MainComponent::requestQuit()
+{
+    askToSaveChanges ([] { juce::JUCEApplication::getInstance()->quit(); });
+}
+
 void MainComponent::showPluginScanner()
 {
     auto& pm = engine.getPluginManager();
@@ -644,6 +1040,8 @@ void MainComponent::resized()
     auto r = getLocalBounds().reduced (10);
 
     auto top = r.removeFromTop (28);
+    fileButton.setBounds (top.removeFromLeft (54));
+    top.removeFromLeft (8);
     hostButton.setBounds (top.removeFromLeft (70));
     top.removeFromLeft (8);
     portLabel.setBounds (top.removeFromLeft (36));

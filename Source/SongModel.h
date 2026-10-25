@@ -65,6 +65,7 @@ namespace song
         SONG_DECLARE_ID (rate)
         SONG_DECLARE_ID (numChannels)
         SONG_DECLARE_ID (bytes)
+        SONG_DECLARE_ID (title)
         #undef SONG_DECLARE_ID
     }
 
@@ -72,6 +73,10 @@ namespace song
     constexpr int stepsPerBar = 16;
 
     juce::String newSyncID();
+
+    /** The song's name (shared, shown in everyone's window title). */
+    juce::String getTitle (te::Edit&);
+    void setTitle (te::Edit&, const juce::String&);
 
     //==============================================================================
     // Patterns

@@ -42,6 +42,11 @@ public:
 
     static juce::String fingerprint (const juce::File&);
 
+    /** Takes a file that claims to be this asset (e.g. from a saved song) into the store,
+        if its content really matches the fingerprint. The file is moved. Only touches
+        the disk, so it may be called from a background thread. */
+    bool adoptFile (const juce::File& file, const juce::String& hash);
+
     //==============================================================================
     // Incoming transfers
     enum class ChunkResult { accepted, complete, failed, ignored };

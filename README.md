@@ -5,6 +5,30 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 6 – Saving and opening songs (v0.8)**
+* **File** button (top left): **New song** (Ctrl+N), **Open...** (Ctrl+O),
+  **Open recent**, **Save** (Ctrl+S), **Save as...** (Ctrl+Shift+S) and
+  **Open an automatic backup...**
+* A song is **one file** (`.syncsong`, in *Documents\SyncTest Songs* by
+  default) with **all its audio inside** (takes and imported files), so you can
+  move it to another PC or send it to a friend. Audio is checked when the song
+  is opened, so a damaged file never gets in.
+* The file name is the song's name; everyone sees it in their title bar. A
+  `*` there means there are unsaved changes. Closing the app, New or Open ask
+  *Save changes?* first.
+* **During a session** only the host can open a song or start a new one: it
+  replaces the song for everyone, and the others receive its audio
+  automatically. Everyone can save their own copy at any time.
+* **Automatic backups** every 3 minutes while there are changes (the 10 newest
+  are kept, in `%APPDATA%\SyncTest\Autosave`). They hold the song without the
+  audio (that stays on your PC).
+* Mixer: every effect slot has a **×** button to remove the effect (Ctrl+Z puts
+  it back). Right-click menus on effect slots, insert names and channel names
+  now work reliably on Windows.
+* When you host, the log shows your **Tailscale address** to give your friends.
+* A v0.7 copy can still join a v0.8 host, but it can't save or open songs, so
+  everyone should update.
+
 **Step 5 – Browser, people and chat (v0.7)**
 * **Browser** on the left (F8 or "<" hides it), with three tabs:
   * **Patterns** – every pattern. Click to open it, drag it onto the playlist,
@@ -26,7 +50,8 @@ Built step by step, with stability first.
   *instruments* (what your patterns play) or *audio (takes)*. Only on your
   screen.
 * Connecting over the internet still uses Tailscale (see below).
-* Copies from v0.6 and older can't join a v0.7 host (everyone needs v0.7).
+* Copies from v0.6 and older can't join a v0.7 host (everyone needs the same
+  version).
 
 **Step 4b – Recording (v0.6)**
 * Every mixer insert now has an **input** box (which socket of your audio
@@ -198,8 +223,12 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
   mono; no count-in, punch-in or loop recording yet. The engine places takes
   using the latency your interface's driver reports.
 * Chat isn't saved: it lives as long as the session (the host keeps it).
-* Not yet: solo and send knobs, saving projects.
-  Undo only undoes your own changes.
+* Plugins are saved with their settings, but each PC needs them installed to
+  hear them (as before).
+* Not yet: solo and send knobs. Undo only undoes your own changes, and it
+  starts fresh after opening a song.
+* Saving or opening a very big song (many long takes) can take a few seconds;
+  the app keeps working meanwhile.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -208,7 +237,9 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, Play/Stop,
-the playlist, the mixer, the people list and chat, split by channel (the song
+the playlist, the mixer, saving and opening songs (a fourth PC opening the
+saved file must get the identical song and audio; the host switching songs
+for everyone; IDs staying unique), the people list and chat, split by channel (the song
 must play exactly the same notes before and after), deleting audio from the
 project, recording from a simulated sound card (the take must
 line up with the song to the exact sample, and survive other people's edits),

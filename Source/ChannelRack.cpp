@@ -55,7 +55,7 @@ public:
 
         name.onClick = [this]
         {
-            if (juce::ModifierKeys::currentModifiers.isPopupMenu())
+            if (name.wasRightClick())
                 rack.showChannelMenu (channelID);
             else
                 select();
@@ -276,7 +276,8 @@ public:
     ChannelRack& rack;
     const juce::String channelID;
     const int index;
-    juce::TextButton mute, name, route;
+    juce::TextButton mute, route;
+    MenuButton name;
     ResetSlider volume, pan;
     bool paintValue = true;
     int lastStep = -1;

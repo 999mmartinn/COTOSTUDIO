@@ -104,6 +104,26 @@ AssetStore::ImportResult AssetStore::importAudioFile (const juce::File& source)
     return result;
 }
 
+bool AssetStore::adoptFile (const juce::File& file, const juce::String& hash)
+{
+    if (hash.length() != 32 || ! hash.containsOnly ("0123456789abcdef") || ! file.existsAsFile())
+        return false;
+
+    if (has (hash))
+    {
+        file.deleteFile();
+        return true;   // already here
+    }
+
+    if (fingerprint (file) != hash || ! file.moveFileTo (getFile (hash)))
+    {
+        file.deleteFile();
+        return false;
+    }
+
+    return true;
+}
+
 //==============================================================================
 AssetStore::ChunkResult AssetStore::receiveChunk (const juce::String& hash, juce::int64 offset, juce::int64 total,
                                                   const juce::MemoryBlock& data, int sourceTag)

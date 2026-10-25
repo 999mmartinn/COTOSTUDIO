@@ -52,7 +52,18 @@ public:
         engine.reset();
     }
 
-    void systemRequestedQuit() override                    { quit(); }
+    void systemRequestedQuit() override
+    {
+        // Ask to save changes first (the main window decides when to really quit).
+        if (mainWindow != nullptr)
+            if (auto* content = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
+            {
+                content->requestQuit();
+                return;
+            }
+
+        quit();
+    }
 
 private:
     class MainWindow  : public juce::DocumentWindow

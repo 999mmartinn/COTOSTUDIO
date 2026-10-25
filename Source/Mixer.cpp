@@ -118,7 +118,7 @@ public:
         {
             select();
 
-            if (juce::ModifierKeys::currentModifiers.isPopupMenu())
+            if (name.wasRightClick())
                 showMenu();
         };
 
@@ -416,7 +416,8 @@ public:
 
     Mixer& mixer;
     const juce::String insertID;
-    juce::TextButton name, mute, route, input, arm;
+    MenuButton name;
+    juce::TextButton mute, route, input, arm;
     MeterBar meter;
     ResetSlider fader, pan;
     juce::Label dbLabel;
@@ -433,10 +434,33 @@ public:
 
         for (int i = 0; i < numSlots; ++i)
         {
-            auto* b = buttons.add (new juce::TextButton());
+            auto* b = buttons.add (new MenuButton());
             b->onClick = [this, i] { slotClicked (i); };
             addAndMakeVisible (b);
+
+            // A visible way to take an effect out of the chain.
+            auto* x = removeButtons.add (new juce::TextButton (juce::String::fromUTF8 ("\xc3\x97")));
+            x->setTooltip ("Remove this effect");
+            x->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff5a3030));
+            x->onClick = [this, i] { removeEffect (i); };
+            addChildComponent (x);
         }
+    }
+
+    void removeEffect (int index)
+    {
+        auto* edit = mixer.state.getEdit();
+        auto chain = getChain();
+
+        if (edit == nullptr || ! juce::isPositiveAndBelow (index, chain.size()))
+            return;
+
+        te::Plugin::Ptr plugin (chain[index]);
+        const auto name = plugin->getName();
+        mixer.state.beginAction();
+        plugin->deleteFromParent();
+        mixer.state.session.logMessage ("Removed " + name + " (Ctrl+Z puts it back)");
+        mixer.refresh();
     }
 
     te::AudioTrack* getInsert() const
@@ -489,9 +513,11 @@ public:
                 b->setColour (juce::TextButton::buttonColourId, missing ? juce::Colours::darkred
                                                                 : p->isEnabled() ? juce::Colour (0xff3f4a57) : juce::Colour (0xff2c3138));
                 b->setTooltip ("Click: open. Right-click: bypass, move, replace, remove");
+                removeButtons[i]->setVisible (true);
             }
             else
             {
+                removeButtons[i]->setVisible (false);
                 b->setButtonText (juce::String (i + 1) + ".  + add effect");
                 b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff262b32));
                 b->setTooltip ("Click to add an effect here");
@@ -527,7 +553,7 @@ public:
 
         te::Plugin::Ptr plugin (chain[index]);
 
-        if (! juce::ModifierKeys::currentModifiers.isPopupMenu())
+        if (! button->wasRightClick())
         {
             plugin->showWindowExplicitly();
             return;
@@ -592,16 +618,20 @@ public:
         r.removeFromTop (4);
         const int h = juce::jlimit (18, 26, r.getHeight() / numSlots - 3);
 
-        for (auto* b : buttons)
+        for (int i = 0; i < buttons.size(); ++i)
         {
-            b->setBounds (r.removeFromTop (h));
+            auto row = r.removeFromTop (h);
+            removeButtons[i]->setBounds (row.removeFromRight (h + 4));
+            row.removeFromRight (3);
+            buttons[i]->setBounds (row);
             r.removeFromTop (3);
         }
     }
 
     Mixer& mixer;
     juce::Label title;
-    juce::OwnedArray<juce::TextButton> buttons;
+    juce::OwnedArray<MenuButton> buttons;
+    juce::OwnedArray<juce::TextButton> removeButtons;
 };
 
 //==============================================================================

@@ -9,6 +9,7 @@
 #include "PatternCompiler.h"
 #include "DrumSynthPlugin.h"
 #include "MixerRouter.h"
+#include "ProjectFile.h"
 
 namespace
 {
@@ -124,6 +125,7 @@ private:
     juce::File pluginFile, dumpDir;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     collab::Session host { engine }, peer1 { engine }, peer2 { engine };
+    collab::Session fourth { engine };   // a PC that only opens a saved song
     std::vector<Step> steps;
     size_t current = 0;
     bool actionRun = false;
@@ -140,6 +142,13 @@ private:
 
     // People, chat, browser
     juce::StringArray compiledBeforeSplit;
+
+    // Song files
+    juce::File projectFile;
+    project::SaveResult saveResult;
+    bool saveDone = false, openDone = false;
+    juce::String openError { "not done" }, newError { "not done" };
+    int resyncsBefore = 0, channelsBefore = 0;
 
     // Recording
     juce::String vocalsID, takeHash;
@@ -1479,6 +1488,127 @@ private:
                         && hashes.contains (bigHash);
                 })
                 && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        //==============================================================================
+        // Song files
+        steps.push_back ({ "Song file: host names the song and saves it with every audio file",
+            [this]
+            {
+                song::setTitle (H(), "test song");
+                projectFile = testRoot.getChildFile ("test song.syncsong");
+                host.saveProject (projectFile, true, [this] (project::SaveResult r) { saveResult = r; saveDone = true; });
+            },
+            [this]
+            {
+                if (! saveDone)
+                    return false;
+
+                std::cout << "    " << (saveResult.ok() ? "saved " + juce::File::descriptionOfSizeInBytes (saveResult.bytes)
+                                                          + ", " + juce::String (saveResult.audioIncluded) + " audio files inside"
+                                                        : "error: " + saveResult.error) << std::endl;
+
+                return saveResult.ok() && projectFile.existsAsFile() && saveResult.audioMissing == 0
+                    && saveResult.audioIncluded == song::getAssetHashes (H()).size() && hashesEqual();
+            },
+            30000, 600 });
+
+        steps.push_back ({ "Song file: a 4th PC (alone, empty audio folder) opens it -> identical song, audio restored and checked, same notes",
+            [this]
+            {
+                fourth.peerName = "fourth";
+                fourth.setAssetFolder (testRoot.getChildFile ("fourth-assets"));
+                fourth.openProject (projectFile, [this] (juce::String error) { openError = error; openDone = true; });
+            },
+            [this]
+            {
+                if (! openDone || fourth.getEdit() == nullptr)
+                    return false;
+
+                if (openError.isNotEmpty())
+                {
+                    std::cout << "    error: " << openError << std::endl;
+                    return false;
+                }
+
+                for (auto& h : song::getAssetHashes (*fourth.getEdit()))
+                    if (! hasVerified (fourth, h))
+                        return false;
+
+                fourth.setSongMode (host.isSongMode());
+
+                if (auto* c = fourth.getCompiler())     c->compileNow();
+                if (auto* c = host.getCompiler())       c->compileNow();
+
+                const bool sameSong = fourth.getSync()->computeHash() == host.getSync()->computeHash();
+                const bool sameNotes = allCompiled (fourth) == allCompiled (host);
+                std::cout << "    same song: " << (sameSong ? "yes" : "NO") << ", same notes: " << (sameNotes ? "yes" : "NO")
+                          << ", title: " << song::getTitle (*fourth.getEdit()) << std::endl;
+                return sameSong && sameNotes && song::getTitle (*fourth.getEdit()) == "test song";
+            },
+            30000 });
+
+        steps.push_back ({ "Song file: host starts a new song with both peers connected -> everyone gets it (no resync)",
+            [this]
+            {
+                resyncsBefore = peer1.getResyncCount() + peer2.getResyncCount();
+                newError = host.newProject();
+            },
+            [this]
+            {
+                return newError.isEmpty()
+                    && everywhere ([] (te::Edit& e)
+                       {
+                           return song::getChannels (e).size() == 5 && song::getPatterns (e).size() == 1
+                               && song::getClips (e).size() == 1 && song::getTitle (e) == "Untitled";
+                       })
+                    && hashesEqual() && peer1.getResyncCount() + peer2.getResyncCount() == resyncsBefore
+                    && everywhere ([] (te::Edit& e) { return idsUnique (e); });
+            },
+            10000, 600 });
+
+        steps.push_back ({ "Song file: host opens the saved song again -> both peers get it back with its audio, IDs stay unique",
+            [this]
+            {
+                openDone = false;
+                openError = "not done";
+                host.openProject (projectFile, [this] (juce::String error) { openError = error; openDone = true; });
+            },
+            [this]
+            {
+                if (! openDone || openError.isNotEmpty())
+                    return false;
+
+                for (auto* s : { &peer1, &peer2 })
+                    for (auto& h : song::getAssetHashes (*s->getEdit()))
+                        if (! hasVerified (*s, h))
+                            return false;
+
+                return hashesEqual() && compiledEqualEverywhere()
+                    && everywhere ([] (te::Edit& e)
+                       {
+                           return pat (e, "Beat - Kick").isValid() && song::getTitle (e) == "test song" && idsUnique (e);
+                       })
+                    && peer1.getResyncCount() + peer2.getResyncCount() == resyncsBefore;
+            },
+            30000, 600 });
+
+        steps.push_back ({ "Song file: afterwards peer 1 adds a channel and peer 2 a note -> everywhere, no ID clashes",
+            [this]
+            {
+                channelsBefore = song::getChannels (H()).size();
+                song::addChannel (P1(), song::InstrumentKind::synth);
+                song::setStep (P2(), pat (P2(), "Beat - Kick"), *ch (P2(), "Kick"), 6, true);
+            },
+            [this]
+            {
+                return hashesEqual() && compiledEqualEverywhere()
+                    && everywhere ([this] (te::Edit& e)
+                       {
+                           return song::getChannels (e).size() == channelsBefore + 1 && idsUnique (e)
+                               && hasStep (e, "Beat - Kick", "Kick", 6);
+                       });
             },
             8000, 600 });
 
