@@ -80,6 +80,8 @@ namespace song
     juce::ValueTree findPattern (te::Edit&, const juce::String& sid);
     juce::ValueTree addPattern (te::Edit&, const juce::String& name, int bars);
     void removePattern (te::Edit&, const juce::ValueTree& pattern);
+    /** A copy of a pattern with all its notes ("<name> copy"). */
+    juce::ValueTree clonePattern (te::Edit&, const juce::ValueTree& pattern);
     juce::String nextPatternName (te::Edit&);
     int getBars (const juce::ValueTree& pattern);
     int getNumSteps (const juce::ValueTree& pattern);
@@ -193,6 +195,27 @@ namespace song
 
     double beatsToSeconds (te::Edit&, double beats);
     double secondsToBeats (te::Edit&, double seconds);
+
+    //==============================================================================
+    // Browser (left panel)
+    /** Every audio file in the song (ASSET entries), in the order they were added. */
+    juce::Array<juce::ValueTree> getAssets (te::Edit&);
+    /** How many playlist clips play this file. */
+    int getAssetUseCount (te::Edit&, const juce::String& hash);
+    /** Renames a file in the song, and the audio channel(s) playing it. */
+    void renameAsset (te::Edit&, const juce::String& hash, const juce::String& newName);
+    /** The audio channel playing this file; a new one if its channel was deleted. */
+    te::AudioTrack* findOrCreateChannelForAsset (te::Edit&, const juce::String& hash);
+    /** Deletes a file from the song for good: its clips, its audio channel(s) and its entry. */
+    void removeAsset (te::Edit&, const juce::String& hash);
+
+    /** Channels that have notes in a pattern, in channel-rack order. */
+    juce::StringArray getPatternChannels (te::Edit&, const juce::ValueTree& pattern);
+    /** FL's "Split by channel": one new pattern per channel ("<name> - <channel>"); every
+        playlist clip of the old pattern is replaced by clips of the new ones on that track
+        and the ones below, so the song sounds the same. The old pattern is deleted.
+        Returns the new patterns (empty if the pattern uses fewer than two channels). */
+    juce::Array<juce::ValueTree> splitPatternByChannel (te::Edit&, const juce::ValueTree& pattern);
 
     //==============================================================================
     /** Fills an empty Edit with the default song: Kick, Clap, Hat, Snare, Synth and a beat. */

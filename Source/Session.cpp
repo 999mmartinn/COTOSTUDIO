@@ -332,6 +332,235 @@ void Session::attachSync()
 }
 
 //==============================================================================
+// People and chat
+static const juce::Identifier ROSTER ("ROSTER"), PERSON ("PERSON"), LINE ("LINE"),
+                              viewingID ("viewing"), recordingID ("recording"), colourID ("colour"),
+                              hostID ("host"), yourID ("yourId"), textID ("text"), systemID ("system"), timeID ("time");
+
+juce::Colour Session::personColour (int index)
+{
+    static const juce::uint32 palette[] = { 0xfff0a030, 0xff4fb0f0, 0xffe05a8a, 0xff6fd06f,
+                                            0xffb48cf0, 0xfff0e060, 0xff50d0c0, 0xfff07050 };
+    return juce::Colour (palette[(size_t) juce::jmax (0, index) % std::size (palette)]);
+}
+
+static juce::ValueTree chatToTree (const Session::ChatLine& line)
+{
+    juce::ValueTree v (LINE);
+    v.setProperty (ids::name, line.name, nullptr);
+    v.setProperty (textID, line.text, nullptr);
+    v.setProperty (timeID, line.time, nullptr);
+    v.setProperty (colourID, line.colour.toString(), nullptr);
+    v.setProperty (systemID, line.system, nullptr);
+    return v;
+}
+
+static Session::ChatLine treeToChat (const juce::ValueTree& v)
+{
+    Session::ChatLine line;
+    line.name = v[ids::name].toString().substring (0, 40);
+    line.text = v[textID].toString().substring (0, 500);
+    line.time = v[timeID].toString().substring (0, 8);
+    line.colour = juce::Colour::fromString (v[colourID].toString());
+    line.system = v[systemID];
+    return line;
+}
+
+static juce::String timeNow()
+{
+    return juce::Time::getCurrentTime().formatted ("%H:%M");
+}
+
+juce::Array<Session::Person> Session::getPeople() const
+{
+    juce::Array<Person> list;
+
+    if ((mode != Mode::hosting && mode != Mode::joined) || roster.getNumChildren() == 0)
+    {
+        Person me;
+        me.id = "0";
+        me.name = peerName;
+        me.viewing = viewingPattern;
+        me.colour = personColour (0);
+        me.isMe = true;
+        me.recording = isRecording();
+        list.add (me);
+        return list;
+    }
+
+    for (auto p : roster)
+    {
+        Person x;
+        x.id = p[ids::id].toString();
+        x.name = p[ids::name].toString();
+        x.viewing = p[viewingID].toString();
+        x.colour = personColour ((int) p[colourID]);
+        x.isHost = p[hostID];
+        x.recording = p[recordingID];
+        x.isMe = x.id == myRosterID;
+        list.add (x);
+    }
+
+    return list;
+}
+
+juce::Colour Session::myColour() const
+{
+    for (auto& p : getPeople())
+        if (p.isMe)
+            return p.colour;
+
+    return personColour (0);
+}
+
+void Session::setUserName (const juce::String& newName)
+{
+    const auto name = newName.trim().substring (0, 30);
+
+    if (name.isEmpty() || name == peerName)
+        return;
+
+    peerName = name;
+    sendPresence();
+}
+
+void Session::setViewingPattern (const juce::String& patternSid)
+{
+    if (patternSid == viewingPattern)
+        return;
+
+    viewingPattern = patternSid;
+    sendPresence();
+}
+
+void Session::sendPresence()
+{
+    if (mode == Mode::hosting)
+    {
+        rebuildRoster();
+    }
+    else if (mode == Mode::joined && hostLink != nullptr)
+    {
+        juce::ValueTree msg (ids::MSG);
+        msg.setProperty (ids::type, "presence", nullptr);
+        msg.setProperty (ids::name, peerName, nullptr);
+        msg.setProperty (viewingID, viewingPattern, nullptr);
+        msg.setProperty (recordingID, isRecording(), nullptr);
+        hostLink->sendTree (msg);
+    }
+    else if (onPeopleChanged)
+    {
+        onPeopleChanged();
+    }
+}
+
+void Session::rebuildRoster()
+{
+    if (mode != Mode::hosting)
+        return;
+
+    juce::ValueTree r (ROSTER);
+
+    auto addPerson = [&r] (const juce::String& id, const juce::String& name, const juce::String& viewing,
+                           bool recording, int colour, bool host)
+    {
+        juce::ValueTree p (PERSON);
+        p.setProperty (ids::id, id, nullptr);
+        p.setProperty (ids::name, name, nullptr);
+        p.setProperty (viewingID, viewing, nullptr);
+        p.setProperty (recordingID, recording, nullptr);
+        p.setProperty (colourID, colour, nullptr);
+        p.setProperty (hostID, host, nullptr);
+        r.appendChild (p, nullptr);
+    };
+
+    addPerson ("0", peerName, viewingPattern, isRecording(), 0, true);
+
+    {
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+            if (c->welcomed && ! c->dead)
+                addPerson (juce::String (c->tag), c->peerName, c->viewing, c->recording, c->colourIndex, false);
+    }
+
+    if (roster.isEquivalentTo (r))
+        return;
+
+    roster = r;
+    myRosterID = "0";
+
+    {
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)
+        {
+            if (! c->welcomed || c->dead)
+                continue;
+
+            juce::ValueTree msg (ids::MSG);
+            msg.setProperty (ids::type, "roster", nullptr);
+            msg.setProperty (yourID, juce::String (c->tag), nullptr);
+            msg.appendChild (r.createCopy(), nullptr);
+            c->sendTree (msg);
+        }
+    }
+
+    if (onPeopleChanged)
+        onPeopleChanged();
+}
+
+void Session::addChatLine (const ChatLine& line)
+{
+    chat.add (line);
+
+    while (chat.size() > 300)
+        chat.remove (0);
+
+    if (onChatChanged)
+        onChatChanged();
+}
+
+void Session::broadcastSystemChat (const juce::String& text)
+{
+    ChatLine line;
+    line.text = text;
+    line.time = timeNow();
+    line.colour = juce::Colours::grey;
+    line.system = true;
+    addChatLine (line);
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "chat", nullptr);
+    msg.appendChild (chatToTree (line), nullptr);
+    broadcast (msg, nullptr);
+}
+
+void Session::sendChat (const juce::String& textIn)
+{
+    const auto text = textIn.trim().substring (0, 500);
+
+    if (text.isEmpty())
+        return;
+
+    ChatLine line;
+    line.name = peerName;
+    line.text = text;
+    line.time = timeNow();
+    line.colour = myColour();
+    addChatLine (line);
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "chat", nullptr);
+    msg.appendChild (chatToTree (line), nullptr);
+
+    if (mode == Mode::hosting)
+        broadcast (msg, nullptr);
+    else if (mode == Mode::joined && hostLink != nullptr)
+        hostLink->sendTree (msg);
+}
+
+//==============================================================================
 bool Session::startHosting (int port)
 {
     leave();
@@ -351,6 +580,7 @@ bool Session::startHosting (int port)
     mode = Mode::hosting;
     peerIndex = 0;
     log ("Hosting on port " + juce::String (port));
+    rebuildRoster();
     statusChanged();
     return true;
 }
@@ -402,12 +632,18 @@ void Session::leave()
 
     hostLink.reset();
     pendingOps.removeAllChildren (nullptr);
+    roster = {};
+    myRosterID = "0";
+    nextColourIndex = 1;
 
     if (mode != Mode::offline)
     {
         mode = Mode::offline;
         log ("Left the session");
         statusChanged();
+
+        if (onPeopleChanged)
+            onPeopleChanged();
     }
 }
 
@@ -438,7 +674,16 @@ void Session::handleConnectionLost (PeerConnection& c)
     else
     {
         log ((c.peerName.isNotEmpty() ? c.peerName : juce::String ("A peer")) + " left");
+
+        if (c.welcomed && mode == Mode::hosting)
+        {
+            broadcastSystemChat ((c.peerName.isNotEmpty() ? c.peerName : juce::String ("A peer")) + " left");
+            rebuildRoster();   // c is marked dead, so it's no longer listed
+        }
     }
+
+    if (onPeopleChanged)
+        onPeopleChanged();
 
     statusChanged();
 }
@@ -464,9 +709,23 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
                 return;
             }
 
-            from.peerName = msg[ids::peerName].toString();
+            from.peerName = msg[ids::peerName].toString().substring (0, 30);
             sendSnapshotTo (from, "join");
             log (from.peerName + " joined as peer " + juce::String (from.peerIndex));
+
+            if (from.colourIndex < 0)
+                from.colourIndex = nextColourIndex++;
+
+            // The newcomer sees the recent chat, then everyone sees that they joined.
+            juce::ValueTree history (ids::MSG);
+            history.setProperty (ids::type, "chatHistory", nullptr);
+
+            for (int i = juce::jmax (0, chat.size() - 50); i < chat.size(); ++i)
+                history.appendChild (chatToTree (chat.getReference (i)), nullptr);
+
+            from.sendTree (history);
+            broadcastSystemChat (from.peerName + " joined");
+            rebuildRoster();
             statusChanged();
         }
         else if (type == "ops")
@@ -484,11 +743,69 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         {
             sendSnapshotTo (from, "resync");
         }
+        else if (type == "presence")
+        {
+            const auto name = msg[ids::name].toString().trim().substring (0, 30);
+
+            if (name.isNotEmpty())
+                from.peerName = name;
+
+            from.viewing = msg[viewingID].toString();
+            from.recording = msg[recordingID];
+            rebuildRoster();
+        }
+        else if (type == "chat" && msg.getNumChildren() == 1)
+        {
+            // Name and colour come from the connection, not from the message.
+            auto line = treeToChat (msg.getChild (0));
+            line.name = from.peerName;
+            line.colour = personColour (from.colourIndex);
+            line.system = false;
+
+            if (line.text.trim().isNotEmpty())
+            {
+                addChatLine (line);
+                juce::ValueTree relay (ids::MSG);
+                relay.setProperty (ids::type, "chat", nullptr);
+                relay.appendChild (chatToTree (line), nullptr);
+                broadcast (relay, &from);
+            }
+        }
 
         return;
     }
 
     // Joining side
+    if (type == "roster" && msg.getNumChildren() == 1)
+    {
+        roster = msg.getChild (0).createCopy();
+        myRosterID = msg[yourID].toString();
+
+        if (onPeopleChanged)
+            onPeopleChanged();
+
+        return;
+    }
+
+    if (type == "chat" && msg.getNumChildren() == 1)
+    {
+        addChatLine (treeToChat (msg.getChild (0)));
+        return;
+    }
+
+    if (type == "chatHistory")
+    {
+        chat.clear();
+
+        for (auto line : msg)
+            chat.add (treeToChat (line));
+
+        if (onChatChanged)
+            onChatChanged();
+
+        return;
+    }
+
     if (type == "snapshot")
         loadSnapshot (msg);
     else if (type == "ops")
@@ -620,7 +937,16 @@ void Session::applyTransport (const juce::ValueTree& msg)
     const bool recordingHere = isRecording();
 
     if (msg[ids::recordingBy].toString().isNotEmpty())
+    {
         log (msg[ids::recordingBy].toString() + " is recording - playing along");
+
+        ChatLine line;
+        line.text = msg[ids::recordingBy].toString() + " started recording";
+        line.time = timeNow();
+        line.colour = juce::Colours::grey;
+        line.system = true;
+        addChatLine (line);
+    }
 
     // While this PC records, nobody else can move its playhead (it would break the take).
     if (! (bool) msg[ids::patternOnly] && ! recordingHere)
@@ -858,7 +1184,10 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
         applyTransport (msg);
 
     if (reason == "join")
+    {
         log ("Got the song. You are peer " + juce::String (peerIndex));
+        sendPresence();   // which pattern I'm looking at
+    }
 
     statusChanged();
 }
@@ -886,6 +1215,12 @@ void Session::timerCallback()
 
     if (tick % 2 == 0)
         checkAssets();
+
+    if (isRecording() != presenceRecording)
+    {
+        presenceRecording = isRecording();
+        sendPresence();   // the others see a recording dot next to your name
+    }
 
     if (deferredSnapshot.isValid() && ! isRecording() && ! recorder->isBusy())
     {

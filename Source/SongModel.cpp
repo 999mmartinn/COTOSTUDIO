@@ -92,6 +92,17 @@ void removePattern (te::Edit& edit, const juce::ValueTree& pattern)
     parent.removeChild (pattern, um (edit));
 }
 
+juce::ValueTree clonePattern (te::Edit& edit, const juce::ValueTree& pattern)
+{
+    auto copy = addPattern (edit, pattern[ids::name].toString() + " copy", getBars (pattern));
+
+    for (auto n : pattern)
+        if (n.hasType (ids::PNOTE))
+            addNote (edit, copy, n[ids::ch].toString(), n[ids::p], n[ids::b], n[ids::l], n[ids::v]);
+
+    return copy;
+}
+
 //==============================================================================
 static juce::ValueTree getPlaylist (te::Edit& edit, bool createIfMissing)
 {
@@ -822,6 +833,165 @@ double beatsToSeconds (te::Edit& edit, double beats)
 double secondsToBeats (te::Edit& edit, double seconds)
 {
     return edit.tempoSequence.toBeats (te::TimePosition::fromSeconds (seconds)).inBeats();
+}
+
+//==============================================================================
+juce::Array<juce::ValueTree> getAssets (te::Edit& edit)
+{
+    juce::Array<juce::ValueTree> list;
+
+    for (auto a : getAssetsTree (edit, false))
+        if (a.hasType (ids::ASSET))
+            list.add (a);
+
+    return list;
+}
+
+int getAssetUseCount (te::Edit& edit, const juce::String& hash)
+{
+    int n = 0;
+
+    for (auto& c : getClips (edit))
+        if (isAudioClip (c) && c[ids::asset].toString() == hash)
+            ++n;
+
+    return n;
+}
+
+void renameAsset (te::Edit& edit, const juce::String& hash, const juce::String& newName)
+{
+    auto asset = findAsset (edit, hash);
+    const auto name = newName.trim().substring (0, 60);
+
+    if (! asset.isValid() || name.isEmpty())
+        return;
+
+    asset.setProperty (ids::name, name, um (edit));
+
+    for (auto* t : getChannels (edit))
+        if (isAudioChannel (*t) && getChannelAsset (edit, *t) == hash)
+            t->setName (name.upToLastOccurrenceOf (".", false, false).isNotEmpty()
+                          ? name.upToLastOccurrenceOf (".", false, false) : name);
+}
+
+te::AudioTrack* findOrCreateChannelForAsset (te::Edit& edit, const juce::String& hash)
+{
+    for (auto* t : getChannels (edit))
+        if (isAudioChannel (*t) && getChannelAsset (edit, *t) == hash)
+            return t;
+
+    const auto name = getAssetName (edit, hash);
+    auto* channel = addAudioChannel (edit, name.upToLastOccurrenceOf (".", false, false).isNotEmpty()
+                                             ? name.upToLastOccurrenceOf (".", false, false) : name);
+
+    if (channel != nullptr)
+        channel->state.setProperty (ids::asset, hash, um (edit));
+
+    return channel;
+}
+
+void removeAsset (te::Edit& edit, const juce::String& hash)
+{
+    // Its channels (and with them their clips)...
+    juce::Array<te::AudioTrack*> channels;
+
+    for (auto* t : getChannels (edit))
+        if (isAudioChannel (*t) && getChannelAsset (edit, *t) == hash)
+            channels.add (t);
+
+    for (auto* t : channels)
+        removeChannel (edit, *t);
+
+    // ...any clip still playing it, and its entry.
+    for (auto& c : getClips (edit))
+        if (isAudioClip (c) && c[ids::asset].toString() == hash)
+            removeClip (edit, c);
+
+    auto asset = findAsset (edit, hash);
+
+    if (asset.isValid())
+        asset.getParent().removeChild (asset, um (edit));
+}
+
+juce::StringArray getPatternChannels (te::Edit& edit, const juce::ValueTree& pattern)
+{
+    juce::StringArray ids_;
+
+    for (auto* t : getChannels (edit))
+        if (! getNotes (pattern, getChannelID (*t)).isEmpty())
+            ids_.add (getChannelID (*t));
+
+    return ids_;
+}
+
+juce::Array<juce::ValueTree> splitPatternByChannel (te::Edit& edit, const juce::ValueTree& pattern)
+{
+    juce::Array<juce::ValueTree> result;
+    const auto channels = getPatternChannels (edit, pattern);
+
+    if (! pattern.getParent().isValid() || channels.size() < 2)
+        return result;
+
+    const auto name = pattern[ids::name].toString();
+    const auto oldSid = pattern[ids::sid].toString();
+    const int bars = getBars (pattern);
+
+    for (auto& channelID : channels)
+    {
+        auto* t = findChannel (edit, channelID);
+        auto p = addPattern (edit, name + " - " + (t != nullptr ? t->getName() : juce::String ("?")), bars);
+
+        for (auto& n : getNotes (pattern, channelID))
+            addNote (edit, p, channelID, n[ids::p], n[ids::b], n[ids::l], n[ids::v]);
+
+        result.add (p);
+    }
+
+    // Each placement of the old pattern becomes one placement per new pattern: the
+    // first on the same track, the others on the next tracks below that are free at
+    // that time (so nothing ends up on top of other clips).
+    auto laneIsFree = [&] (int lane, double start, double end)
+    {
+        for (auto& other : getClips (edit))
+            if (other[ids::pattern].toString() != oldSid && (int) other[ids::lane] == lane
+                 && (double) other[ids::start] < end && (double) other[ids::start] + getClipLength (edit, other) > start)
+                return false;
+
+        return true;
+    };
+
+    for (auto& c : getClips (edit))
+    {
+        if (c[ids::pattern].toString() != oldSid)
+            continue;
+
+        const int lane = c[ids::lane];
+        const double start = c[ids::start];
+        const double end = start + (c.hasProperty (ids::length) ? juce::jmax (stepBeats, (double) c[ids::length])
+                                                               : (double) bars * 4.0);
+        int nextLane = lane;
+
+        for (int i = 0; i < result.size(); ++i)
+        {
+            int target = i == 0 ? lane : -1;
+
+            for (int l = nextLane; target < 0 && l < numLanes; ++l)
+                if (laneIsFree (l, start, end))
+                    target = l;
+
+            if (target < 0)
+                target = juce::jmin (numLanes - 1, lane + i);   // no free track left: stack below
+
+            nextLane = target + 1;
+            auto copy = addClip (edit, result[i][ids::sid].toString(), target, start);
+
+            if (c.hasProperty (ids::length))
+                copy.setProperty (ids::length, c[ids::length], um (edit));
+        }
+    }
+
+    removePattern (edit, pattern);   // also removes its old clips
+    return result;
 }
 
 void createDefaultSong (te::Edit& edit)

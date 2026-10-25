@@ -5,6 +5,29 @@ each using their own native **VST3 plugins** (Waves, FabFilter...).
 
 Built step by step, with stability first.
 
+**Step 5 – Browser, people and chat (v0.7)**
+* **Browser** on the left (F8 or "<" hides it), with three tabs:
+  * **Patterns** – every pattern. Click to open it, drag it onto the playlist,
+    double-click to rename. Right-click: rename, clone, **split by channel**
+    (like FL: one pattern per instrument, placed where the old one was, on
+    free tracks below, so the song sounds exactly the same) and delete.
+    A coloured dot shows who else is on that pattern right now.
+  * **Audio** – every recorded take and imported file, with its length and
+    whether it has arrived on your PC yet. Click it, then click in the
+    playlist to place it, or drag it onto a track. Right-click: rename, or
+    **delete from project** (its clips, its channel and the file entry go,
+    for everyone; Ctrl+Z brings it back). Dragging in a file whose channel was
+    deleted makes a new channel for it.
+  * **Session** – **your name** (remembered), **who is connected** (colour,
+    host, which pattern they're on, a red dot while they record) and **chat**.
+    Joining and leaving show up in the chat; someone who joins late sees the
+    recent messages. The tab shows unread messages: *Session (2)*.
+* **Channel rack filter** at the bottom of the rack: *all channels*,
+  *instruments* (what your patterns play) or *audio (takes)*. Only on your
+  screen.
+* Connecting over the internet still uses Tailscale (see below).
+* Copies from v0.6 and older can't join a v0.7 host (everyone needs v0.7).
+
 **Step 4b – Recording (v0.6)**
 * Every mixer insert now has an **input** box (which socket of your audio
   interface feeds it, e.g. *Input 1* = the mic on a UMC22's first input) and a
@@ -174,7 +197,8 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 * Recording: one take per armed insert each time you press Rec; inputs are
   mono; no count-in, punch-in or loop recording yet. The engine places takes
   using the latency your interface's driver reports.
-* Not yet: solo and send knobs, saving projects, chat.
+* Chat isn't saved: it lives as long as the session (the host keeps it).
+* Not yet: solo and send knobs, saving projects.
   Undo only undoes your own changes.
 * No encryption or passwords: only join people you trust, on a private network.
 
@@ -184,7 +208,9 @@ folder (`Assets-2`), so file sharing really happens, like with a second PC.
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, Play/Stop,
-the playlist, the mixer, recording from a simulated sound card (the take must
+the playlist, the mixer, the people list and chat, split by channel (the song
+must play exactly the same notes before and after), deleting audio from the
+project, recording from a simulated sound card (the take must
 line up with the song to the exact sample, and survive other people's edits),
 audio file sharing (each simulated PC has its own
 folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no

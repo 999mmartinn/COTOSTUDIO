@@ -73,6 +73,8 @@ MainComponent::MainComponent (te::Engine& e)
     appProperties.setStorageParameters (opts);
 
     auto* settings = appProperties.getUserSettings();
+    session.setUserName (settings->getValue ("userName", juce::SystemStats::getComputerName()));
+    browserVisible = settings->getBoolValue ("browserVisible", true);
     portEditor.setText (settings->getValue ("port", "47800"));
     addressEditor.setText (settings->getValue ("address", "127.0.0.1"));
     portEditor.setInputRestrictions (5, "0123456789");
@@ -81,7 +83,7 @@ MainComponent::MainComponent (te::Engine& e)
              &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
              &patModeButton, &songModeButton, &playButton, &recordButton, &tempoLabel, &tempoSlider, &patternLabel, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
-             &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
+             &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -142,6 +144,17 @@ MainComponent::MainComponent (te::Engine& e)
     patternMenuButton.onClick = [this] { showPatternMenu(); };
 
     state.onSelectionChanged = [this] { refresh(); };
+
+    // Browser (left): patterns, audio files, people + chat.
+    browser.onPatternChosen = [this] (const juce::String& sid) { selectPattern (sid); };
+    browser.onCollapse = [this] { setBrowserVisible (false); };
+    browser.onImportAudio = [this] { playlist.showImportDialog(); };
+    browser.onUserNameChanged = [this] (const juce::String& name) { appProperties.getUserSettings()->setValue ("userName", name); };
+    showBrowserButton.setTooltip ("Show the browser (F8)");
+    showBrowserButton.onClick = [this] { setBrowserVisible (true); };
+    session.onPeopleChanged = [this] { browser.refreshPeople(); };
+    session.onChatChanged = [this] { browser.refreshChat(); };
+    browser.refreshPeople();
 
     session.onLog = [this] (const juce::String& s) { appendLog (s); };
     session.onStatusChanged = [this] { triggerAsyncUpdate(); };
@@ -409,6 +422,8 @@ void MainComponent::refresh()
     }
 
     refreshPatternControls();
+    session.setViewingPattern (state.getPattern()[song::ids::sid].toString());   // the others see where you are
+    browser.refresh();
     playlist.refresh();
     rack.refresh();
     pianoRoll.refresh();
@@ -439,6 +454,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
     if (key == juce::KeyPress::F9Key)                                               { bottomTabs.setCurrentTabIndex (1); return true; }
+    if (key == juce::KeyPress::F8Key)                                               { setBrowserVisible (! browserVisible); return true; }
 
     return false;
 }
@@ -454,6 +470,7 @@ void MainComponent::showPatternMenu()
     juce::PopupMenu m;
     m.addItem (1, "Rename...");
     m.addItem (2, "Clone");
+    m.addItem (4, "Split by channel", song::getPatternChannels (*edit, pattern).size() >= 2);
     m.addItem (3, "Delete", song::getPatterns (*edit).size() > 1);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patternMenuButton), [this, pattern] (int r)
@@ -482,14 +499,16 @@ void MainComponent::showPatternMenu()
         else if (r == 2)
         {
             state.beginAction();
-            auto copy = song::addPattern (*e, pattern[song::ids::name].toString() + " copy", song::getBars (pattern));
-
-            for (auto n : pattern)
-                if (n.hasType (song::ids::PNOTE))
-                    song::addNote (*e, copy, n[song::ids::ch].toString(), n[song::ids::p], n[song::ids::b],
-                                   n[song::ids::l], n[song::ids::v]);
-
+            auto copy = song::clonePattern (*e, pattern);
             selectPattern (copy[song::ids::sid].toString());
+        }
+        else if (r == 4)
+        {
+            state.beginAction();
+            auto parts = song::splitPatternByChannel (*e, pattern);
+
+            if (! parts.isEmpty())
+                selectPattern (parts[0][song::ids::sid].toString());
         }
         else if (r == 3)
         {
@@ -499,6 +518,13 @@ void MainComponent::showPatternMenu()
             refresh();
         }
     });
+}
+
+void MainComponent::setBrowserVisible (bool shouldBeVisible)
+{
+    browserVisible = shouldBeVisible;
+    appProperties.getUserSettings()->setValue ("browserVisible", browserVisible);
+    resized();
 }
 
 void MainComponent::timerCallback()
@@ -668,6 +694,16 @@ void MainComponent::resized()
     r.removeFromTop (8);
     logView.setBounds (r.removeFromBottom (70));
     r.removeFromBottom (8);
+
+    browser.setVisible (browserVisible);
+    showBrowserButton.setVisible (! browserVisible);
+
+    if (browserVisible)
+        browser.setBounds (r.removeFromLeft (Browser::defaultWidth));
+    else
+        showBrowserButton.setBounds (r.removeFromLeft (18));
+
+    r.removeFromLeft (6);
 
     juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, &bottomTabs };
     panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);

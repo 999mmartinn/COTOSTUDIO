@@ -39,6 +39,9 @@ public:
     juce::String peerName;
     int lastSeqApplied = 0;      // host side: last op batch received from this peer
     bool welcomed = false;
+    juce::String viewing;        // host side: presence of this peer (pattern sid)
+    bool recording = false;
+    int colourIndex = -1;        // host side: this person's colour, kept for the whole connection
     std::atomic<bool> dead { false };
     const int tag;               // identifies this link for transfers
 
@@ -109,6 +112,36 @@ public:
     bool isRecording() const                     { return recorder != nullptr && recorder->isRecording(); }
     Recorder& getRecorder() noexcept             { return *recorder; }
 
+    //==============================================================================
+    // People and chat
+    struct Person
+    {
+        juce::String id, name, viewing;     // viewing = sid of the pattern they're looking at
+        juce::Colour colour;
+        bool isHost = false, isMe = false, recording = false;
+    };
+
+    struct ChatLine
+    {
+        juce::String name, text, time;      // time like "12:31"
+        juce::Colour colour;
+        bool system = false;                // "Ana joined" etc.
+    };
+
+    /** Your name as the others see it. */
+    void setUserName (const juce::String&);
+    juce::String getUserName() const              { return peerName; }
+    /** Tells the others which pattern you're looking at. */
+    void setViewingPattern (const juce::String& patternSid);
+    /** Everyone in the session (just you when offline), host first. */
+    juce::Array<Person> getPeople() const;
+    void sendChat (const juce::String& text);
+    const juce::Array<ChatLine>& getChat() const noexcept   { return chat; }
+    static juce::Colour personColour (int index);
+
+    std::function<void()> onPeopleChanged;
+    std::function<void()> onChatChanged;
+
     /** PAT / SONG mode, shared like play/stop. */
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
@@ -134,7 +167,7 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 5;
+    static constexpr int protocolVersion = 6;
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -171,6 +204,20 @@ private:
     int tick = 0, assetRequestRound = 0;
     std::map<juce::String, juce::uint32> lastAssetRequest;
     std::map<juce::String, juce::Array<int>> assetWantedBy;   // host: links waiting for a file it doesn't have yet
+
+    // People and chat
+    juce::ValueTree roster;              // PERSON children: built by the host, sent to everyone
+    juce::String myRosterID { "0" };
+    juce::String viewingPattern;
+    bool presenceRecording = false;
+    int nextColourIndex = 1;             // 0 is the host's
+    juce::Array<ChatLine> chat;
+
+    void sendPresence();
+    void rebuildRoster();                // host
+    void addChatLine (const ChatLine&);
+    void broadcastSystemChat (const juce::String& text);   // host
+    juce::Colour myColour() const;
 
     void installEdit (std::unique_ptr<te::Edit>);
     void attachSync();

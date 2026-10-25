@@ -5,6 +5,7 @@
 #include "PianoRoll.h"
 #include "Playlist.h"
 #include "Mixer.h"
+#include "Browser.h"
 
 //==============================================================================
 class MainComponent  : public juce::Component,
@@ -50,6 +51,10 @@ private:
     juce::Label tempoLabel { {}, "BPM" }, patternLabel { {}, "Pattern" }, playingLabel;
     juce::ComboBox patternBox, lengthBox;
 
+    Browser browser { state };
+    juce::TextButton showBrowserButton { ">" };
+    bool browserVisible = true;
+    void setBrowserVisible (bool);
     Playlist playlist { state };
     ChannelRack rack { engine, state };
     PianoRoll pianoRoll { state };

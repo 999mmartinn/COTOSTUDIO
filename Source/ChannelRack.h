@@ -30,7 +30,9 @@ private:
     juce::Component content;
     juce::Viewport viewport;
     juce::TextButton addButton { "+ Channel" };
+    juce::ComboBox filterBox;
     juce::StringArray rowIDs;
+    juce::Array<int> rowColourIndexes;
     int lastPlayhead = -2;
 
     void showAddChannelMenu();

@@ -290,6 +290,21 @@ ChannelRack::ChannelRack (te::Engine& e, EditorState& s) : engine (e), state (s)
     addAndMakeVisible (viewport);
     addAndMakeVisible (addButton);
     addButton.onClick = [this] { showAddChannelMenu(); };
+
+    // Like FL's channel filter: see only the instruments (your patterns) or only the audio (your takes).
+    filterBox.addItem ("Show: all channels", 1);
+    filterBox.addItem ("Show: instruments", 2);
+    filterBox.addItem ("Show: audio (takes)", 3);
+    filterBox.setSelectedId (1, juce::dontSendNotification);
+    filterBox.setTooltip ("Which channels the rack shows (only on your screen)");
+    filterBox.onChange = [this]
+    {
+        const int id = filterBox.getSelectedId();
+        state.rackFilter = id == 2 ? EditorState::RackFilter::instruments
+                         : id == 3 ? EditorState::RackFilter::audio : EditorState::RackFilter::all;
+        refresh();
+    };
+    addAndMakeVisible (filterBox);
     startTimerHz (30);
 }
 
@@ -302,18 +317,33 @@ void ChannelRack::refresh()
 {
     auto* edit = state.getEdit();
     juce::StringArray ids;
+    juce::Array<int> colourIndexes;   // position in the full list, so colours don't change with the filter
 
     if (edit != nullptr)
-        for (auto* t : song::getChannels (*edit))
-            ids.add (song::getChannelID (*t));
+    {
+        auto channels = song::getChannels (*edit);
 
-    if (ids != rowIDs)
+        for (int i = 0; i < channels.size(); ++i)
+        {
+            const bool audio = song::isAudioChannel (*channels[i]);
+
+            if ((state.rackFilter == EditorState::RackFilter::instruments && audio)
+                 || (state.rackFilter == EditorState::RackFilter::audio && ! audio))
+                continue;
+
+            ids.add (song::getChannelID (*channels[i]));
+            colourIndexes.add (i);
+        }
+    }
+
+    if (ids != rowIDs || colourIndexes != rowColourIndexes)
     {
         rows.clear();
         rowIDs = ids;
+        rowColourIndexes = colourIndexes;
 
         for (int i = 0; i < ids.size(); ++i)
-            content.addAndMakeVisible (rows.add (new Row (*this, ids[i], i)));
+            content.addAndMakeVisible (rows.add (new Row (*this, ids[i], colourIndexes[i])));
 
         layoutRows();
     }
@@ -331,7 +361,10 @@ void ChannelRack::paint (juce::Graphics& g)
 void ChannelRack::resized()
 {
     auto r = getLocalBounds().reduced (4);
-    addButton.setBounds (r.removeFromBottom (26).removeFromLeft (110));
+    auto bottom = r.removeFromBottom (26);
+    addButton.setBounds (bottom.removeFromLeft (110));
+    bottom.removeFromLeft (8);
+    filterBox.setBounds (bottom.removeFromLeft (170));
     r.removeFromBottom (4);
     viewport.setBounds (r);
     layoutRows();

@@ -21,6 +21,8 @@ public:
     ~Playlist() override;
 
     void refresh();
+    /** Asks for audio files and imports them at the song start marker. */
+    void showImportDialog();
     /** Imports audio files in the background and places them from a lane/beat on. */
     void importFiles (const juce::Array<juce::File>& files, int lane, double startBeat);
     void paint (juce::Graphics&) override;

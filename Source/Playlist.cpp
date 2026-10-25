@@ -25,38 +25,95 @@ class Playlist::Lanes  : public juce::Component,
 public:
     Lanes (Playlist& p) : owner (p), state (p.state) {}
 
-    // An audio channel dragged from the channel rack: drop it to place its file.
-    static juce::String draggedChannel (const SourceDetails& d)
+    // Things dragged in from inside the app: an audio channel (channel rack),
+    // a pattern or an audio file (browser). Each is "kind:id".
+    struct Dragged { juce::String kind, id; };
+
+    static Dragged dragged (const SourceDetails& d)
     {
-        auto text = d.description.toString();
-        return text.startsWith ("audioChannel:") ? text.fromFirstOccurrenceOf (":", false, false) : juce::String();
+        const auto text = d.description.toString();
+
+        for (auto* kind : { "audioChannel", "pattern", "asset" })
+            if (text.startsWith (juce::String (kind) + ":"))
+                return { kind, text.fromFirstOccurrenceOf (":", false, false) };
+
+        return {};
     }
 
-    bool isInterestedInDragSource (const SourceDetails& d) override   { return draggedChannel (d).isNotEmpty(); }
+    bool isInterestedInDragSource (const SourceDetails& d) override   { return dragged (d).kind.isNotEmpty(); }
 
     void itemDragMove (const SourceDetails& d) override
     {
-        dropPreview = { laneAtY (d.localPosition.y), snap (beatAtX (d.localPosition.x)), draggedChannel (d) };
+        const auto what = dragged (d);
+        dropPreview = { laneAtY (d.localPosition.y), snap (beatAtX (d.localPosition.x)), what.kind, what.id };
         repaint();
     }
 
     void itemDragExit (const SourceDetails&) override   { dropPreview = {}; repaint(); }
 
+    /** How long (in beats) the dragged thing would be at this spot, or 0. */
+    double previewLength (te::Edit& edit) const
+    {
+        const double beat = dropPreview.beat;
+
+        auto lengthOfFile = [&] (const juce::String& hash)
+        {
+            const double seconds = juce::jmax (0.05, getAssetSeconds (edit, hash));
+            return secondsToBeats (edit, beatsToSeconds (edit, beat) + seconds) - beat;
+        };
+
+        if (dropPreview.kind == "audioChannel")
+            if (auto* t = findChannel (edit, dropPreview.id))
+                return lengthOfFile (getChannelAsset (edit, *t));
+
+        if (dropPreview.kind == "asset")
+            return lengthOfFile (dropPreview.id);
+
+        if (dropPreview.kind == "pattern")
+        {
+            auto pattern = findPattern (edit, dropPreview.id);
+            return pattern.isValid() ? getLengthBeats (pattern) : 0.0;
+        }
+
+        return 0.0;
+    }
+
     void itemDropped (const SourceDetails& d) override
     {
         dropPreview = {};
         auto* edit = state.getEdit();
-        auto* channel = edit != nullptr ? findChannel (*edit, draggedChannel (d)) : nullptr;
+        const auto what = dragged (d);
+        const int lane = laneAtY (d.localPosition.y);
+        const double beat = snap (beatAtX (d.localPosition.x));
 
-        if (channel != nullptr)
+        if (edit == nullptr)
+            return;
+
+        if (what.kind == "pattern")
+        {
+            if (findPattern (*edit, what.id).isValid())
+            {
+                state.beginAction();
+                addClip (*edit, what.id, lane, beat);
+                state.viewedPattern = what.id;
+                state.placeAudioChannel = {};
+            }
+        }
+        else
         {
             state.beginAction();
-            placeAudioChannel (*edit, *channel, laneAtY (d.localPosition.y), snap (beatAtX (d.localPosition.x)));
-            state.selectedChannel = state.placeAudioChannel = getChannelID (*channel);
+            te::AudioTrack* channel = what.kind == "asset" ? findOrCreateChannelForAsset (*edit, what.id)
+                                                           : findChannel (*edit, what.id);
 
-            if (state.onSelectionChanged)
-                state.onSelectionChanged();
+            if (channel != nullptr)
+            {
+                placeAudioChannel (*edit, *channel, lane, beat);
+                state.selectedChannel = state.placeAudioChannel = getChannelID (*channel);
+            }
         }
+
+        if (state.onSelectionChanged)
+            state.onSelectionChanged();
 
         repaint();
     }
@@ -208,15 +265,16 @@ public:
                         juce::Justification::centredLeft, true);
         }
 
-        // Where an audio channel dragged from the channel rack would land
+        // Where something dragged in (rack or browser) would land
         if (dropPreview.lane >= 0)
         {
-            if (auto* t = findChannel (*edit, dropPreview.channelID))
+            const double length = previewLength (*edit);
+
+            if (length > 0.0)
             {
-                const double seconds = juce::jmax (0.05, getAssetSeconds (*edit, getChannelAsset (*edit, *t)));
-                const double endBeat = secondsToBeats (*edit, beatsToSeconds (*edit, dropPreview.beat) + seconds);
                 const juce::Rectangle<float> r (xForBeat (dropPreview.beat), (float) (dropPreview.lane * laneHeight) + 1.5f,
-                                                xForBeat (endBeat) - xForBeat (dropPreview.beat), (float) laneHeight - 3.0f);
+                                                xForBeat (dropPreview.beat + length) - xForBeat (dropPreview.beat),
+                                                (float) laneHeight - 3.0f);
                 g.setColour (juce::Colours::white.withAlpha (0.12f));
                 g.fillRoundedRectangle (r, 3.0f);
                 g.setColour (juce::Colours::white.withAlpha (0.8f));
@@ -465,7 +523,7 @@ private:
     Playlist& owner;
     EditorState& state;
     juce::ValueTree dragClip;
-    struct DropPreview { int lane = -1; double beat = 0.0; juce::String channelID; } dropPreview;
+    struct DropPreview { int lane = -1; double beat = 0.0; juce::String kind, id; } dropPreview;
     enum class DragMode { move, resize, trimStart } dragMode = DragMode::move;
     double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0;
     bool moved = false, clickedExisting = false;
@@ -586,37 +644,7 @@ Playlist::Playlist (EditorState& s) : state (s)
     formats.registerBasicFormats();
 
     importButton.setTooltip ("Add audio files (WAV, MP3, FLAC...) to the song. You can also drag them onto a lane");
-    importButton.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
-        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
-                                | juce::FileBrowserComponent::canSelectMultipleItems,
-                              [this] (const juce::FileChooser& fc)
-        {
-            auto* edit = state.getEdit();
-
-            if (edit == nullptr || fc.getResults().isEmpty())
-                return;
-
-            // First lane that is free at the song start marker.
-            int lane = 0;
-
-            for (; lane < numLanes - 1; ++lane)
-            {
-                bool busy = false;
-
-                for (auto& c : getClips (*edit))
-                    if ((int) c[ids::lane] == lane && (double) c[ids::start] <= state.songStartBeat
-                         && (double) c[ids::start] + getClipLength (*edit, c) > state.songStartBeat)
-                        busy = true;
-
-                if (! busy)
-                    break;
-            }
-
-            importFiles (fc.getResults(), lane, state.songStartBeat);
-        });
-    };
+    importButton.onClick = [this] { showImportDialog(); };
     addAndMakeVisible (importButton);
 
     snapBox.addItem ("Snap: bar", 1);
@@ -642,6 +670,38 @@ Playlist::~Playlist()
 
     for (auto& [hash, thumb] : thumbnails)
         thumb->removeAllChangeListeners();
+}
+
+void Playlist::showImportDialog()
+{
+    chooser = std::make_unique<juce::FileChooser> ("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                            | juce::FileBrowserComponent::canSelectMultipleItems,
+                          [this] (const juce::FileChooser& fc)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr || fc.getResults().isEmpty())
+            return;
+
+        // First lane that is free at the song start marker.
+        int lane = 0;
+
+        for (; lane < numLanes - 1; ++lane)
+        {
+            bool busy = false;
+
+            for (auto& c : getClips (*edit))
+                if ((int) c[ids::lane] == lane && (double) c[ids::start] <= state.songStartBeat
+                     && (double) c[ids::start] + getClipLength (*edit, c) > state.songStartBeat)
+                    busy = true;
+
+            if (! busy)
+                break;
+        }
+
+        importFiles (fc.getResults(), lane, state.songStartBeat);
+    });
 }
 
 juce::AudioThumbnail* Playlist::getThumbnail (const juce::String& hash)

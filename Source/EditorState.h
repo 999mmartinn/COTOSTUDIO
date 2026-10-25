@@ -17,6 +17,8 @@ struct EditorState
     juce::String placeAudioChannel; // if set, clicking empty playlist space places this audio
                                     // channel's file; otherwise the viewed pattern
     juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
+    enum class RackFilter { all, instruments, audio };
+    RackFilter rackFilter = RackFilter::all;   // which channels the rack shows (this PC only)
 
     std::function<void()> onSelectionChanged;
 

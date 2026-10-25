@@ -138,6 +138,9 @@ private:
     juce::String toneHash, voiceHash, bigHash;
     bool bigStillTransferring = false;
 
+    // People, chat, browser
+    juce::StringArray compiledBeforeSplit;
+
     // Recording
     juce::String vocalsID, takeHash;
     bool recordStarted = false;
@@ -263,6 +266,40 @@ private:
                 return c;
 
         return {};
+    }
+
+    static int chatCount (collab::Session& s, const juce::String& text)
+    {
+        int n = 0;
+
+        for (auto& line : s.getChat())
+            if (line.text == text)
+                ++n;
+
+        return n;
+    }
+
+    static juce::StringArray peopleNames (collab::Session& s)
+    {
+        juce::StringArray names;
+
+        for (auto& p : s.getPeople())
+            names.add (p.name + (p.isHost ? "*" : "") + (p.isMe ? "(me)" : ""));
+
+        return names;
+    }
+
+    /** Every channel's compiled notes, as one list (to compare what the song plays). */
+    juce::StringArray allCompiled (collab::Session& s)
+    {
+        juce::StringArray all;
+
+        for (auto* t : song::getChannels (*s.getEdit()))
+            for (auto& n : compiled (s, t->getName()))
+                all.add (t->getName() + ":" + n);
+
+        all.sort (false);
+        return all;
     }
 
     static juce::ValueTree clipOfChannel (te::Edit& e, const juce::String& channelName)
@@ -498,6 +535,62 @@ private:
             [this] { dump ("host-after-join", H()); dump ("peer1-after-join", P1()); },
             [this] { return hashesEqual() && peer1.getResyncCount() == 0 && peer2.getResyncCount() == 0; },
             8000, 4000 });
+
+        //==============================================================================
+        // People and chat
+        steps.push_back ({ "People: everyone sees the same 3 people (host marked, 'me' marked on each PC)",
+            {},
+            [this]
+            {
+                auto h = peopleNames (host), a = peopleNames (peer1), b = peopleNames (peer2);
+                const bool ok = h.size() == 3 && a.size() == 3 && b.size() == 3
+                    && h[0] == "host*(me)" && a.contains ("peer1(me)") && b.contains ("peer2(me)")
+                    && a.contains ("host*") && b.contains ("peer1") && h.contains ("peer2");
+
+                if (ok)
+                    std::cout << "    peer 1 sees: " << a.joinIntoString (", ") << std::endl;
+
+                return ok;
+            } });
+
+        steps.push_back ({ "People: peer 2 opens Pattern 1 -> host and peer 1 see where peer 2 is",
+            [this] { peer2.setViewingPattern (pat (P2(), "Pattern 1")[song::ids::sid].toString()); },
+            [this]
+            {
+                const auto sid = pat (H(), "Pattern 1")[song::ids::sid].toString();
+
+                auto seesPeer2There = [&sid] (collab::Session& s)
+                {
+                    for (auto& p : s.getPeople())
+                        if (p.name == "peer2")
+                            return p.viewing == sid;
+
+                    return false;
+                };
+
+                return seesPeer2There (host) && seesPeer2There (peer1);
+            } });
+
+        steps.push_back ({ "Chat: peer 2 and the host write -> every message reaches everyone exactly once",
+            [this]
+            {
+                peer2.sendChat ("hello from peer 2");
+                host.sendChat ("hi, host here");
+            },
+            [this]
+            {
+                for (auto* sess : { &host, &peer1, &peer2 })
+                    if (chatCount (*sess, "hello from peer 2") != 1 || chatCount (*sess, "hi, host here") != 1)
+                        return false;
+
+                // Names come from who really sent it.
+                for (auto& line : peer1.getChat())
+                    if (line.text == "hello from peer 2" && line.name != "peer2")
+                        return false;
+
+                return chatCount (host, "peer2 joined") == 1;
+            },
+            8000, 600 });
 
         steps.push_back ({ "Host clicks a step (Kick, step 3) -> lit everywhere and compiled into playback",
             [this] { song::setStep (H(), pat (H(), "Pattern 1"), *ch (H(), "Kick"), 2, true); },
@@ -1235,9 +1328,26 @@ private:
             [this] { return hasStep (P2(), "Pattern 1", "Hat", 15) && host.getNumConnectedPeers() == 1; },
             8000, 1600 });
 
+        steps.push_back ({ "People: host and peer 2 see that peer 1 left (list and chat)",
+            {},
+            [this]
+            {
+                return peopleNames (host).size() == 2 && peopleNames (peer2).size() == 2
+                    && ! peopleNames (peer2).contains ("peer1")
+                    && chatCount (host, "peer1 left") == 1 && chatCount (peer2, "peer1 left") == 1;
+            } });
+
         steps.push_back ({ "Peer 1 rejoins and gets the latest song",
             [this] { peer1.join ("127.0.0.1", port); },
             [this] { return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15); } });
+
+        steps.push_back ({ "People: peer 1 is back in everyone's list and got the earlier chat",
+            {},
+            [this]
+            {
+                return peopleNames (host).size() == 3 && peopleNames (peer2).contains ("peer1")
+                    && chatCount (peer1, "hello from peer 2") == 1 && chatCount (peer2, "peer1 joined") >= 2;
+            } });
 
         steps.push_back ({ "Audio: the rejoined peer (no files) receives every audio file in the song",
             {},
@@ -1250,6 +1360,127 @@ private:
                 return hasVerified (peer1, toneHash) && hasVerified (peer1, bigHash) && compiledEqualEverywhere();
             },
             40000 });
+
+        //==============================================================================
+        // Browser: split by channel, deleting audio from the project
+        steps.push_back ({ "Browser: host makes pattern 'Beat' (Kick + Hat) and places it twice (bar 11, lane 7 and bar 13, lane 9)",
+            [this]
+            {
+                host.setSongMode (true);
+                auto beat = song::addPattern (H(), "Beat", 1);
+
+                for (int step : { 0, 4, 8, 12 })
+                    song::setStep (H(), beat, *ch (H(), "Kick"), step, true);
+
+                for (int step : { 2, 6, 10, 14 })
+                    song::setStep (H(), beat, *ch (H(), "Hat"), step, true);
+
+                song::addClip (H(), beat[song::ids::sid].toString(), 6, 40.0);
+                auto second = song::addClip (H(), beat[song::ids::sid].toString(), 8, 48.0);
+                second.setProperty (song::ids::length, 2.0, &H().getUndoManager());   // a shortened placement
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return pat (e, "Beat").isValid(); })
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Browser: peer 1 splits 'Beat' by channel -> 'Beat - Kick' + 'Beat - Hat' everywhere, the song plays the same notes",
+            [this]
+            {
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                compiledBeforeSplit = allCompiled (host);
+                P1().getUndoManager().beginNewTransaction();
+                auto parts = song::splitPatternByChannel (P1(), pat (P1(), "Beat"));
+                std::cout << "    split into " << parts.size() << " patterns" << std::endl;
+            },
+            [this]
+            {
+                const bool structure = everywhere ([] (te::Edit& e)
+                {
+                    auto kick = pat (e, "Beat - Kick"), hat = pat (e, "Beat - Hat");
+                    int kickClips = 0, hatClips = 0;
+
+                    for (auto& c : song::getClips (e))
+                    {
+                        if (c[song::ids::pattern].toString() == kick[song::ids::sid].toString())  ++kickClips;
+                        if (c[song::ids::pattern].toString() == hat[song::ids::sid].toString())   ++hatClips;
+                    }
+
+                    // Each placement: Kick and Hat parts at the same time, on different tracks.
+                    bool separateTracks = true;
+
+                    for (auto& k : song::getClips (e))
+                    {
+                        if (k[song::ids::pattern].toString() != kick[song::ids::sid].toString())
+                            continue;
+
+                        bool found = false;
+
+                        for (auto& h : song::getClips (e))
+                            if (h[song::ids::pattern].toString() == hat[song::ids::sid].toString()
+                                 && (double) h[song::ids::start] == (double) k[song::ids::start]
+                                 && (int) h[song::ids::lane] != (int) k[song::ids::lane])
+                                found = true;
+
+                        separateTracks = separateTracks && found;
+                    }
+
+                    return ! pat (e, "Beat").isValid() && kick.isValid() && hat.isValid()
+                        && song::getNotes (kick, song::getChannelID (*ch (e, "Kick"))).size() == 4
+                        && song::getNotes (hat, song::getChannelID (*ch (e, "Hat"))).size() == 4
+                        && kickClips == 2 && hatClips == 2 && separateTracks;
+                });
+
+                if (! structure || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                const auto after = allCompiled (host);
+                std::cout << "    notes the song plays: " << compiledBeforeSplit.size() << " before, " << after.size()
+                          << " after, identical: " << (after == compiledBeforeSplit ? "yes" : "NO") << std::endl;
+                return after == compiledBeforeSplit && ! compiledBeforeSplit.isEmpty();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Browser: peer 2 drags the unused 'voice' file back in -> a new 'voice' channel and clip everywhere",
+            [this]
+            {
+                if (auto* channel = song::findOrCreateChannelForAsset (P2(), voiceHash))
+                    song::placeAudioChannel (P2(), *channel, 10, 60.0);
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e) { return ch (e, "voice") != nullptr && audioClipOf (e, voiceHash).isValid(); })
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Browser: host deletes 'voice' and 'tone' from the project -> clips, channels and files gone everywhere",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::removeAsset (H(), voiceHash);
+                song::removeAsset (H(), toneHash);
+            },
+            [this]
+            {
+                return everywhere ([this] (te::Edit& e)
+                {
+                    const auto hashes = song::getAssetHashes (e);
+                    return ch (e, "voice") == nullptr && ch (e, "tone") == nullptr
+                        && ! audioClipOf (e, voiceHash).isValid() && ! audioClipOf (e, toneHash).isValid()
+                        && ! hashes.contains (voiceHash) && ! hashes.contains (toneHash)
+                        && hashes.contains (bigHash);
+                })
+                && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },
