@@ -16,6 +16,7 @@
 #include "SamplerPlugin.h"
 #include "SamplePreviewer.h"
 #include "FileImport.h"
+#include "AppData.h"
 
 namespace
 {
@@ -234,7 +235,9 @@ private:
     juce::StringArray compiledBeforeSplit;
 
     // Song files
-    juce::File projectFile;
+    juce::File projectFile, legacyFile;
+    appdata::MigrationResult migrationResult;
+    juce::String migrationHash;
     project::SaveResult saveResult;
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
@@ -2326,11 +2329,11 @@ private:
 
         //==============================================================================
         // Song files
-        steps.push_back ({ "Song file: host names the song and saves it with every audio file",
+        steps.push_back ({ "Song file: host names the song and saves it -> a project folder: the song, Audio\\ and Takes\\ with readable names",
             [this]
             {
                 song::setTitle (H(), "test song");
-                projectFile = testRoot.getChildFile ("test song.syncsong");
+                projectFile = appdata::projectSongFile (testRoot.getChildFile ("Projects").getChildFile ("test song.cotosong"));
                 host.saveProject (projectFile, true, [this] (project::SaveResult r) { saveResult = r; saveDone = true; });
             },
             [this]
@@ -2338,14 +2341,45 @@ private:
                 if (! saveDone)
                     return false;
 
-                std::cout << "    " << (saveResult.ok() ? "saved " + juce::File::descriptionOfSizeInBytes (saveResult.bytes)
-                                                          + ", " + juce::String (saveResult.audioIncluded) + " audio files inside"
-                                                        : "error: " + saveResult.error) << std::endl;
+                const auto folder = projectFile.getParentDirectory();
+                juce::StringArray audioFiles, takeFiles;
 
-                return saveResult.ok() && projectFile.existsAsFile() && saveResult.audioMissing == 0
-                    && saveResult.audioIncluded == song::getAssetHashes (H()).size() && hashesEqual();
+                for (auto& f : folder.getChildFile ("Audio").findChildFiles (juce::File::findFiles, false))  audioFiles.add (f.getFileName());
+                for (auto& f : folder.getChildFile ("Takes").findChildFiles (juce::File::findFiles, false))  takeFiles.add (f.getFileName());
+
+                audioFiles.sort (true);
+                takeFiles.sort (true);
+                std::cout << "    " << (saveResult.ok() ? "saved " + juce::File::descriptionOfSizeInBytes (saveResult.bytes)
+                                                          + " in " + folder.getFileName() + ", " + juce::String (saveResult.audioIncluded) + " audio files"
+                                                        : "error: " + saveResult.error) << std::endl;
+                std::cout << "    Audio: " << audioFiles.joinIntoString (", ") << "  |  Takes: " << takeFiles.joinIntoString (", ") << std::endl;
+
+                return saveResult.ok() && projectFile.existsAsFile() && folder.getFileName() == "test song"
+                    && saveResult.audioMissing == 0
+                    && saveResult.audioIncluded == song::getAssetHashes (H()).size()
+                    && audioFiles.size() + takeFiles.size() == saveResult.audioIncluded
+                    && takeFiles.contains ("Vocals take 1.flac") && audioFiles.contains ("big.flac")
+                    && hashesEqual();
             },
             30000, 600 });
+
+        steps.push_back ({ "Song file: saving again copies no audio twice",
+            [this]
+            {
+                saveDone = false;
+                host.saveProject (projectFile, true, [this] (project::SaveResult r) { saveResult = r; saveDone = true; });
+            },
+            [this]
+            {
+                if (! saveDone)
+                    return false;
+
+                const int files = projectFile.getParentDirectory().getChildFile ("Audio").getNumberOfChildFiles (juce::File::findFiles)
+                                + projectFile.getParentDirectory().getChildFile ("Takes").getNumberOfChildFiles (juce::File::findFiles);
+                std::cout << "    new audio files written: " << saveResult.audioWritten << ", files in the folder: " << files << std::endl;
+                return saveResult.ok() && saveResult.audioWritten == 0 && files == saveResult.audioIncluded;
+            },
+            30000 });
 
         steps.push_back ({ "Song file: a 4th PC (alone, empty audio folder) opens it -> identical song, audio restored and checked, same notes",
             [this]
@@ -2381,6 +2415,100 @@ private:
                 return sameSong && sameNotes && song::getTitle (*fourth.getEdit()) == "test song";
             },
             30000 });
+
+        steps.push_back ({ "Song file: an older .syncsong (audio inside the file) still opens on a PC without the audio",
+            [this]
+            {
+                // Built the way older versions saved: song.xml + audio/<fingerprint>.flac in one zip.
+                legacyFile = testRoot.getChildFile ("legacy").getChildFile ("test song.syncsong");   // (same name: same song title)
+                legacyFile.getParentDirectory().createDirectory();
+                juce::ZipFile::Builder zip;
+                juce::XmlElement info ("SYNCSONG");
+                info.setAttribute ("format", 1);
+                const auto infoText = info.toString(), songText = host.getSync()->createSnapshot().toXmlString();
+                zip.addEntry (new juce::MemoryInputStream (infoText.toRawUTF8(), infoText.getNumBytesAsUTF8(), true), 9, "info.xml", {});
+                zip.addEntry (new juce::MemoryInputStream (songText.toRawUTF8(), songText.getNumBytesAsUTF8(), true), 9, "song.xml", {});
+
+                for (auto& h : song::getAssetHashes (H()))
+                    zip.addFile (host.getAssetStore().getFile (h), 0, "audio/" + h + ".flac");
+
+                juce::FileOutputStream out (legacyFile);
+                zip.writeToStream (out, nullptr);
+                out.flush();
+
+                openDone = false;
+                openError = "not done";
+                fourth.setAssetFolder (testRoot.getChildFile ("fourth-assets-2"));   // empty again
+                fourth.openProject (legacyFile, [this] (juce::String error) { openError = error; openDone = true; });
+            },
+            [this]
+            {
+                if (! openDone || fourth.getEdit() == nullptr)
+                    return false;
+
+                for (auto& h : song::getAssetHashes (*fourth.getEdit()))
+                    if (! hasVerified (fourth, h))
+                        return false;
+
+                return openError.isEmpty() && fourth.getSync()->computeHash() == host.getSync()->computeHash();
+            },
+            30000 });
+
+        steps.push_back ({ "Data folder: the files of the old version move off C: into the new folder (settings, audio, backups, songs, exports)",
+            [this]
+            {
+                // An old PC: %APPDATA%\\SyncTest and Documents\\SyncTest Songs.
+                const auto old = testRoot.getChildFile ("old-pc");
+                const auto appData = old.getChildFile ("AppData").getChildFile ("SyncTest");
+                const auto songs = old.getChildFile ("Documents").getChildFile ("SyncTest Songs");
+                const auto hash = song::getAssetHashes (H())[0];
+                appData.getChildFile ("Assets").createDirectory();
+                host.getAssetStore().getFile (hash).copyFileTo (appData.getChildFile ("Assets").getChildFile (hash + ".flac"));
+                appData.getChildFile ("Assets-recordings").getChildFile ("take1.wav").create();
+                appData.getChildFile ("Temporary").getChildFile ("x.tmp").create();
+                appData.getChildFile ("Autosave").createDirectory();
+                appData.getChildFile ("Autosave").getChildFile ("a (backup).syncsong").replaceWithText ("backup");
+                appData.getChildFile ("Settings.xml").replaceWithText ("<PROPERTIES/>");
+                songs.createDirectory();
+                legacyFile.copyFileTo (songs.getChildFile ("My Song.syncsong"));
+                songs.getChildFile ("Exports").getChildFile ("My Song - stems").createDirectory();
+                songs.getChildFile ("Exports").getChildFile ("My Song.wav").replaceWithText ("wav");
+                songs.getChildFile ("Exports").getChildFile ("My Song - stems").getChildFile ("01 Drums.wav").replaceWithText ("wav");
+
+                {
+                    juce::PropertiesFile oldSettings (appData.getChildFile ("SyncTest.settings"), juce::PropertiesFile::Options());
+                    oldSettings.setValue ("userName", "Martin");
+                    oldSettings.setValue ("recentSongs", songs.getChildFile ("My Song.syncsong").getFullPathName());
+                    oldSettings.saveIfNeeded();
+                }
+
+                const auto root = testRoot.getChildFile ("new-data-folder");
+                const auto plan = appdata::planMigration (appData, songs, root);
+                migrationResult = appdata::runMigration (plan, {});
+                migrationHash = hash;
+            },
+            [this]
+            {
+                const auto old = testRoot.getChildFile ("old-pc");
+                const auto root = testRoot.getChildFile ("new-data-folder");
+                const auto song = root.getChildFile ("Projects").getChildFile ("My Song").getChildFile ("My Song.syncsong");
+                juce::PropertiesFile settings (root.getChildFile ("Settings").getChildFile ("COTOSTUDIO.settings"), juce::PropertiesFile::Options());
+
+                std::cout << "    moved " << migrationResult.filesMoved << " files (" << migrationResult.bytesMoved << " bytes), "
+                          << migrationResult.failures << " failures; recent songs: " << settings.getValue ("recentSongs") << std::endl;
+
+                return migrationResult.failures == 0
+                    && song.existsAsFile()
+                    && settings.getValue ("userName") == "Martin" && settings.getValue ("recentSongs") == song.getFullPathName()
+                    && root.getChildFile ("Settings").getChildFile ("Settings.xml").existsAsFile()
+                    && AssetStore::fingerprint (root.getChildFile ("Cache").getChildFile ("Audio").getChildFile (migrationHash + ".flac")) == migrationHash
+                    && root.getChildFile ("Backups").getChildFile ("a (backup).syncsong").existsAsFile()
+                    && root.getChildFile ("Exports").getChildFile ("My Song.wav").existsAsFile()
+                    && root.getChildFile ("Exports").getChildFile ("My Song - stems").getChildFile ("01 Drums.wav").existsAsFile()
+                    && ! old.getChildFile ("AppData").getChildFile ("SyncTest").exists()          // nothing left on "C:"
+                    && ! old.getChildFile ("Documents").getChildFile ("SyncTest Songs").exists();
+            },
+            4000 });
 
         steps.push_back ({ "Song file: host starts a new song with both peers connected -> everyone gets it (no resync)",
             [this]

@@ -1,4 +1,5 @@
 #include "ProjectFile.h"
+#include "AppData.h"
 
 namespace project
 {
@@ -9,8 +10,105 @@ static juce::InputStream* streamOf (const juce::String& text)
     return new juce::MemoryInputStream (std::move (data), true);
 }
 
+static juce::String readEntry (juce::ZipFile& zip, const juce::String& name);
+
+std::map<juce::String, juce::String> readAudioList (const juce::File& songFile)
+{
+    std::map<juce::String, juce::String> list;
+
+    if (! songFile.existsAsFile())
+        return list;
+
+    juce::ZipFile zip (songFile);
+
+    if (auto xml = juce::parseXML (readEntry (zip, "audio.xml")))
+        for (auto* e : xml->getChildWithTagNameIterator ("FILE"))
+            list[e->getStringAttribute ("path")] = e->getStringAttribute ("hash");
+
+    return list;
+}
+
+/** Puts the song's audio into Audio\ and Takes\ next to the song file; returns the list for audio.xml. */
+static std::unique_ptr<juce::XmlElement> writeAudioFolder (const juce::File& target, const AssetStore& assets,
+                                                            const std::vector<AudioFile>& audio, SaveResult& result)
+{
+    auto list = std::make_unique<juce::XmlElement> ("AUDIO");
+    const auto folder = target.getParentDirectory();
+    const auto before = readAudioList (target);   // what the last save put there
+    std::set<juce::String> used;
+
+    for (auto& a : audio)
+    {
+        if (a.hash.isEmpty())
+            continue;
+
+        // Readable name: "Kick Hard.wav" -> Audio\Kick Hard.flac, takes -> Takes\Vocals take 1.flac
+        const auto base = a.name.upToLastOccurrenceOf (".", false, false);
+        auto stem = juce::File::createLegalFileName (base.isNotEmpty() ? base : a.name).trim();
+
+        if (stem.isEmpty())
+            stem = "Sound";
+
+        const juce::String sub (a.isTake ? "Takes" : "Audio");
+        juce::String path;
+
+        for (int n = 1;; ++n)
+        {
+            path = sub + "/" + stem + (n > 1 ? " (" + juce::String (n) + ")" : juce::String()) + ".flac";
+
+            if (used.count (path) > 0)
+                continue;   // another sound of this song has that name
+
+            const auto file = folder.getChildFile (path);
+
+            if (! file.existsAsFile())
+                break;
+
+            // Already there: this sound (from the last save, or checked), or something else (try another name).
+            auto it = before.find (path);
+
+            if ((it != before.end() && it->second == a.hash) || AssetStore::fingerprint (file) == a.hash)
+                break;
+        }
+
+        const auto file = folder.getChildFile (path);
+        const bool present = file.existsAsFile();
+
+        if (! present)
+        {
+            if (! assets.has (a.hash))
+            {
+                ++result.audioMissing;   // still arriving on this PC
+                continue;
+            }
+
+            if (! appdata::linkOrCopy (assets.getFile (a.hash), file))
+            {
+                result.error = "Can't write " + file.getFullPathName() + " (is the disk full?)";
+                return list;
+            }
+
+            ++result.audioWritten;
+        }
+
+        used.insert (path);
+        ++result.audioIncluded;
+        auto* e = list->createNewChildElement ("FILE");
+        e->setAttribute ("hash", a.hash);
+        e->setAttribute ("path", path);
+        e->setAttribute ("name", a.name);
+    }
+
+    // Files an earlier save put there that the song doesn't use any more: to the recycle bin.
+    for (auto& [path, hash] : before)
+        if (used.count (path) == 0)
+            folder.getChildFile (path).moveToTrash();
+
+    return list;
+}
+
 SaveResult save (const juce::File& target, const juce::ValueTree& song, const AssetStore& assets,
-                 const juce::StringArray& audioHashes, bool includeAudio, const juce::String& savedBy)
+                 const std::vector<AudioFile>& audio, bool includeAudio, const juce::String& savedBy)
 {
     SaveResult result;
 
@@ -23,7 +121,7 @@ SaveResult save (const juce::File& target, const juce::ValueTree& song, const As
     juce::ZipFile::Builder zip;
     const auto now = juce::Time::getCurrentTime();
 
-    juce::XmlElement info ("SYNCSONG");
+    juce::XmlElement info ("COTOSONG");
     info.setAttribute ("format", formatVersion);
     info.setAttribute ("app", juce::JUCEApplicationBase::getInstance() != nullptr
                                 ? juce::JUCEApplicationBase::getInstance()->getApplicationVersion() : juce::String());
@@ -36,18 +134,13 @@ SaveResult save (const juce::File& target, const juce::ValueTree& song, const As
 
     if (includeAudio)
     {
-        for (auto& hash : audioHashes)
-        {
-            if (assets.has (hash))
-            {
-                zip.addFile (assets.getFile (hash), 0, "audio/" + hash + ".flac");   // FLAC is already compressed
-                ++result.audioIncluded;
-            }
-            else
-            {
-                ++result.audioMissing;
-            }
-        }
+        target.getParentDirectory().createDirectory();
+        auto list = writeAudioFolder (target, assets, audio, result);
+
+        if (! result.ok())
+            return result;
+
+        zip.addEntry (streamOf (list->toString()), 9, "audio.xml", now);
     }
 
     // Write next to the target, then swap: a failed save never damages the old file.
@@ -133,7 +226,39 @@ LoadResult load (const juce::File& source, AssetStore& assets)
         return result;
     }
 
-    // Audio files: into this PC's asset store, each checked against its fingerprint.
+    // Audio next to the song (Audio\, Takes\): into this PC's asset store, each checked.
+    if (auto list = juce::parseXML (readEntry (zip, "audio.xml")))
+    {
+        for (auto* e : list->getChildWithTagNameIterator ("FILE"))
+        {
+            const auto hash = e->getStringAttribute ("hash");
+            const auto file = source.getParentDirectory().getChildFile (e->getStringAttribute ("path"));
+
+            if (assets.has (hash))
+            {
+                ++result.audioAlreadyHere;
+                continue;
+            }
+
+            if (! file.existsAsFile())
+            {
+                ++result.audioMissing;
+                continue;
+            }
+
+            auto temp = assets.getFolder().getNonexistentChildFile ("restore", ".tmp", false);
+
+            if (appdata::linkOrCopy (file, temp) && assets.adoptFile (temp, hash))
+                ++result.audioRestored;
+            else
+            {
+                temp.deleteFile();
+                ++result.audioDamaged;   // changed since it was saved: the song keeps asking for the original
+            }
+        }
+    }
+
+    // Older song files: the audio is inside the file.
     for (int i = 0; i < zip.getNumEntries(); ++i)
     {
         const auto* entry = zip.getEntry (i);

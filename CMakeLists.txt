@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 file(READ VERSION.txt SYNCTEST_VERSION)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS VERSION.txt)   # a new version reconfigures the build
 string(STRIP "${SYNCTEST_VERSION}" SYNCTEST_VERSION)
-project(SyncTest VERSION ${SYNCTEST_VERSION} LANGUAGES C CXX)
+project(COTOSTUDIO VERSION ${SYNCTEST_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,19 +20,20 @@ add_subdirectory("${TRACKTION_DIR}/modules" tracktion)
 option(SYNCTEST_BUILD_TEST_PLUGIN "Build the tiny VST3 gain plugin used by the self-test" ON)
 
 #==============================================================================
-# The app: a minimal plugin host with two-peer (or more) project sync.
-juce_add_gui_app(SyncTest
-    PRODUCT_NAME "SyncTest"
+# The app: a multiplayer, FL-style DAW (formerly "SyncTest").
+juce_add_gui_app(COTOSTUDIO
+    PRODUCT_NAME "COTOSTUDIO"
     VERSION ${SYNCTEST_VERSION}
-    COMPANY_NAME "SyncTest contributors"
-    BUNDLE_ID "org.synctest.app"
+    COMPANY_NAME "COTOSTUDIO contributors"
+    BUNDLE_ID "org.cotostudio.app"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     NEEDS_CURL FALSE
     NEEDS_WEB_BROWSER FALSE)
 
-juce_generate_juce_header(SyncTest)
+juce_generate_juce_header(COTOSTUDIO)
 
-target_sources(SyncTest PRIVATE
+target_sources(COTOSTUDIO PRIVATE
     Source/Main.cpp
     Source/EditSync.cpp
     Source/Session.cpp
@@ -56,15 +57,16 @@ target_sources(SyncTest PRIVATE
     Source/SamplerPlugin.cpp
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
-    Source/SoundBrowser.cpp)
+    Source/SoundBrowser.cpp
+    Source/AppData.cpp)
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)
-    target_sources(SyncTest PRIVATE Source/Mp3WriterWin.cpp)
-    target_link_libraries(SyncTest PRIVATE mfplat mfreadwrite mfuuid)
+    target_sources(COTOSTUDIO PRIVATE Source/Mp3WriterWin.cpp Source/HardLinkWin.cpp)
+    target_link_libraries(COTOSTUDIO PRIVATE mfplat mfreadwrite mfuuid)
 endif()
 
-target_compile_definitions(SyncTest PRIVATE
+target_compile_definitions(COTOSTUDIO PRIVATE
     JUCE_PLUGINHOST_VST3=1
     JUCE_PLUGINHOST_AU=0
     JUCE_PLUGINHOST_LADSPA=0
@@ -81,8 +83,8 @@ target_compile_definitions(SyncTest PRIVATE
 set(SYNCTEST_ASIO_SDK "" CACHE PATH "ASIO SDK folder (the one containing common/iasiodrv.h)")
 
 if (WIN32 AND SYNCTEST_ASIO_SDK AND EXISTS "${SYNCTEST_ASIO_SDK}/common/iasiodrv.h")
-    target_compile_definitions(SyncTest PRIVATE JUCE_ASIO=1)
-    target_include_directories(SyncTest PRIVATE "${SYNCTEST_ASIO_SDK}/common")
+    target_compile_definitions(COTOSTUDIO PRIVATE JUCE_ASIO=1)
+    target_include_directories(COTOSTUDIO PRIVATE "${SYNCTEST_ASIO_SDK}/common")
     message(STATUS "ASIO support: ON (${SYNCTEST_ASIO_SDK})")
 else()
     message(STATUS "ASIO support: OFF (no ASIO SDK given)")
@@ -91,13 +93,13 @@ endif()
 # The Linux build only exists so the sync logic can be tested on a headless
 # Linux box; it turns off desktop pieces that need extra system libraries.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_compile_definitions(SyncTest PRIVATE
+    target_compile_definitions(COTOSTUDIO PRIVATE
         JUCE_USE_XRANDR=0 JUCE_USE_XINERAMA=0 JUCE_USE_XCURSOR=0
         JUCE_USE_XRENDER=0 JUCE_USE_XSHM=0 JUCE_USE_XINPUT=0 JUCE_ALSA=0 JUCE_JACK=0)
-    target_link_libraries(SyncTest PRIVATE "-latomic")
+    target_link_libraries(COTOSTUDIO PRIVATE "-latomic")
 endif()
 
-target_link_libraries(SyncTest PRIVATE
+target_link_libraries(COTOSTUDIO PRIVATE
     tracktion::tracktion_core
     tracktion::tracktion_engine
     tracktion::tracktion_graph

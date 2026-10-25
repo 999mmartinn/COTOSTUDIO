@@ -1,6 +1,7 @@
 #include "Session.h"
 #include "SongModel.h"
 #include "PatternCompiler.h"
+#include "AppData.h"
 #include "MixerRouter.h"
 
 namespace collab
@@ -208,8 +209,7 @@ public:
 //==============================================================================
 static juce::File defaultAssetFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-             .getChildFile ("SyncTest").getChildFile ("Assets");
+    return appdata::audioCacheFolder (1);
 }
 
 Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
@@ -2151,13 +2151,18 @@ void Session::saveProject (const juce::File& file, bool includeAudio, std::funct
 
     auto song = editSync->createSnapshot();   // also writes the plugins' current settings into it
     const auto songHash = editSync->computeContentHash();   // what "unsaved changes" compares with
-    auto hashes = song::getAssetHashes (*edit);
+    // Every audio file with the name the song gives it (for readable file names in the project folder).
+    std::vector<project::AudioFile> audio;
+
+    for (auto& hash : song::getAssetHashes (*edit))
+        audio.push_back ({ hash, song::getAssetName (*edit, hash), song::isTakeAsset (*edit, hash) });
+
     ++fileJobsRunning;
     juce::WeakReference<Session> weak (this);
 
-    fileJobs.addJob ([this, weak, file, song, hashes, includeAudio, by = peerName, onDone, songHash]
+    fileJobs.addJob ([this, weak, file, song, audio, includeAudio, by = peerName, onDone, songHash]
     {
-        auto result = project::save (file, song, assets, hashes, includeAudio, by);
+        auto result = project::save (file, song, assets, audio, includeAudio, by);
         result.songHash = songHash;
 
         juce::MessageManager::callAsync ([weak, result, onDone]

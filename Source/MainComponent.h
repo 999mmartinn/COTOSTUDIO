@@ -36,7 +36,8 @@ private:
     collab::Session session { engine };
     EditorState state { session };
     std::unique_ptr<juce::InterProcessLock> assetFolderLock;   // which copy on this PC we are
-    juce::ApplicationProperties appProperties;
+    std::unique_ptr<juce::PropertiesFile> userSettings;   // in the data folder's Settings
+    juce::PropertiesFile* settings() const     { return userSettings.get(); }
     juce::TooltipWindow tooltipWindow { this, 700 };   // shows the help text on buttons and knobs
     juce::ValueTree watchedState;
 
@@ -50,6 +51,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     void showFileMenu();
+    void chooseDataFolder();
     void newSong();
     void openSong();
     void openSongFile (const juce::File&);
@@ -60,7 +62,7 @@ private:
     void updateTitle();
     juce::int64 currentHash() const;
     static juce::File songsFolder();
-    static juce::File autosaveFolder();
+    juce::File autosaveFolder() const;
 
     // Connection bar
     juce::TextButton hostButton { "Host" }, joinButton { "Join" }, leaveButton { "Leave" };
@@ -94,7 +96,7 @@ private:
     void showExportDialog();
     void startExport (const Exporter::Options&);
     void exportFinished (const Exporter::Result&);
-    static juce::File exportsFolder();
+    juce::File exportsFolder() const;
     void timerCallback() override;
     juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
                      undoButton { "Undo" }, redoButton { "Redo" },
@@ -118,6 +120,18 @@ private:
     ChannelRack rack { engine, state };
     PianoRoll pianoRoll { state };
     Mixer mixer { engine, state };
+
+    // The mixer in a window of its own (second monitor), and what its tab shows meanwhile.
+    class MixerWindow;
+    class MixerPlaceholder;
+    std::unique_ptr<MixerWindow> mixerWindow;
+    std::unique_ptr<MixerPlaceholder> mixerPlaceholder;
+    void setMixerDetached (bool);
+    void showMixer();
+
+    juce::String lastSoundsState;
+    int ticksSinceSoundsSave = 0;
+    void saveSoundsState();
     AutomationEditor automationEditor { state };
     void createAutomation (const juce::String& pluginID, const juce::String& paramID);
     juce::TabbedComponent bottomTabs { juce::TabbedButtonBar::TabsAtTop };   // Piano roll (F7) / Mixer (F9)

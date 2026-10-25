@@ -1031,6 +1031,20 @@ juce::String getAssetName (te::Edit& edit, const juce::String& hash)
     return findAsset (edit, hash)[ids::name].toString();
 }
 
+bool isTakeAsset (te::Edit& edit, const juce::String& hash)
+{
+    auto asset = findAsset (edit, hash);
+
+    if ((bool) asset["take"])
+        return true;
+
+    // Songs from before takes were marked: "<insert> take <n>.flac".
+    const auto name = asset[ids::name].toString();
+    return name.endsWith (".flac") && name.upToLastOccurrenceOf (".flac", false, false)
+                                          .fromLastOccurrenceOf (" take ", false, false).containsOnly ("0123456789")
+        && name.contains (" take ");
+}
+
 double getAssetSeconds (te::Edit& edit, const juce::String& hash)
 {
     return (double) findAsset (edit, hash).getProperty (ids::seconds, 0.0);
@@ -1197,6 +1211,7 @@ juce::ValueTree addRecordedTake (te::Edit& edit, const AssetStore::ImportResult&
 
     const auto name = base + juce::String (take);
     addAsset (edit, r, name + ".flac");
+    findAsset (edit, r.hash).setProperty ("take", true, um (edit));   // goes in the project's Takes folder
 
     auto* channel = addAudioChannel (edit, name);
 

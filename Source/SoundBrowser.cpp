@@ -203,6 +203,15 @@ public:
         if (! isNowSelected)
             return;
 
+        if (owner.restoring)
+        {
+            // Back where you left it: show the sound, but don't play it at start-up.
+            if (kind == Kind::audio || kind == Kind::midi)
+                owner.showFile (file);
+
+            return;
+        }
+
         if (kind == Kind::audio)
             owner.preview (file);      // also when moving with the arrow keys
         else if (kind == Kind::midi)
@@ -514,6 +523,59 @@ void SoundBrowser::showResults (int id, const juce::Array<juce::File>& found, bo
         root->addSubItem (new Item (*this, Item::Kind::note, {}, false, "First 500 shown - type more to narrow it down"));
 }
 
+juce::String SoundBrowser::getState() const
+{
+    juce::XmlElement state ("SOUNDS");
+
+    // While searching, the folders as they were before the search.
+    std::unique_ptr<juce::XmlElement> openness;
+
+    if (showingResults)
+    {
+        if (opennessBeforeSearch != nullptr)
+            openness = std::make_unique<juce::XmlElement> (*opennessBeforeSearch);
+    }
+    else
+    {
+        openness = tree.getOpennessState (true);
+    }
+
+    if (openness != nullptr)
+        state.addChildElement (openness.release());
+
+    if (shownFile != juce::File())
+        state.setAttribute ("shown", shownFile.getFullPathName());
+
+    return state.toString (juce::XmlElement::TextFormat().singleLine().withoutHeader());
+}
+
+void SoundBrowser::restoreState (const juce::String& text)
+{
+    pendingState = juce::parseXML (text);
+
+    if (pendingState != nullptr && ! pendingState->hasTagName ("SOUNDS"))
+        pendingState.reset();
+
+    applyPendingState();
+}
+
+void SoundBrowser::applyPendingState()
+{
+    if (pendingState == nullptr || tree.getHeight() <= 0 || folders.isEmpty())
+        return;
+
+    const auto state = std::move (pendingState);
+    const juce::ScopedValueSetter<bool> svs (restoring, true);
+
+    if (auto* openness = state->getFirstChildElement())
+        tree.restoreOpennessState (*openness, true);
+
+    const juce::File shown (state->getStringAttribute ("shown"));
+
+    if (juce::File::isAbsolutePath (shown.getFullPathName()) && shown.existsAsFile())
+        showFile (shown);
+}
+
 void SoundBrowser::setPreviewVolume (float v)
 {
     previewer.setGain (v);
@@ -761,6 +823,8 @@ void SoundBrowser::resized()
     r.removeFromBottom (6);
     tree.setBounds (r);
     bigAddButton.setBounds (r.removeFromTop (34).reduced (10, 0));
+
+    applyPendingState();   // the first time the column has a size
 
     auto p = previewArea.reduced (8, 5);
     playButton.setBounds (p.removeFromTop (20).removeFromLeft (24));

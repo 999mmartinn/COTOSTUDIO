@@ -919,6 +919,13 @@ Mixer::Mixer (te::Engine& e, EditorState& s) : engine (e), state (s)
     addAndMakeVisible (*slots);
     stripsContent.addAndMakeVisible (addInsertButton);
 
+    detachButton.onClick = [this] { if (onDetachToggle) onDetachToggle(); };
+    fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
+    fullScreenButton.setTooltip ("Fill the whole screen with the mixer (click again to go back)");
+    addAndMakeVisible (detachButton);
+    addChildComponent (fullScreenButton);
+    setDetached (false);
+
     addInsertButton.onClick = [this]
     {
         if (auto* edit = state.getEdit())
@@ -971,10 +978,30 @@ void Mixer::paint (juce::Graphics& g)
     g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
 }
 
+void Mixer::setDetached (bool detached)
+{
+    detachButton.setButtonText (detached ? "Back in the main window" : "Own window");
+    detachButton.setTooltip (detached ? "Put the mixer back in the main window (closing its window does the same)"
+                                      : "Give the mixer a window of its own - e.g. full screen on your second monitor");
+    fullScreenButton.setVisible (detached);
+    resized();
+}
+
 void Mixer::resized()
 {
     auto r = getLocalBounds().reduced (4);
-    slots->setBounds (r.removeFromRight (slotsWidth));
+    auto right = r.removeFromRight (slotsWidth);
+    auto top = right.removeFromTop (24);
+    detachButton.setBounds (top.removeFromRight (fullScreenButton.isVisible() ? 150 : 100));
+
+    if (fullScreenButton.isVisible())
+    {
+        top.removeFromRight (4);
+        fullScreenButton.setBounds (top.removeFromRight (90));
+    }
+
+    right.removeFromTop (4);
+    slots->setBounds (right);
     r.removeFromRight (6);
     stripsViewport.setBounds (r);
     layoutStrips();

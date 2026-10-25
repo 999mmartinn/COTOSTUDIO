@@ -240,6 +240,8 @@ namespace song
 
     void addAsset (te::Edit&, const AssetStore::ImportResult&, const juce::String& name);
     juce::String getAssetName (te::Edit&, const juce::String& hash);
+    /** True if the file is a recording (saved in the project's Takes folder). */
+    bool isTakeAsset (te::Edit&, const juce::String& hash);
     double getAssetSeconds (te::Edit&, const juce::String& hash);
     /** Every file the song needs (from the asset list and the clips). */
     juce::StringArray getAssetHashes (te::Edit&);

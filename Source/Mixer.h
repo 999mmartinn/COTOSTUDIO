@@ -34,6 +34,10 @@ public:
     /** Shows "route to" choices for a track (Master, inserts, new insert). */
     static void showRouteMenu (EditorState&, te::AudioTrack& source, juce::Component* target);
 
+    /** The mixer can live in its own window (e.g. on a second monitor). */
+    std::function<void()> onDetachToggle, onFullScreenToggle;
+    void setDetached (bool);
+
 private:
     class Strip;
     class Slots;
@@ -44,7 +48,7 @@ private:
     juce::StringArray stripIDs;
     juce::Component stripsContent;
     juce::Viewport stripsViewport;
-    juce::TextButton addInsertButton { "+ Insert" };
+    juce::TextButton addInsertButton { "+ Insert" }, detachButton { "Own window" }, fullScreenButton { "Full screen" };
     std::unique_ptr<Slots> slots;
 
     void layoutStrips();

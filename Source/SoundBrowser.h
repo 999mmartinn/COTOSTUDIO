@@ -37,6 +37,11 @@ public:
     /** Plays a sound and shows it at the bottom. */
     void preview (const juce::File&);
 
+    /** Where you were - open folders, scroll position, the sound you picked - as text to
+        keep in the settings, and putting it back (next start). */
+    juce::String getState() const;
+    void restoreState (const juce::String&);
+
     /** Called when your list of folders changes (to save it). */
     std::function<void (const juce::StringArray&)> onFoldersChanged;
     std::function<void()> onCollapse;
@@ -78,6 +83,11 @@ private:
     int searchId = 0, searchCountdown = 0;
     std::unique_ptr<juce::XmlElement> opennessBeforeSearch;
     bool showingResults = false;
+
+    // Putting back where you were (once the column has its size, so the scroll position fits)
+    std::unique_ptr<juce::XmlElement> pendingState;
+    bool restoring = false;
+    void applyPendingState();
 
     void rebuildTree();
     void startSearch();

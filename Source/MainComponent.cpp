@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "PatternCompiler.h"
 #include "ProjectFile.h"
+#include "AppData.h"
 
 static const juce::Colour background (0xff1e2227), accent (0xfff28c28);
 
@@ -62,27 +63,117 @@ struct MainComponent::SimulatedMic  : private juce::Timer
 
 
 //==============================================================================
+/** The mixer in a window of its own (e.g. full screen on a second monitor).
+    Closing it puts the mixer back in the main window. */
+class MainComponent::MixerWindow  : public juce::DocumentWindow
+{
+public:
+    explicit MixerWindow (MainComponent& o)
+        : DocumentWindow ("Mixer  -  COTOSTUDIO", juce::Colour (0xff14111c), DocumentWindow::allButtons), owner (o)
+    {
+        setUsingNativeTitleBar (true);
+        setResizable (true, false);
+        setResizeLimits (480, 260, 8000, 5000);
+        setContentNonOwned (&owner.mixer, false);
+
+        const auto saved = owner.settings()->getValue ("mixerWindow");
+
+        if (saved.isEmpty() || ! restoreWindowStateFromString (saved))
+        {
+            // First time: on the second screen if there is one, otherwise over the main window.
+            auto& displays = juce::Desktop::getInstance().getDisplays();
+            auto area = displays.getPrimaryDisplay() != nullptr ? displays.getPrimaryDisplay()->userArea : juce::Rectangle<int> (0, 0, 1280, 800);
+
+            for (auto& d : displays.displays)
+                if (! d.isMain)
+                    area = d.userArea;
+
+            setBounds (area.withSizeKeepingCentre (juce::jmin (1400, area.getWidth() - 80), juce::jmin (700, area.getHeight() - 80)));
+        }
+
+        setVisible (true);
+        ready = true;
+    }
+
+    ~MixerWindow() override
+    {
+        clearContentComponent();   // the mixer belongs to the main window
+    }
+
+    void closeButtonPressed() override                        { owner.setMixerDetached (false); }
+    bool keyPressed (const juce::KeyPress& key) override      { return owner.keyPressed (key); }   // Space, Ctrl+S... work here too
+    void moved() override                                     { DocumentWindow::moved(); remember(); }
+    void resized() override                                   { DocumentWindow::resized(); remember(); }
+
+private:
+    MainComponent& owner;
+    bool ready = false;
+
+    void remember()
+    {
+        if (ready)
+            owner.settings()->setValue ("mixerWindow", getWindowStateAsString());
+    }
+};
+
+/** What the Mixer tab shows while the mixer has its own window. */
+class MainComponent::MixerPlaceholder  : public juce::Component
+{
+public:
+    explicit MixerPlaceholder (MainComponent& o) : owner (o)
+    {
+        backButton.onClick = [this] { owner.setMixerDetached (false); };
+        showButton.onClick = [this] { owner.showMixer(); };
+        addAndMakeVisible (backButton);
+        addAndMakeVisible (showButton);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colour (0xff1a1724));
+        g.setColour (juce::Colours::white.withAlpha (0.6f));
+        g.setFont (juce::FontOptions (15.0f));
+        g.drawFittedText ("The mixer is in its own window.", getLocalBounds().withTrimmedBottom (getHeight() / 2 - 10),
+                          juce::Justification::centredBottom, 1);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().withTrimmedTop (getHeight() / 2 + 6).removeFromTop (30).withSizeKeepingCentre (380, 30);
+        showButton.setBounds (r.removeFromLeft (170));
+        r.removeFromLeft (10);
+        backButton.setBounds (r);
+    }
+
+private:
+    MainComponent& owner;
+    juce::TextButton backButton { "Bring it back here" }, showButton { "Show the window" };
+};
+
+//==============================================================================
 MainComponent::MainComponent (te::Engine& e)
     : engine (e),
       simulatedMic (juce::JUCEApplication::getCommandLineParameterArray().contains ("--simulate-mic")
                       ? std::make_unique<SimulatedMic> (e) : nullptr)
 {
+    // Settings live in the data folder (D:\COTOSTUDIO\Settings), like everything else.
     juce::PropertiesFile::Options opts;
-    opts.applicationName = "SyncTest";
+    opts.applicationName = appdata::appName;
     opts.filenameSuffix = ".settings";
     opts.osxLibrarySubFolder = "Application Support";
-    appProperties.setStorageParameters (opts);
+    opts.millisecondsBeforeSaving = 2000;
+    userSettings = std::make_unique<juce::PropertiesFile> (appdata::settingsFolder().getChildFile ("COTOSTUDIO.settings"), opts);
 
-    auto* settings = appProperties.getUserSettings();
-    session.setUserName (settings->getValue ("userName", juce::SystemStats::getComputerName()));
-    browserVisible = settings->getBoolValue ("browserVisible", true);
-    soundsVisible = settings->getBoolValue ("soundsVisible", true);
+    auto* prefs = userSettings.get();
+    session.setUserName (prefs->getValue ("userName", juce::SystemStats::getComputerName()));
+    browserVisible = prefs->getBoolValue ("browserVisible", true);
+    soundsVisible = prefs->getBoolValue ("soundsVisible", true);
     recentFiles.setMaxNumberOfItems (8);
-    recentFiles.restoreFromString (settings->getValue ("recentSongs"));
-    portEditor.setText (settings->getValue ("port", "47800"));
-    session.setMetronome (settings->getBoolValue ("metronome", false));
-    session.setCountInBars (settings->getIntValue ("countInBars", 0));
-    addressEditor.setText (settings->getValue ("address", "127.0.0.1"));
+    recentFiles.restoreFromString (prefs->getValue ("recentSongs"));
+    portEditor.setText (prefs->getValue ("port", "47800"));
+    session.setMetronome (prefs->getBoolValue ("metronome", false));
+    session.setCountInBars (prefs->getIntValue ("countInBars", 0));
+    addressEditor.setText (prefs->getValue ("address", "127.0.0.1"));
     portEditor.setInputRestrictions (5, "0123456789");
 
     for (auto* c : std::initializer_list<juce::Component*> {
@@ -160,15 +251,16 @@ MainComponent::MainComponent (te::Engine& e)
     browser.onPatternChosen = [this] (const juce::String& sid) { selectPattern (sid); };
     browser.onCollapse = [this] { setBrowserVisible (false); };
     browser.onImportAudio = [this] { playlist.showImportDialog(); };
-    browser.onUserNameChanged = [this] (const juce::String& name) { appProperties.getUserSettings()->setValue ("userName", name); };
+    browser.onUserNameChanged = [this] (const juce::String& name) { settings()->setValue ("userName", name); };
     showBrowserButton.setTooltip ("Show the browser (F8)");
     showBrowserButton.onClick = [this] { setBrowserVisible (true); };
     // Your sounds (far left): folders saved on this PC only; a sound joins the song when dropped in.
-    sounds.setFolders (juce::StringArray::fromLines (settings->getValue ("soundFolders")));
-    sounds.setPreviewVolume ((float) settings->getDoubleValue ("previewVolume", 0.8));
+    sounds.setFolders (juce::StringArray::fromLines (prefs->getValue ("soundFolders")));
+    sounds.setPreviewVolume ((float) prefs->getDoubleValue ("previewVolume", 0.8));
+    sounds.restoreState (lastSoundsState = prefs->getValue ("soundsState"));   // where you left it
     sounds.onFoldersChanged = [this] (const juce::StringArray& folders)
     {
-        appProperties.getUserSettings()->setValue ("soundFolders", folders.joinIntoString ("\n"));
+        settings()->setValue ("soundFolders", folders.joinIntoString ("\n"));
     };
     sounds.onCollapse = [this] { setSoundsVisible (false); };
     sounds.onAddToRack = [this] (const juce::File& f) { rack.addSoundFile (f); };
@@ -225,14 +317,14 @@ MainComponent::MainComponent (te::Engine& e)
 
     hostButton.onClick = [this]
     {
-        appProperties.getUserSettings()->setValue ("port", portEditor.getText());
+        settings()->setValue ("port", portEditor.getText());
         session.startHosting (portEditor.getText().getIntValue());
     };
 
     joinButton.onClick = [this]
     {
-        appProperties.getUserSettings()->setValue ("port", portEditor.getText());
-        appProperties.getUserSettings()->setValue ("address", addressEditor.getText());
+        settings()->setValue ("port", portEditor.getText());
+        settings()->setValue ("address", addressEditor.getText());
         session.join (addressEditor.getText().trim(), portEditor.getText().getIntValue());
     };
 
@@ -272,7 +364,7 @@ MainComponent::MainComponent (te::Engine& e)
         }
 
         session.setMetronome (! session.isMetronomeOn());
-        appProperties.getUserSettings()->setValue ("metronome", session.isMetronomeOn());
+        settings()->setValue ("metronome", session.isMetronomeOn());
         refresh();
     };
     recordButton.onClick = [this]
@@ -306,6 +398,22 @@ MainComponent::MainComponent (te::Engine& e)
     };
     bottomTabs.setTabBarDepth (26);
     bottomTabs.setOutline (0);
+
+    // The mixer can have a window of its own (e.g. full screen on a second monitor).
+    mixerPlaceholder = std::make_unique<MixerPlaceholder> (*this);
+    mixer.onDetachToggle = [this] { setMixerDetached (mixerWindow == nullptr); };
+    mixer.onFullScreenToggle = [this]
+    {
+        if (mixerWindow != nullptr)
+            mixerWindow->setFullScreen (! mixerWindow->isFullScreen());
+    };
+
+    if (prefs->getBoolValue ("mixerDetached", false))
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            if (safe != nullptr)
+                safe->setMixerDetached (true);
+        });
 
     // Panels: playlist, divider, rack, divider, piano roll / mixer tabs (sizes are proportions or pixels).
     panelLayout.setItemLayout (0, 110, -0.7, -0.30);
@@ -366,16 +474,14 @@ MainComponent::MainComponent (te::Engine& e)
     // Two copies on one PC (testing alone) each get their own folder of audio
     // files, so the second copy really receives files like a second PC would.
     {
-        auto base = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("SyncTest");
-
         for (int i = 1; i <= 8; ++i)
         {
-            auto lock = std::make_unique<juce::InterProcessLock> ("SyncTest-assets-" + juce::String (i));
+            auto lock = std::make_unique<juce::InterProcessLock> ("COTOSTUDIO-assets-" + juce::String (i));
 
             if (lock->enter (0))
             {
                 assetFolderLock = std::move (lock);
-                auto folder = base.getChildFile (i == 1 ? juce::String ("Assets") : "Assets-" + juce::String (i));
+                auto folder = appdata::audioCacheFolder (i);
                 session.setAssetFolder (folder);
 
                 if (i > 1)
@@ -442,7 +548,9 @@ MainComponent::MainComponent (te::Engine& e)
 MainComponent::~MainComponent()
 {
     stopTimer();
-    appProperties.getUserSettings()->setValue ("previewVolume", (double) previewer.getGain());
+    saveSoundsState();
+    mixerWindow.reset();
+    settings()->setValue ("previewVolume", (double) previewer.getGain());
     session.clearCallbacks();   // the session goes after the window's parts: it must not call into them
     unwatchEdit();
 }
@@ -639,7 +747,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
-    if (key == juce::KeyPress::F9Key)                                               { bottomTabs.setCurrentTabIndex (1); return true; }
+    if (key == juce::KeyPress::F9Key)                                               { showMixer(); return true; }
     if (key == juce::KeyPress (juce::KeyPress::F8Key, juce::ModifierKeys::altModifier, 0)) { setSoundsVisible (! soundsVisible); return true; }
     if (key == juce::KeyPress::F8Key)                                               { setBrowserVisible (! browserVisible); return true; }
 
@@ -707,17 +815,63 @@ void MainComponent::showPatternMenu()
     });
 }
 
+void MainComponent::saveSoundsState()
+{
+    const auto now = sounds.getState();
+
+    if (now != lastSoundsState)
+    {
+        lastSoundsState = now;
+        settings()->setValue ("soundsState", now);
+    }
+}
+
+void MainComponent::showMixer()
+{
+    if (mixerWindow != nullptr)
+        mixerWindow->toFront (true);
+    else
+        bottomTabs.setCurrentTabIndex (1);
+}
+
+void MainComponent::setMixerDetached (bool detached)
+{
+    if (detached == (mixerWindow != nullptr))
+        return;
+
+    const auto colour = bottomTabs.getTabBackgroundColour (1);
+
+    if (detached)
+    {
+        // The Mixer tab keeps its place (with a note); the mixer moves to its window.
+        bottomTabs.removeTab (1);
+        bottomTabs.addTab ("Mixer  (F9)", colour, mixerPlaceholder.get(), false, 1);
+        mixerWindow = std::make_unique<MixerWindow> (*this);
+        appendLog ("The mixer has its own window now: move it to your other screen (F9 brings it to the front)");
+    }
+    else
+    {
+        mixerWindow.reset();
+        bottomTabs.removeTab (1);
+        bottomTabs.addTab ("Mixer  (F9)", colour, &mixer, false, 1);
+        bottomTabs.setCurrentTabIndex (1);
+    }
+
+    mixer.setDetached (detached);
+    settings()->setValue ("mixerDetached", detached);
+}
+
 void MainComponent::setSoundsVisible (bool shouldBeVisible)
 {
     soundsVisible = shouldBeVisible;
-    appProperties.getUserSettings()->setValue ("soundsVisible", soundsVisible);
+    settings()->setValue ("soundsVisible", soundsVisible);
     resized();
 }
 
 void MainComponent::setBrowserVisible (bool shouldBeVisible)
 {
     browserVisible = shouldBeVisible;
-    appProperties.getUserSettings()->setValue ("browserVisible", browserVisible);
+    settings()->setValue ("browserVisible", browserVisible);
     resized();
 }
 
@@ -735,6 +889,13 @@ void MainComponent::timerCallback()
             dirty = nowDirty;
             updateTitle();
         }
+    }
+
+    // Where you are in your sounds (open folders, scroll, the sound you picked), every 2 s if it changed.
+    if (++ticksSinceSoundsSave >= 10)
+    {
+        ticksSinceSoundsSave = 0;
+        saveSoundsState();
     }
 
     // A backup every 3 minutes while there are changes.
@@ -893,14 +1054,14 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
         if (r >= 1 && r <= 3)
         {
             session.setCountInBars (r - 1);
-            appProperties.getUserSettings()->setValue ("countInBars", r - 1);
+            settings()->setValue ("countInBars", r - 1);
             appendLog (r == 1 ? juce::String ("Count-in off: recording starts right away")
                               : "Count-in: " + juce::String (r - 1) + " bar(s) of metronome before the take (it still starts at the marker)");
         }
         else if (r == 4)
         {
             session.setMetronome (! session.isMetronomeOn());
-            appProperties.getUserSettings()->setValue ("metronome", session.isMetronomeOn());
+            settings()->setValue ("metronome", session.isMetronomeOn());
         }
 
         refresh();
@@ -908,9 +1069,13 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
 }
 
 //==============================================================================
-juce::File MainComponent::exportsFolder()
+juce::File MainComponent::exportsFolder() const
 {
-    return songsFolder().getChildFile ("Exports");
+    // A saved song exports into its own project folder.
+    if (currentFile != juce::File() && ! appdata::isBackup (currentFile))
+        return appdata::projectFolderOf (currentFile).getChildFile ("Exports");
+
+    return appdata::exportsFolder();
 }
 
 void MainComponent::showExportDialog()
@@ -946,11 +1111,11 @@ void MainComponent::showExportDialog()
     w->addComboBox ("format", formats, "Format");
     w->addComboBox ("stems", { "Just the mix", "The mix + one file per mixer insert (stems)" }, "Files");
 
-    auto* settings = appProperties.getUserSettings();
+    auto* prefs = settings();
     w->getComboBoxComponent ("what")->setSelectedItemIndex (session.isSongMode() ? 0 : 1, juce::dontSendNotification);
-    w->getComboBoxComponent ("format")->setSelectedItemIndex (juce::jlimit (0, formats.size() - 1, settings->getIntValue ("exportFormat", 0)),
+    w->getComboBoxComponent ("format")->setSelectedItemIndex (juce::jlimit (0, formats.size() - 1, prefs->getIntValue ("exportFormat", 0)),
                                                               juce::dontSendNotification);
-    w->getComboBoxComponent ("stems")->setSelectedItemIndex (settings->getBoolValue ("exportStems", false) ? 1 : 0, juce::dontSendNotification);
+    w->getComboBoxComponent ("stems")->setSelectedItemIndex (prefs->getBoolValue ("exportStems", false) ? 1 : 0, juce::dontSendNotification);
 
     w->addButton ("Export...", 1, juce::KeyPress (juce::KeyPress::returnKey));
     w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -968,7 +1133,7 @@ void MainComponent::showExportDialog()
         opts.format = formatValues[juce::jmax (0, w->getComboBoxComponent ("format")->getSelectedItemIndex())];
         opts.stems = w->getComboBoxComponent ("stems")->getSelectedItemIndex() == 1;
 
-        auto* s = appProperties.getUserSettings();
+        auto* s = settings();
         s->setValue ("exportFormat", w->getComboBoxComponent ("format")->getSelectedItemIndex());
         s->setValue ("exportStems", opts.stems);
 
@@ -1125,7 +1290,7 @@ void MainComponent::showRecordSetupMenu()
             const auto id = insert->itemID.toString();
             session.getRecorder().setInputFor (id, inputs[r - 100].id);
             state.selectedInsert = id;
-            bottomTabs.setCurrentTabIndex (1);
+            showMixer();
             appendLog ("Insert \"" + name + "\" records from " + inputs[r - 100].name
                         + " (you hear it through its effects). Add autotune/EQ to it if you like, then press Rec.");
         }
@@ -1138,13 +1303,16 @@ void MainComponent::showRecordSetupMenu()
 // Song files
 juce::File MainComponent::songsFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("SyncTest Songs");
+    return appdata::projectsFolder();
 }
 
-juce::File MainComponent::autosaveFolder()
+juce::File MainComponent::autosaveFolder() const
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-             .getChildFile ("SyncTest").getChildFile ("Autosave");
+    // A saved song keeps its backups in its own project folder; others go to Backups.
+    if (currentFile != juce::File() && ! appdata::isBackup (currentFile))
+        return appdata::projectFolderOf (currentFile).getChildFile ("Backups");
+
+    return appdata::backupsFolder();
 }
 
 juce::int64 MainComponent::currentHash() const
@@ -1201,6 +1369,12 @@ void MainComponent::showFileMenu()
     m.addItem (item (6, "Export audio (WAV, FLAC, MP3)...", ! exporter.isRunning(), "Ctrl+R"));
     m.addSeparator();
     m.addItem (5, "Open an automatic backup...", canReplace);
+    m.addItem (7, currentFile != juce::File() ? "Show this project's folder" : "Show the Projects folder");
+
+    juce::PopupMenu data;
+    data.addItem (8, "Open " + appdata::getRoot().getFullPathName());
+    data.addItem (9, "Use another data folder...");
+    m.addSubMenu ("Data folder", data);
 
     if (! canReplace)
     {
@@ -1215,12 +1389,15 @@ void MainComponent::showFileMenu()
         else if (r == 3)   saveSong (false);
         else if (r == 4)   saveSong (true);
         else if (r == 6)   showExportDialog();
+        else if (r == 7)   (currentFile != juce::File() ? appdata::projectFolderOf (currentFile) : songsFolder()).startAsProcess();
+        else if (r == 8)   appdata::getRoot().startAsProcess();
+        else if (r == 9)   chooseDataFolder();
         else if (r == 5)
         {
             askToSaveChanges ([this]
             {
                 autosaveFolder().createDirectory();
-                fileChooser = std::make_unique<juce::FileChooser> ("Open an automatic backup", autosaveFolder(), "*.syncsong");
+                fileChooser = std::make_unique<juce::FileChooser> ("Open an automatic backup", autosaveFolder(), appdata::songWildcards);
                 fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                           [this] (const juce::FileChooser& fc)
                 {
@@ -1234,6 +1411,26 @@ void MainComponent::showFileMenu()
             const auto file = recentFiles.getFile (r - 100);
             askToSaveChanges ([this, file] { openSongFile (file); });
         }
+    });
+}
+
+void MainComponent::chooseDataFolder()
+{
+    fileChooser = std::make_unique<juce::FileChooser> ("Where COTOSTUDIO keeps everything (projects, backups, exports, settings)",
+                                                       appdata::getRoot().getParentDirectory());
+    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                              [this] (const juce::FileChooser& fc)
+    {
+        const auto folder = fc.getResult();
+
+        if (! folder.isDirectory() || folder == appdata::getRoot())
+            return;
+
+        appdata::chooseRoot (folder);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Data folder",
+            "From the next start COTOSTUDIO keeps everything in\n" + folder.getFullPathName()
+             + "\n\nYour current files stay in " + appdata::getRoot().getFullPathName()
+             + " - move the Projects folder over yourself if you want them there too.");
     });
 }
 
@@ -1299,7 +1496,7 @@ void MainComponent::openSong()
     {
         songsFolder().createDirectory();
         fileChooser = std::make_unique<juce::FileChooser> ("Open a song", currentFile.existsAsFile() ? currentFile : songsFolder(),
-                                                           juce::String ("*") + project::fileExtension);
+                                                           appdata::songWildcards);
         fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this] (const juce::FileChooser& fc)
         {
@@ -1335,7 +1532,7 @@ void MainComponent::openSongFile (const juce::File& file)
             return;
         }
 
-        self.currentFile = file.getParentDirectory() == autosaveFolder() ? juce::File() : file;   // backups: Save asks where
+        self.currentFile = appdata::isBackup (file) ? juce::File() : file;   // backups: Save asks for a name
         self.savedHash = self.lastAutosaveHash = self.currentHash();
         self.dirty = false;
         self.state.viewedPattern = self.state.selectedChannel = self.state.placeAudioChannel = self.state.selectedInsert = {};
@@ -1343,7 +1540,7 @@ void MainComponent::openSongFile (const juce::File& file)
         if (self.currentFile != juce::File())
         {
             self.recentFiles.addFile (file);
-            self.appProperties.getUserSettings()->setValue ("recentSongs", self.recentFiles.toString());
+            self.settings()->setValue ("recentSongs", self.recentFiles.toString());
         }
 
         self.refresh();
@@ -1364,21 +1561,27 @@ void MainComponent::saveSong (bool saveAs, std::function<void (bool)> then)
 
     if (! saveAs && currentFile != juce::File())
     {
-        writeSong (currentFile, then);
+        // Songs from older versions (.syncsong) are saved as a project from now on.
+        writeSong (currentFile.hasFileExtension (appdata::songExtension)
+                     ? currentFile : appdata::projectSongFile (currentFile.withFileExtension (appdata::songExtension)),
+                   then);
         return;
     }
 
-    songsFolder().createDirectory();
-    const auto suggested = songsFolder().getChildFile (juce::File::createLegalFileName (session.getSongTitle()) + project::fileExtension);
-    fileChooser = std::make_unique<juce::FileChooser> ("Save the song", currentFile != juce::File() ? currentFile : suggested,
-                                                       juce::String ("*") + project::fileExtension);
-    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                                | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [this, then] (const juce::FileChooser& fc)
+    // Save as: a name, and the song gets its own folder in Projects.
+    auto* w = new juce::AlertWindow ("Save the song", "Name of the project (it gets its own folder in "
+                                        + songsFolder().getFullPathName() + ")", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", session.getSongTitle());
+    w->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<MainComponent> (this), w, then] (int r)
     {
-        auto file = fc.getResult();
+        if (safe == nullptr)
+            return;
 
-        if (file == juce::File())
+        const auto name = w->getTextEditorContents ("name").trim();
+
+        if (r != 1 || name.isEmpty())
         {
             if (then)
                 then (false);
@@ -1386,8 +1589,26 @@ void MainComponent::saveSong (bool saveAs, std::function<void (bool)> then)
             return;
         }
 
-        writeSong (file.withFileExtension (project::fileExtension), then);
-    });
+        const auto file = appdata::songFileForName (name);
+
+        if (file.existsAsFile() && file != safe->currentFile)
+        {
+            auto options = juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, "Replace it?",
+                                                                         "There is already a project called \"" + file.getFileNameWithoutExtension()
+                                                                          + "\". Replace its song with this one?",
+                                                                         "Replace", "Cancel", safe.getComponent());
+            juce::AlertWindow::showAsync (options, [safe, file, then] (int result)
+            {
+                if (safe != nullptr && result == 1)
+                    safe->writeSong (file, then);
+                else if (then)
+                    then (false);
+            });
+            return;
+        }
+
+        safe->writeSong (file, then);
+    }), true);
 }
 
 void MainComponent::writeSong (const juce::File& file, std::function<void (bool)> then)
@@ -1423,12 +1644,13 @@ void MainComponent::writeSong (const juce::File& file, std::function<void (bool)
         self.savedHash = result.songHash;
         self.dirty = self.currentHash() != self.savedHash;   // changes made while it was saving stay unsaved
         self.recentFiles.addFile (file);
-        self.appProperties.getUserSettings()->setValue ("recentSongs", self.recentFiles.toString());
+        self.settings()->setValue ("recentSongs", self.recentFiles.toString());
         self.updateTitle();
 
-        self.appendLog ("Saved \"" + title + "\" (" + juce::File::descriptionOfSizeInBytes (result.bytes)
-                         + (result.audioIncluded > 0 ? ", " + juce::String (result.audioIncluded) + " audio files inside" : juce::String())
-                         + ") to " + file.getParentDirectory().getFullPathName());
+        self.appendLog ("Saved \"" + title + "\" in " + file.getParentDirectory().getFullPathName()
+                         + (result.audioIncluded > 0 ? " (" + juce::String (result.audioIncluded) + " audio files in Audio / Takes"
+                                                         + (result.audioWritten > 0 ? ", " + juce::String (result.audioWritten) + " new)" : juce::String (")"))
+                                                     : juce::String()));
 
         if (result.audioMissing > 0)
             self.appendLog (juce::String (result.audioMissing) + " audio file(s) hadn't arrived on this PC yet and aren't in it");
@@ -1454,7 +1676,7 @@ void MainComponent::autosave()
     folder.createDirectory();
     const auto file = folder.getChildFile (juce::File::createLegalFileName (session.getSongTitle() + " (backup "
                                             + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ")")
-                                            + project::fileExtension);
+                                            + appdata::songExtension);
 
     // Song only: its audio files stay in this PC's audio folder anyway.
     session.saveProject (file, false, [safe = juce::Component::SafePointer<MainComponent> (this), folder] (project::SaveResult result)
@@ -1471,7 +1693,7 @@ void MainComponent::autosave()
         safe->lastAutosaveHash = result.songHash;
 
         // Keep the 10 newest backups.
-        auto backups = folder.findChildFiles (juce::File::findFiles, false, juce::String ("*") + project::fileExtension);
+        auto backups = folder.findChildFiles (juce::File::findFiles, false, appdata::songWildcards);
         std::sort (backups.begin(), backups.end(), [] (const juce::File& a, const juce::File& b)
                    { return a.getLastModificationTime() > b.getLastModificationTime(); });
 
@@ -1488,10 +1710,10 @@ void MainComponent::requestQuit()
 void MainComponent::showPluginScanner()
 {
     auto& pm = engine.getPluginManager();
-    auto deadMansPedal = appProperties.getUserSettings()->getFile().getSiblingFile ("SyncTestScanCrashes.txt");
+    auto deadMansPedal = appdata::settingsFolder().getChildFile ("PluginScanCrashes.txt");
 
     auto* scanner = new juce::PluginListComponent (pm.pluginFormatManager, pm.knownPluginList, deadMansPedal,
-                                                   appProperties.getUserSettings(), true);
+                                                   settings(), true);
     scanner->setSize (700, 500);
 
     juce::DialogWindow::LaunchOptions o;

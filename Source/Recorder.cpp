@@ -35,7 +35,7 @@ juce::File Recorder::newRecordingFile (te::Edit& e, const juce::String& extensio
     }
 
     if (folder == juce::File())
-        folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("SyncTest-recordings");
+        folder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("COTOSTUDIO-recordings");
 
     folder.createDirectory();
     return folder.getNonexistentChildFile ("take", extension, false);
