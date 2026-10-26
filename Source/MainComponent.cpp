@@ -180,13 +180,14 @@ public:
             return;
         }
 
+        // The icon, the note under it, then the buttons (see resized).
         g.fillAll (theme::colours::wellAlt);
-        auto top = getLocalBounds().withTrimmedBottom (getHeight() / 2 - 10);
-        theme::drawIcon (g, theme::Icon::detach, top.removeFromBottom (24).withTrimmedBottom (2).toFloat().withSizeKeepingCentre (22.0f, 22.0f),
+        const int cy = getHeight() / 2;
+        theme::drawIcon (g, theme::Icon::detach, juce::Rectangle<float> (22.0f, 22.0f).withCentre ({ getWidth() * 0.5f, (float) cy - 52.0f }),
                          theme::colours::accent, 1.8f);
         g.setColour (theme::colours::muted);
         g.setFont (theme::ui (13.5f, theme::Weight::medium));
-        g.drawFittedText (message(), top.withTrimmedBottom (10), juce::Justification::centredBottom, 1);
+        g.drawFittedText (message(), getLocalBounds().withY (cy - 34).withHeight (22), juce::Justification::centred, 1);
     }
 
     void paintOverChildren (juce::Graphics& g) override
@@ -207,7 +208,7 @@ public:
             return;
         }
 
-        auto r = getLocalBounds().withTrimmedTop (getHeight() / 2 + 6).removeFromTop (30).withSizeKeepingCentre (380, 30);
+        auto r = getLocalBounds().withTrimmedTop (getHeight() / 2).removeFromTop (30).withSizeKeepingCentre (380, 30);
         showButton.setBounds (r.removeFromLeft (170));
         r.removeFromLeft (10);
         backButton.setBounds (r);
@@ -1369,7 +1370,9 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
 
     // Punch in / out
     m.addSeparator();
+    const auto barsLong = juce::String ((punch.outBeat - punch.inBeat) / 4.0, std::abs (std::fmod (punch.outBeat - punch.inBeat, 4.0)) < 0.001 ? 0 : 2);
     m.addItem (10, punch.hasRange() ? TRANS ("Punch in / out: bars {FROM} to {TO}").replace ("{FROM}", bar (punch.inBeat)).replace ("{TO}", bar (punch.outBeat))
+                                        + "  (" + TRANS ("{N} bar(s)").replace ("{N}", barsLong) + ")"
                                     : TRANS ("Punch in / out (set the range first)"),
                punch.hasRange(), punch.isActive());
 
@@ -1382,7 +1385,8 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
     for (int n = 0; n <= 2; ++n)
         preRoll.addItem (30 + n, n == 0 ? TRANS ("None") : TRANS ("{N} bar(s)").replace ("{N}", juce::String (n)), true, punch.preRollBars == n);
 
-    m.addSubMenu (TRANS ("Pre-roll before the punch-in") + ": " + juce::String (punch.preRollBars), preRoll);
+    m.addSubMenu (TRANS ("Pre-roll before the punch-in") + ": " + (punch.preRollBars == 0 ? TRANS ("None")
+                                                                                            : TRANS ("{N} bar(s)").replace ("{N}", juce::String (punch.preRollBars))), preRoll);
     m.addItem (-1, TRANS ("Tip: Ctrl + drag on the playlist ruler draws the punch range"), false);
 
     // Inputs

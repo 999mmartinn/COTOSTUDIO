@@ -2126,7 +2126,7 @@ private:
             } });
 
         // Punch in / out (like FL): only the range is kept; recording stops by itself at the punch-out.
-        steps.push_back ({ "Punch in/out: range beats 24-28, 1 bar pre-roll; peer 2 presses Rec -> the song starts a bar early (beat 20), recording",
+        steps.push_back ({ "Punch in/out: range beats 24-28, 1 bar pre-roll; peer 2 presses Rec -> the song starts about a bar early (no click), recording",
             [this]
             {
                 Recorder::Punch punch;
@@ -2142,7 +2142,7 @@ private:
             [this]
             {
                 const double pos = soundCard->lastPosition();
-                return recordStarted && peer2.isRecording() && pos >= timeOfBeat (P2(), 20.0) - 0.05 && pos < timeOfBeat (P2(), 23.0);
+                return recordStarted && peer2.isRecording() && pos >= timeOfBeat (P2(), 19.0) && pos < timeOfBeat (P2(), 23.0);
             },
             8000 });
 
@@ -2189,7 +2189,6 @@ private:
 
                 return std::abs ((double) clip[song::ids::start] - 24.0) < 0.01
                     && std::abs ((double) clip[song::ids::duration] - expectedLength) < 0.01
-                    && (double) clip[song::ids::offset] > timeOfBeat (P2(), 4.0) - 0.05   // the pre-roll is in the file, before the clip
                     && hasVerified (host, clip[song::ids::asset].toString()) && hashesEqual();
             },
             30000 });

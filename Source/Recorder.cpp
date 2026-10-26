@@ -54,6 +54,8 @@ Recorder::~Recorder()
 
 void Recorder::attachTo (te::Edit* newEdit)
 {
+    stopTimer();
+
     if (edit != nullptr)
     {
         edit->getTransport().removeListener (this);
@@ -355,15 +357,15 @@ bool Recorder::start (double startSeconds)
 
     if (punch.isActive())
     {
-        // Punch in / out: the song plays from the pre-roll before the punch-in (you
-        // hear what leads into it); what's kept is the part between the punch points.
+        // Punch in / out: the song plays from the pre-roll before the punch-in (you hear
+        // what leads into it) and recording starts exactly at the punch-in, the same way
+        // as after a count-in (lined up to the sample); recording stops at the punch-out.
         auto& ts = edit->tempoSequence;
-        auto toSeconds = [&ts] (double beat) { return ts.toTime (te::BeatPosition::fromBeats (beat)).inSeconds(); };
-        const double preRollBeats = ts.getTimeSig (0)->numerator * punch.preRollBars;
-        takePunchIn = toSeconds (punch.inBeat);
-        takePunchOut = toSeconds (punch.outBeat);
-        startSeconds = toSeconds (juce::jmax (0.0, punch.inBeat - preRollBeats));
-        countIn = te::Edit::CountIn::none;   // the pre-roll is the count-in
+        takePunchIn = ts.toTime (te::BeatPosition::fromBeats (punch.inBeat)).inSeconds();
+        takePunchOut = ts.toTime (te::BeatPosition::fromBeats (punch.outBeat)).inSeconds();
+        startSeconds = takePunchIn;
+        countIn = punch.preRollBars >= 2 ? te::Edit::CountIn::twoBar
+                : punch.preRollBars == 1 ? te::Edit::CountIn::oneBar : te::Edit::CountIn::none;
     }
 
     edit->setCountInMode (countIn);
@@ -372,7 +374,11 @@ bool Recorder::start (double startSeconds)
     transport.record (false, false);
 
     if (takePunchOut >= 0.0)
+    {
+        // The pre-roll is just the song: no count-in clicks (the metronome, if on, still clicks).
+        edit->setClickTrackRange ({});
         startTimerHz (60);   // watches for the punch-out
+    }
 
     return true;
 }

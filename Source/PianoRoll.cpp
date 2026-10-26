@@ -71,7 +71,7 @@ public:
             if (state.scaleSnap)
             {
                 // Scale rows light, the others dark; the key note's rows tinted.
-                g.setColour (inScale ? theme::colours::lane1 : theme::colours::bg);
+                g.setColour (inScale ? theme::colours::lane1.brighter (0.16f) : theme::colours::bg.darker (0.35f));
                 g.fillRect (row);
 
                 if (scales::isKeyNote (state.scaleKey, pitch))
@@ -672,7 +672,7 @@ void PianoRoll::refresh()
                          + TRANS ("click: add note, drag: move/longer, right-click: delete, ruler: set play start"),
                        juce::dontSendNotification);
 
-    resized();
+    updateScaleButton();   // (also lays out: the scale may have been set from your settings)
     repaint (getLocalBounds().removeFromTop (titleHeight));
     grid->repaint();
     ruler->repaint();
