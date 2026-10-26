@@ -58,6 +58,10 @@ private:
     void showFileMenu();
     void chooseDataFolder();
     void newSong();
+    void newEmptySong();
+    void newSongFromTemplate (const juce::File&);
+    void saveAsTemplate();
+    juce::File defaultTemplate() const;
     void openSong();
     void openSongFile (const juce::File&);
     void saveSong (bool saveAs, std::function<void (bool saved)> then = {});
@@ -106,6 +110,9 @@ private:
     bool lastRecording = false;
     void showRecordSetupMenu();
     void showRecordOptionsMenu (juce::Component* target);
+    void setPunchFromStartMarker (int bars);
+    void savePunchSettings();
+    juce::String lastRecordChoices;   // which input feeds which insert, as last saved
 
     // Export (File > Export audio..., Ctrl+R)
     Exporter exporter { engine, session.getAssetStore() };
@@ -136,13 +143,28 @@ private:
     PianoRoll pianoRoll { state };
     Mixer mixer { engine, state };
 
-    // The mixer in a window of its own (second monitor), and what its tab shows meanwhile.
-    class MixerWindow;
-    class MixerPlaceholder;
-    std::unique_ptr<MixerWindow> mixerWindow;
-    std::unique_ptr<MixerPlaceholder> mixerPlaceholder;
-    void setMixerDetached (bool);
-    void showMixer();
+    // The mixer, piano roll and channel rack can each have a window of their own
+    // (e.g. a second monitor); their place in the main window shows a note meanwhile.
+    enum class Panel { mixer = 0, pianoRoll, rack };
+    static constexpr int numPanels = 3;
+    class PanelWindow;
+    class PanelPlaceholder;
+    std::unique_ptr<PanelWindow> panelWindows[numPanels];
+    std::unique_ptr<PanelPlaceholder> placeholders[numPanels];
+    juce::Component& panelComponent (Panel);
+    juce::String panelName (Panel) const;
+    static juce::String panelKey (Panel);
+    bool isDetached (Panel p) const              { return panelWindows[(int) p] != nullptr; }
+    void setPanelDetached (Panel, bool);
+    void showPanel (Panel);
+    void togglePanelFullScreen (Panel);
+    void showMixer()                             { showPanel (Panel::mixer); }
+
+    // Full screen inside the main window: the playlist or the piano roll fills the body.
+    enum class Maximised { none, playlist, pianoRoll };
+    Maximised maximised = Maximised::none;
+    void setMaximised (Maximised);
+    void updateFullScreenButtons();
 
     juce::String lastSoundsState;
     int ticksSinceSoundsSave = 0;
@@ -157,6 +179,9 @@ private:
     // Playlist / rack / piano roll, with draggable dividers between them.
     juce::StretchableLayoutManager panelLayout;
     juce::StretchableLayoutResizerBar divider1 { &panelLayout, 1, false }, divider2 { &panelLayout, 3, false };
+    // The same without the rack (it has its own window): playlist, divider, the rack's note, dock.
+    juce::StretchableLayoutManager panelLayoutNoRack;
+    juce::StretchableLayoutResizerBar dividerNoRack { &panelLayoutNoRack, 1, false };
 
     void appendLog (const juce::String&);
     void watchEdit();

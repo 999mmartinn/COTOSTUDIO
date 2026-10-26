@@ -12,6 +12,7 @@
 #include "DrumSynthPlugin.h"
 #include "MixerRouter.h"
 #include "ProjectFile.h"
+#include "Scales.h"
 #include "Exporter.h"
 #include "SamplerPlugin.h"
 #include "SamplePreviewer.h"
@@ -257,6 +258,13 @@ private:
     bool exportDone = false;
     Exporter::Result exportResult;
     juce::int64 fedAtTake2Start = -1;
+
+    // Punch in / out, templates
+    juce::int64 fedAtTake3Start = -1;
+    bool punchStoppedWhilePlaying = false, disarmCheck = false;
+    juce::File templateFile;
+    juce::String templateChoices, templateVocalsID;
+    bool emptySongHadInput = false, scaleCheck = false;
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -2117,6 +2125,132 @@ private:
                 return firstSample == expected;
             } });
 
+        // Punch in / out (like FL): only the range is kept; recording stops by itself at the punch-out.
+        steps.push_back ({ "Punch in/out: range beats 24-28, 1 bar pre-roll; peer 2 presses Rec -> the song starts a bar early (beat 20), recording",
+            [this]
+            {
+                Recorder::Punch punch;
+                punch.on = true;
+                punch.inBeat = 24.0;
+                punch.outBeat = 28.0;
+                punch.preRollBars = 1;
+                peer2.getRecorder().setPunch (punch);
+                soundCard->startFeeding (0.5f, P2());
+                juce::Thread::sleep (100);
+                recordStarted = peer2.startRecording (timeOfBeat (P2(), 0.0));   // (the start marker doesn't count with punch on)
+            },
+            [this]
+            {
+                const double pos = soundCard->lastPosition();
+                return recordStarted && peer2.isRecording() && pos >= timeOfBeat (P2(), 20.0) - 0.05 && pos < timeOfBeat (P2(), 23.0);
+            },
+            8000 });
+
+        steps.push_back ({ "Punch: past the punch-out recording stops by itself while the song plays on; 'Vocals take 3' covers exactly beats 24-28",
+            {},
+            [this]
+            {
+                const double pos = soundCard->lastPosition();
+
+                if (fedAtTake3Start < 0)
+                {
+                    if (pos < timeOfBeat (P2(), 24.0) + 0.3)
+                        return false;
+
+                    fedAtTake3Start = soundCard->inputSampleAt (timeOfBeat (P2(), 24.0));
+                    return false;
+                }
+
+                if (! punchStoppedWhilePlaying)
+                {
+                    if (pos < timeOfBeat (P2(), 28.0) + 0.4)
+                        return false;
+
+                    punchStoppedWhilePlaying = ! peer2.isRecording() && P2().getTransport().isPlaying();
+                    std::cout << "    at beat " << P2().tempoSequence.toBeats (te::TimePosition::fromSeconds (pos)).inBeats()
+                              << ": recording " << (peer2.isRecording() ? "STILL ON" : "stopped") << ", song "
+                              << (P2().getTransport().isPlaying() ? "playing on" : "STOPPED") << std::endl;
+
+                    if (! punchStoppedWhilePlaying)
+                        return false;
+
+                    peer2.setPlaying (false, timeOfBeat (P2(), 0.0));
+                }
+
+                auto clip = clipOfChannel (P2(), "Vocals take 3");
+
+                if (! clip.isValid())
+                    return false;
+
+                soundCard->stopFeeding();
+                const double expectedLength = timeOfBeat (P2(), 28.0) - timeOfBeat (P2(), 24.0);
+                std::cout << "    take 3: start beat " << (double) clip[song::ids::start] << ", " << (double) clip[song::ids::duration]
+                          << " s (punch range " << expectedLength << " s), offset " << (double) clip[song::ids::offset] << " s" << std::endl;
+
+                return std::abs ((double) clip[song::ids::start] - 24.0) < 0.01
+                    && std::abs ((double) clip[song::ids::duration] - expectedLength) < 0.01
+                    && (double) clip[song::ids::offset] > timeOfBeat (P2(), 4.0) - 0.05   // the pre-roll is in the file, before the clip
+                    && hasVerified (host, clip[song::ids::asset].toString()) && hashesEqual();
+            },
+            30000 });
+
+        steps.push_back ({ "Punch: take 3 lines up to the sample with what was playing at the punch-in (host's copy)",
+            {},
+            [this]
+            {
+                auto clip = clipOfChannel (H(), "Vocals take 3");
+                auto file = host.getAssetStore().getFile (clip[song::ids::asset].toString());
+                juce::AudioFormatManager fm;
+                fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+
+                // The file sample the clip starts on (its offset) must be the input sample
+                // that went in while the song played the punch-in.
+                const auto offsetSamples = (juce::int64) std::llround ((double) clip[song::ids::offset] * SimulatedSoundCard::sampleRate);
+                juce::int64 found = -1;
+
+                if (reader != nullptr)
+                {
+                    juce::AudioBuffer<float> b (1, 256);
+                    reader->read (&b, 0, 256, offsetSamples, true, false);
+                    double bestError = 1.0e9;
+
+                    for (juce::int64 k = fedAtTake3Start - 4096; k < fedAtTake3Start + 4096; ++k)
+                    {
+                        double err = 0.0;
+
+                        for (int j = 0; j < 256; ++j)
+                            err += std::abs (b.getSample (0, j) - 0.5 * std::sin (juce::MathConstants<double>::twoPi * 437.31
+                                                                                   * (double) (k + j) / SimulatedSoundCard::sampleRate));
+
+                        if (err < bestError)
+                        {
+                            bestError = err;
+                            found = k;
+                        }
+                    }
+                }
+
+                std::cout << "    the clip starts on input sample " << found << "; the song was at the punch-in at input sample "
+                          << fedAtTake3Start << " -> " << (found == fedAtTake3Start ? "lined up exactly" : "OFF") << std::endl;
+                peer2.getRecorder().setPunch ({});
+                return found == fedAtTake3Start;
+            } });
+
+        steps.push_back ({ "Recording: Disarm all disarms (the input stays), Arm all arms again; monitoring off and on; nothing shared changes",
+            [this]
+            {
+                auto& rec = peer2.getRecorder();
+                rec.disarmAll();
+                disarmCheck = rec.getNumArmed() == 0 && rec.getDisarmedWithInput().size() == 1
+                              && rec.getInputFor (vocalsID).isNotEmpty();
+                rec.setMonitoring (false);
+                rec.setMonitoring (true);
+                rec.armAllWithInput();
+                disarmCheck = disarmCheck && rec.getNumArmed() == 1 && rec.isArmed (vocalsID);
+            },
+            [this] { return disarmCheck && hashesEqual(); } });
+
         steps.push_back ({ "Host deletes the Snare channel -> gone everywhere, its notes too",
             [this]
             {
@@ -2415,6 +2549,75 @@ private:
                 return sameSong && sameNotes && song::getTitle (*fourth.getEdit()) == "test song";
             },
             30000 });
+
+        // Templates: a song to start new ones from, with this PC's recording inputs.
+        steps.push_back ({ "Template: the 4th PC gives insert 'Vocals' an input and saves the song as a template (folder + Inputs.txt)",
+            [this]
+            {
+                auto* vocals = insert (*fourth.getEdit(), "Vocals");
+                templateVocalsID = vocals != nullptr ? vocals->itemID.toString() : juce::String();
+                fourth.getRecorder().setInputFor (templateVocalsID, "test-mic");
+                templateChoices = fourth.getRecorder().saveChoices (true);
+                templateFile = testRoot.getChildFile ("Templates").getChildFile ("Recording").getChildFile ("Recording.cotosong");
+                saveDone = false;
+                fourth.saveProject (templateFile, true, [this] (project::SaveResult r)
+                {
+                    saveResult = r;
+                    templateFile.getSiblingFile ("Inputs.txt").replaceWithText (templateChoices);
+                    saveDone = true;
+                });
+            },
+            [this]
+            {
+                return saveDone && saveResult.ok() && templateFile.existsAsFile()
+                    && templateFile.getSiblingFile ("Inputs.txt").loadFileAsString().contains ("test-mic")
+                    && templateChoices.contains ("Vocals");
+            },
+            30000 });
+
+        steps.push_back ({ "Template: a new empty song forgets the input (no 'Vocals' insert); a new song from the template is the same song, 'Untitled', input back",
+            [this]
+            {
+                fourth.newProject();
+                emptySongHadInput = fourth.getRecorder().getInputFor (templateVocalsID).isNotEmpty();
+                openDone = false;
+                fourth.openProject (templateFile, [this] (juce::String error)
+                {
+                    openError = error;
+                    fourth.getRecorder().restoreChoices (templateFile.getSiblingFile ("Inputs.txt").loadFileAsString());
+                    openDone = true;
+                }, "Untitled");
+            },
+            [this]
+            {
+                if (! openDone || fourth.getEdit() == nullptr)
+                    return false;
+
+                auto& e = *fourth.getEdit();
+                auto* vocals = insert (e, "Vocals");
+                const bool sameParts = song::getChannels (e).size() == song::getChannels (H()).size()
+                                    && song::getInserts (e).size() == song::getInserts (H()).size()
+                                    && song::getPatterns (e).size() == song::getPatterns (H()).size();
+                std::cout << "    title \"" << song::getTitle (e) << "\", same channels/inserts/patterns as the song: " << (sameParts ? "yes" : "NO")
+                          << ", empty song had the input: " << (emptySongHadInput ? "YES" : "no")
+                          << ", input back on 'Vocals': " << fourth.getRecorder().getInputFor (templateVocalsID) << std::endl;
+
+                return openError.isEmpty() && ! emptySongHadInput && sameParts && song::getTitle (e) == "Untitled"
+                    && vocals != nullptr && vocals->itemID.toString() == templateVocalsID
+                    && fourth.getRecorder().getInputFor (templateVocalsID) == "test-mic" && fourth.getRecorder().isArmed (templateVocalsID);
+            },
+            30000 });
+
+        steps.push_back ({ "Scale helper: notes snap to the scale (C major, A minor, C minor pentatonic), off-scale ties go down unless dragging up",
+            [this]
+            {
+                scaleCheck = scales::nearest (0, 0, 61) == 60 && scales::nearest (0, 0, 61, true) == 62     // C# in C major
+                          && scales::contains (9, 1, 60) && ! scales::contains (9, 1, 61)                       // A minor: C yes, C# no
+                          && scales::nearest (0, 10, 64) == 63 && scales::nearest (0, 10, 64, true) == 65      // E in C minor pentatonic
+                          && scales::nearest (0, 0, 64) == 64                                                   // already in the scale
+                          && scales::describe (9, 1) == "A minor";
+            },
+            [this] { return scaleCheck; } });
 
         steps.push_back ({ "Song file: an older .syncsong (audio inside the file) still opens on a PC without the audio",
             [this]

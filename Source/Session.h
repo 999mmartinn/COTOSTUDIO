@@ -191,7 +191,8 @@ public:
     void saveProject (const juce::File&, bool includeAudio, std::function<void (project::SaveResult)> onDone);
     /** Opens a song file (in the background). Only when you're alone or hosting:
         it replaces the song for everyone. onDone gets an error text, or "" if it worked. */
-    void openProject (const juce::File&, std::function<void (juce::String error)> onDone);
+    void openProject (const juce::File&, std::function<void (juce::String error)> onDone,
+                      const juce::String& titleOverride = {});
     /** Starts a new song (the default one). Same rule as openProject. Returns an error or "". */
     juce::String newProject();
     bool canReplaceSong() const noexcept           { return mode == Mode::offline || mode == Mode::hosting; }

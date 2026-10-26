@@ -26,6 +26,42 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.1
+
+* **The piano roll and the channel rack can have their own window**, like the
+  mixer: the *own window* button (the arrow out of a box) in the piano roll's
+  title row or at the bottom right of the rack. Put them on your second monitor
+  and press **full screen** there. F6 / F7 / F9 bring the rack / piano roll /
+  mixer window to the front; closing a window puts the panel back. COTOSTUDIO
+  remembers which panels were in their own window, and where.
+* **Full screen inside the main window**: the corners button at the top right of
+  the **playlist** or the **piano roll** makes it fill the window; press it again
+  or **Esc** to go back.
+* **Scale helper in the piano roll** (off by default): the **Scale** button picks
+  a key (C ... B) and a scale (major, minor, harmonic / melodic minor, the modes,
+  pentatonics, blues). While it's on, notes you place or move up / down land only
+  on that scale's notes, the rows outside it are shaded and the key note's rows
+  are tinted. *Move this channel's notes into ...* fixes notes already there.
+  It's only on your screen; turn it off to place notes anywhere.
+* **Templates**: *File → Templates → Save this song as a template...* keeps the
+  song (channels, inserts with their effects and settings, patterns, tempo,
+  sounds) plus which input records into which insert on your PC, in
+  `Templates\<name>`. *File → Templates → New song from "..."* starts an
+  untitled song from it, already armed. *New song (Ctrl+N) starts from* makes a
+  template what every new song starts from.
+* **Recording options** (right-click **Rec** or **Click**): count-in, metronome,
+  **punch in / out** with a **pre-roll** of 0-2 bars, **Disarm all**, **Arm every
+  insert that has an input**, and **monitoring** on / off (turn it off if your
+  interface's direct monitor already lets you hear yourself).
+* **Punch in / out**: **Ctrl + drag** on the playlist ruler (or right-click the
+  ruler) marks the range in red. Rec then plays from the pre-roll before it and
+  keeps only the range; recording stops by itself at the punch-out and the song
+  plays on. The whole pass is still in the take's file: drag the clip's edges
+  out to get more of it back.
+* With nothing armed, **Rec** offers to arm the inserts that already have an
+  input. Your inputs (which input feeds which insert, armed or not) are
+  remembered for next time.
+
 ## What's new in 1.0
 
 * **A new look ("Nocturno")**: dark purple-grey with a lilac accent, rounded
@@ -62,6 +98,7 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 
 ```
 D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOSTUDIO)
+  Templates\<name>\             songs to start new ones from (+ Inputs.txt: your inputs)
   Projects\<song>\              one folder per song
       <song>.cotosong             the song (notes, patterns, mixer, plugin settings)
       Audio\                     the sounds it uses (imported files, samples)
@@ -94,7 +131,9 @@ D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOST
 * **Browser** (F8): Patterns, Audio in the song, and Session (your name, who's
   connected, chat).
 * **Playlist**, **channel rack**, and the **Piano roll / Mixer / Automation**
-  tabs (F7 / F9); drag the bars between them to resize.
+  tabs (F7 / F9); drag the bars between them to resize. The rack, piano roll and
+  mixer can each go to their own window; the playlist and piano roll can fill
+  the window (Esc goes back).
 * **Status bar**: the last message (click it to see all of them), sync state,
   what's playing, CPU and your sound card.
 
@@ -187,7 +226,7 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   to the host first, then to the others, so the host's upload speed matters for
   big files (a 3-minute stereo recording is roughly 15-30 MB as FLAC).
 * Recording: one take per armed insert each time you press Rec; inputs are
-  mono; no punch-in or loop recording yet. The engine places takes
+  mono; no loop recording (several takes in a row) yet. The engine places takes
   using the latency your interface's driver reports.
 * Chat isn't saved: it lives as long as the session (the host keeps it).
 * Plugins are saved with their settings, but each PC needs them installed to
@@ -218,6 +257,10 @@ joining, Focus, a late joiner following a running share, everyone back where
 they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
 in a share), sends (built on each PC, loops refused, really audible), the
 metronome staying personal, recording with a count-in (lined up to the sample),
+punch in / out (recording stops by itself at the punch-out while the song plays
+on; the take covers exactly the range, lined up to the sample), disarm / arm all,
+templates (a new song from one is the same song, untitled, with its inputs back),
+the scale helper,
 export (mix + stems, a seamless pattern loop, MP3 on Windows), automation
 clips (shared; built by each PC in SONG mode only; the knob follows the curve
 without anything being sent; audible in a render; point edits; deleting),

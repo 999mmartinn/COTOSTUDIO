@@ -74,6 +74,7 @@ static juce::File sub (const char* name)
 }
 
 juce::File projectsFolder()     { return sub ("Projects"); }
+juce::File templatesFolder()    { return sub ("Templates"); }
 juce::File backupsFolder()      { return sub ("Backups"); }
 juce::File exportsFolder()      { return sub ("Exports"); }
 juce::File settingsFolder()     { return sub ("Settings"); }
@@ -89,6 +90,30 @@ juce::File songFileForName (const juce::String& name)
     const auto legal = juce::File::createLegalFileName (name.trim()).trim();
     const auto stem = legal.isNotEmpty() ? legal : juce::String ("Untitled");
     return projectsFolder().getChildFile (stem).getChildFile (stem + songExtension);
+}
+
+juce::File templateFileForName (const juce::String& name)
+{
+    const auto legal = juce::File::createLegalFileName (name.trim()).trim();
+    const auto stem = legal.isNotEmpty() ? legal : juce::String ("Template");
+    return templatesFolder().getChildFile (stem).getChildFile (stem + songExtension);
+}
+
+juce::Array<juce::File> findTemplates()
+{
+    juce::Array<juce::File> list;
+
+    for (auto& folder : templatesFolder().findChildFiles (juce::File::findDirectories, false))
+    {
+        auto f = folder.getChildFile (folder.getFileName() + songExtension);
+
+        if (f.existsAsFile())
+            list.add (f);
+    }
+
+    std::sort (list.begin(), list.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getFileNameWithoutExtension().compareNatural (b.getFileNameWithoutExtension()) < 0; });
+    return list;
 }
 
 juce::File projectSongFile (const juce::File& chosen)

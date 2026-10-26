@@ -63,7 +63,7 @@ namespace theme
     {
         none = 0, play, stop, record, metronome, undo, redo, gear, share, focus, folder, plus, close,
         chevronDown, chevronLeft, chevronRight, detach, attach, fullScreen, note, wave, search, file,
-        people, automation, mixer, pianoRoll, check, sounds, menu, link
+        people, automation, mixer, pianoRoll, check, sounds, menu, link, exitFullScreen
     };
 
     void drawIcon (juce::Graphics&, Icon, juce::Rectangle<float> area, juce::Colour, float strokeWidth = 1.6f);

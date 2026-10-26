@@ -245,6 +245,19 @@ public:
         g.setColour (theme::colours::muted.withAlpha (0.5f));
         g.drawVerticalLine ((int) xForBeat (getSongLengthBeats (*edit)), 0.0f, (float) getHeight());
 
+        // Punch in / out range (recording keeps only this part)
+        const auto& punch = state.session.getRecorder().getPunch();
+
+        if (punch.isActive())
+        {
+            const float x1 = xForBeat (punch.inBeat), x2 = xForBeat (punch.outBeat);
+            g.setColour (theme::colours::red.withAlpha (0.07f));
+            g.fillRect (x1, 0.0f, x2 - x1, (float) getHeight());
+            g.setColour (theme::colours::red.withAlpha (0.45f));
+            g.drawVerticalLine ((int) x1, 0.0f, (float) getHeight());
+            g.drawVerticalLine ((int) x2, 0.0f, (float) getHeight());
+        }
+
         // Clips
         const auto viewedSid = state.getPattern()[ids::sid].toString();
 
@@ -669,6 +682,25 @@ public:
         g.setColour (theme::colours::green);
         g.fillPath (tri);
 
+        // Punch in / out range: red while on, grey while off.
+        const auto& punch = state.session.getRecorder().getPunch();
+
+        if (punch.hasRange())
+        {
+            const float x1 = (float) (punch.inBeat * ppb) - (float) scrollX, x2 = (float) (punch.outBeat * ppb) - (float) scrollX;
+            const auto colour = punch.on ? theme::colours::red : theme::colours::dim;
+            const auto band = juce::Rectangle<float> (x1, 1.0f, x2 - x1, 7.0f);
+            g.setColour (colour.withAlpha (punch.on ? 0.85f : 0.6f));
+            g.fillRoundedRectangle (band, 2.5f);
+
+            if (band.getWidth() > 34.0f)
+            {
+                g.setColour (theme::colours::accentText);
+                g.setFont (theme::ui (8.5f, theme::Weight::bold));
+                g.drawText ("PUNCH", band.toNearestInt(), juce::Justification::centred, false);
+            }
+        }
+
         const double playBeat = state.getSongPlayheadBeat();
 
         if (playBeat >= 0.0)
@@ -678,8 +710,136 @@ public:
         }
     }
 
-    void mouseDown (const juce::MouseEvent& e) override   { setStart (e.position.x, true); }
-    void mouseDrag (const juce::MouseEvent& e) override   { setStart (e.position.x, false); }
+    double beatAt (float x) const
+    {
+        return juce::jmax (0.0, (double) (x + (float) owner.viewport->getViewPositionX()) / owner.pixelsPerBeat);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+        {
+            showPunchMenu (beatAt (e.position.x));
+            return;
+        }
+
+        // Ctrl + drag: where punch in / out records (like a time selection in FL).
+        if (e.mods.isCommandDown())
+        {
+            punchAnchor = state.snapPlaylistBeat (beatAt (e.position.x));
+            setPunchRange (punchAnchor, punchAnchor, true);
+            return;
+        }
+
+        punchAnchor = -1.0;
+        setStart (e.position.x, true);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+            return;
+
+        if (punchAnchor >= 0.0)
+        {
+            const double beat = state.snapPlaylistBeatNearest (beatAt (e.position.x));
+            setPunchRange (juce::jmin (punchAnchor, beat), juce::jmax (punchAnchor, beat), true);
+            return;
+        }
+
+        setStart (e.position.x, false);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (punchAnchor >= 0.0)
+        {
+            punchAnchor = -1.0;
+            auto& rec = state.session.getRecorder();
+            auto p = rec.getPunch();
+
+            if (! p.hasRange())
+            {
+                p.on = false;   // just a click: nothing to punch
+                rec.setPunch (p);
+            }
+            else
+            {
+                state.session.logMessage (TRANS ("Punch in / out: bars {FROM} to {TO}. Rec plays from a bar before and keeps only this part")
+                                            .replace ("{FROM}", barText (p.inBeat)).replace ("{TO}", barText (p.outBeat)));
+            }
+
+            owner.repaint();
+            owner.lanes->repaint();
+            notifyPunchChanged();
+        }
+    }
+
+    static juce::String barText (double beat)
+    {
+        const double bar = beat / 4.0 + 1.0;
+        return std::abs (bar - std::round (bar)) < 0.001 ? juce::String ((int) std::round (bar)) : juce::String (bar, 2);
+    }
+
+    void setPunchRange (double in, double out, bool on)
+    {
+        auto& rec = state.session.getRecorder();
+        auto p = rec.getPunch();
+        p.inBeat = in;
+        p.outBeat = out;
+        p.on = on;
+        rec.setPunch (p);
+        repaint();
+        owner.lanes->repaint();
+    }
+
+    void notifyPunchChanged()
+    {
+        if (owner.onPunchChanged)
+            owner.onPunchChanged();
+    }
+
+    void showPunchMenu (double beat)
+    {
+        auto& rec = state.session.getRecorder();
+        const auto p = rec.getPunch();
+        const double barStart = std::floor (beat / 4.0) * 4.0;
+
+        juce::PopupMenu m;
+        m.addSectionHeader (TRANS ("Punch in / out (recording keeps only this part)"));
+
+        for (int bars : { 1, 2, 4, 8 })
+            m.addItem (bars, TRANS ("From bar {BAR}, {N} bar(s)").replace ("{BAR}", barText (barStart)).replace ("{N}", juce::String (bars)));
+
+        m.addSeparator();
+        m.addItem (20, TRANS ("Punch in / out on"), p.hasRange(), p.isActive());
+        m.addItem (21, TRANS ("Clear the punch range"), p.hasRange());
+        m.addSeparator();
+        m.addItem (-1, TRANS ("Tip: Ctrl + drag here draws the range"), false);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+                         [safe = juce::Component::SafePointer<Ruler> (this), barStart] (int r)
+        {
+            if (safe == nullptr || r == 0)
+                return;
+
+            auto& recorder = safe->state.session.getRecorder();
+            auto punch = recorder.getPunch();
+
+            if (r >= 1 && r <= 8)
+                safe->setPunchRange (barStart, barStart + r * 4.0, true);
+            else if (r == 20)
+                { punch.on = ! punch.on; recorder.setPunch (punch); }
+            else if (r == 21)
+                { punch = {}; punch.preRollBars = recorder.getPunch().preRollBars; recorder.setPunch (punch); }
+
+            safe->owner.repaint();
+            safe->owner.lanes->repaint();
+            safe->notifyPunchChanged();
+        });
+    }
+
+    double punchAnchor = -1.0;
 
     void setStart (float x, bool seekIfPlaying)
     {
@@ -773,7 +933,20 @@ Playlist::Playlist (EditorState& s) : state (s)
     };
     addAndMakeVisible (snapBox);
 
+    fullScreenButton.getProperties().set ("iconOnly", true);
+    fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
+    addAndMakeVisible (fullScreenButton);
+    setFullScreenState (false);
+
     startTimerHz (30);
+}
+
+void Playlist::setFullScreenState (bool isFullScreen)
+{
+    theme::setIcon (fullScreenButton, isFullScreen ? theme::Icon::exitFullScreen : theme::Icon::fullScreen);
+    fullScreenButton.setTooltip (isFullScreen ? TRANS ("Back to the normal layout (Esc)")
+                                              : TRANS ("Make the playlist fill the window (Esc goes back)"));
+    fullScreenButton.repaint();
 }
 
 Playlist::~Playlist()
@@ -1004,6 +1177,8 @@ void Playlist::resized()
 {
     auto r = getLocalBounds().reduced (1);
     auto top = r.removeFromTop (headerHeight - 1).reduced (8, 5);
+    fullScreenButton.setBounds (top.removeFromRight (30));
+    top.removeFromRight (6);
     snapBox.setBounds (top.removeFromRight (112));
     top.removeFromRight (6);
     importButton.setBounds (top.removeFromRight (124));

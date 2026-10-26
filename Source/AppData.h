@@ -15,6 +15,7 @@
             Takes\                    its recordings
             Exports\                  what you exported from it
             Backups\                  its automatic backups
+        Templates\<name>\           songs to start new ones from (File > Templates)
         Backups\                    backups of songs that were never saved
         Exports\                    exports of songs that were never saved
         Settings\                   your settings, plugin list and audio device
@@ -42,6 +43,11 @@ namespace appdata
     void setRootForThisRun (const juce::File&);
 
     juce::File projectsFolder();
+    juce::File templatesFolder();          // Templates\<name>\<name>.cotosong (+ its Audio)
+    /** Templates\<name>\<name>.cotosong */
+    juce::File templateFileForName (const juce::String& name);
+    /** Every template's song file, by name. */
+    juce::Array<juce::File> findTemplates();
     juce::File backupsFolder();            // backups of never-saved songs
     juce::File exportsFolder();            // exports of never-saved songs
     juce::File settingsFolder();

@@ -163,6 +163,7 @@ static IconShape shapeOf (Icon icon)
         case Icon::detach:        return { "M9 2.5 H13.5 V7 M13.5 2.5 L8 8 M11.5 9.5 V13.5 H2.5 V4.5 H6.5", nullptr };
         case Icon::attach:        return { "M13.5 2.5 L8 8 M8 4.5 V8 H11.5 M11.5 9.5 V13.5 H2.5 V4.5 H6.5", nullptr };
         case Icon::fullScreen:    return { "M2.5 6 V2.5 H6 M10 2.5 H13.5 V6 M13.5 10 V13.5 H10 M6 13.5 H2.5 V10", nullptr };
+        case Icon::exitFullScreen:return { "M6 2.5 V6 H2.5 M10 2.5 V6 H13.5 M13.5 10 H10 V13.5 M2.5 10 H6 V13.5", nullptr };
         case Icon::note:
         case Icon::sounds:        return { "M6 12.5 V3.5 L13 2 V11", "M4.3 10.5 A2 2 0 1 1 4.29 10.5 Z M11.3 9 A2 2 0 1 1 11.29 9 Z" };
         case Icon::wave:          return { "M2 7.5 V8.5 M4.5 5 V11 M7 2.5 V13.5 M9.5 5.5 V10.5 M12 4 V12 M14.5 7 V9", nullptr };

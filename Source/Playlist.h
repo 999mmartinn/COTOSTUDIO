@@ -32,6 +32,12 @@ public:
 
     static constexpr int laneHeight = 30, laneHeaderWidth = 78, rulerHeight = 20;
 
+    /** Full screen: the playlist fills the main window (set up by the main window). */
+    std::function<void()> onFullScreenToggle;
+    /** The punch in / out range was changed on the ruler (Ctrl + drag, right-click). */
+    std::function<void()> onPunchChanged;
+    void setFullScreenState (bool isFullScreen);
+
 private:
     class Lanes;
     class Ruler;
@@ -45,7 +51,7 @@ private:
     std::unique_ptr<ScrollViewport> viewport;
     juce::Label title;
     juce::ComboBox snapBox;
-    juce::TextButton importButton { TRANS ("Import audio...") }, automateButton { TRANS ("Automate...") };
+    juce::TextButton importButton { TRANS ("Import audio...") }, automateButton { TRANS ("Automate...") }, fullScreenButton;
     void showAutomateMenu();
     std::unique_ptr<juce::FileChooser> chooser;
     juce::ThreadPool importPool { 1 };

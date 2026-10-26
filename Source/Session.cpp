@@ -2072,7 +2072,8 @@ juce::String Session::newProject()
     return replaceSong (std::move (newEdit), "started a new song");
 }
 
-void Session::openProject (const juce::File& file, std::function<void (juce::String)> onDone)
+void Session::openProject (const juce::File& file, std::function<void (juce::String)> onDone,
+                           const juce::String& titleOverride)
 {
     if (! canReplaceSong())
     {
@@ -2089,11 +2090,11 @@ void Session::openProject (const juce::File& file, std::function<void (juce::Str
     ++fileJobsRunning;
     juce::WeakReference<Session> weak (this);
 
-    fileJobs.addJob ([this, weak, file, onDone]
+    fileJobs.addJob ([this, weak, file, onDone, titleOverride]
     {
         auto result = project::load (file, assets);   // reads the file, restores its audio (background)
 
-        juce::MessageManager::callAsync ([weak, result, file, onDone]
+        juce::MessageManager::callAsync ([weak, result, file, onDone, titleOverride]
         {
             if (weak == nullptr)
                 return;
@@ -2115,7 +2116,8 @@ void Session::openProject (const juce::File& file, std::function<void (juce::Str
 
             // The file name is the song's name (set before loading, so it's simply part of the song).
             auto state = result.song.createCopy();
-            const auto title = file.getFileNameWithoutExtension();
+            // (A song started from a template gets its own name instead.)
+            const auto title = titleOverride.isNotEmpty() ? titleOverride : file.getFileNameWithoutExtension();
 
             for (auto child : state)
                 if (child.hasType (song::ids::SONGMODEL))

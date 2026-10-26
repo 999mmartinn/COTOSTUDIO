@@ -337,7 +337,33 @@ ChannelRack::ChannelRack (te::Engine& e, EditorState& s) : engine (e), state (s)
         refresh();
     };
     addAndMakeVisible (filterBox);
+
+    for (auto* b : { &detachButton, &fullScreenButton })
+        b->getProperties().set ("iconOnly", true);
+
+    detachButton.onClick = [this] { if (onDetachToggle) onDetachToggle(); };
+    fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
+    addAndMakeVisible (detachButton);
+    addChildComponent (fullScreenButton);
+    setDetached (false);
     startTimerHz (30);
+}
+
+void ChannelRack::setDetached (bool detached)
+{
+    theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
+    detachButton.setTooltip (detached ? TRANS ("Put the channel rack back in the main window (closing its window does the same)")
+                                      : TRANS ("Give the channel rack a window of its own - e.g. on your second monitor"));
+    fullScreenButton.setVisible (detached);
+    setFullScreenState (false);
+    resized();
+}
+
+void ChannelRack::setFullScreenState (bool isFullScreen)
+{
+    theme::setIcon (fullScreenButton, isFullScreen ? theme::Icon::exitFullScreen : theme::Icon::fullScreen);
+    fullScreenButton.setTooltip (isFullScreen ? TRANS ("Back to the normal size") : TRANS ("Fill the whole screen with the channel rack"));
+    fullScreenButton.repaint();
 }
 
 ChannelRack::~ChannelRack()
@@ -423,7 +449,8 @@ void ChannelRack::paint (juce::Graphics& g)
         g.drawText (pattern[song::ids::name].toString() + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String (bars) + " "
                       + (bars == 1 ? TRANS ("bar") : TRANS ("bars")) + juce::String::fromUTF8 (" \xc2\xb7 ")
                       + juce::String (song::getNumSteps (pattern)) + " " + TRANS ("steps"),
-                    bottom.reduced (12, 0).withTrimmedLeft (filterBox.getRight()), juce::Justification::centredRight, true);
+                    bottom.reduced (12, 0).withTrimmedLeft (filterBox.getRight()).withRight (detachButton.getX() - 8),
+                    juce::Justification::centredRight, true);
     }
 }
 
@@ -434,6 +461,14 @@ void ChannelRack::resized()
     addButton.setBounds (bottom.removeFromLeft (112));
     bottom.removeFromLeft (8);
     filterBox.setBounds (bottom.removeFromLeft (170));
+
+    if (fullScreenButton.isVisible())
+    {
+        fullScreenButton.setBounds (bottom.removeFromRight (30));
+        bottom.removeFromRight (4);
+    }
+
+    detachButton.setBounds (bottom.removeFromRight (30));
     viewport.setBounds (r.reduced (8, 6));
     layoutRows();
 }

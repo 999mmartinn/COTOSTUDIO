@@ -11,6 +11,8 @@
       - Click the piano keys: play them.
       - Click/drag the ruler on top: set where Play starts (jumps there while playing).
     Notes snap to 1/16 steps. Notes are heard while placed or dragged (local only).
+    The Scale button (optional, off by default) keeps new and moved notes on the
+    notes of a key's scale and shades the rows outside it.
 */
 class PianoRoll  : public juce::Component,
                    private juce::Timer
@@ -25,6 +27,13 @@ public:
 
     static constexpr int lowestPitch = 24, highestPitch = 96, rowHeight = 14, keyboardWidth = 48;
 
+    /** Own window (e.g. a second monitor) and full screen (set up by the main window). */
+    std::function<void()> onDetachToggle, onFullScreenToggle;
+    void setDetached (bool);
+    void setFullScreenState (bool isFullScreen);
+    /** The scale helper changed (to remember it). */
+    std::function<void()> onScaleChanged;
+
 private:
     class Grid;
     class Ruler;
@@ -33,6 +42,10 @@ private:
     std::unique_ptr<Ruler> ruler;
     juce::Viewport viewport;
     juce::Label title;
+    juce::TextButton scaleButton, detachButton, fullScreenButton;
+    bool detached = false;
+    void showScaleMenu();
+    void updateScaleButton();
     juce::String heading;
     juce::Colour headingColour { theme::colours::muted };
     static constexpr int titleHeight = 32;

@@ -1,5 +1,6 @@
 #include "PianoRoll.h"
 #include "FileImport.h"
+#include "Scales.h"
 
 using namespace song;
 
@@ -34,6 +35,15 @@ public:
         return c != nullptr && ! isAudioChannel (*c) ? c : nullptr;
     }
 
+    /** With the scale helper on, the scale note nearest to a pitch (otherwise the pitch). */
+    int snapPitch (int pitch, bool preferUp = false) const
+    {
+        if (! state.scaleSnap)
+            return pitch;
+
+        return scales::nearest (state.scaleKey, state.scaleType, pitch, preferUp, lowestPitch, highestPitch);
+    }
+
     static bool isBlackKey (int pitch)
     {
         const int n = pitch % 12;
@@ -55,12 +65,39 @@ public:
         {
             const float y = yForPitch (pitch);
             const bool black = isBlackKey (pitch);
-            g.setColour (black ? theme::colours::lane2 : theme::colours::lane1);
-            g.fillRect ((float) keyboardWidth, y, (float) (getWidth() - keyboardWidth), (float) rowHeight);
+            const bool inScale = ! state.scaleSnap || scales::contains (state.scaleKey, state.scaleType, pitch);
+            const auto row = juce::Rectangle<float> ((float) keyboardWidth, y, (float) (getWidth() - keyboardWidth), (float) rowHeight);
+
+            if (state.scaleSnap)
+            {
+                // Scale rows light, the others dark; the key note's rows tinted.
+                g.setColour (inScale ? theme::colours::lane1 : theme::colours::bg);
+                g.fillRect (row);
+
+                if (scales::isKeyNote (state.scaleKey, pitch))
+                {
+                    g.setColour (theme::colours::accent.withAlpha (0.13f));
+                    g.fillRect (row);
+                }
+            }
+            else
+            {
+                g.setColour (black ? theme::colours::lane2 : theme::colours::lane1);
+                g.fillRect (row);
+            }
 
             // Keys: light lilac-white and deep purple-black.
             g.setColour (black ? juce::Colour (0xff120f19) : juce::Colour (0xffe6e0f4));
             g.fillRect (0.0f, y, (float) keyboardWidth - 2.0f, (float) rowHeight - 1.0f);
+
+            if (state.scaleSnap && inScale)
+            {
+                // A dot on the keys of the scale (lilac on the key note).
+                const bool keyNote = scales::isKeyNote (state.scaleKey, pitch);
+                g.setColour (keyNote ? theme::colours::accent : (black ? juce::Colour (0xffb9b0cc) : juce::Colour (0xff6f6585)));
+                g.fillEllipse (juce::Rectangle<float> (keyNote ? 6.0f : 4.0f, keyNote ? 6.0f : 4.0f)
+                                 .withCentre ({ 9.0f, y + rowHeight * 0.5f - 0.5f }));
+            }
 
             if (pitch % 12 == 0)
             {
@@ -220,10 +257,11 @@ public:
             if (beat >= getLengthBeats (pattern))
                 return;
 
-            dragNote = addNote (*edit, pattern, getChannelID (*channel), pitchAtY (e.position.y), beat, stepBeats);
+            const int pitch = snapPitch (pitchAtY (e.position.y));
+            dragNote = addNote (*edit, pattern, getChannelID (*channel), pitch, beat, stepBeats);
             dragMode = DragMode::resize;
             dragStartBeat = beat;
-            startPreview (pitchAtY (e.position.y));
+            startPreview (pitch);
         }
 
         repaint();
@@ -258,8 +296,13 @@ public:
             const double noteLength = dragNote[ids::l];
             const double newStart = juce::jlimit (0.0, juce::jmax (0.0, length - stepBeats),
                                                   snap (dragStartBeat + beatAtX (e.position.x) - dragGrabBeat + stepBeats * 0.5));
-            const int newPitch = juce::jlimit (lowestPitch, highestPitch,
-                                               dragStartPitch + (pitchAtY (e.position.y) - pitchAtY (e.mouseDownPosition.y)));
+            const int rows = pitchAtY (e.position.y) - pitchAtY (e.mouseDownPosition.y);
+            int newPitch = juce::jlimit (lowestPitch, highestPitch, dragStartPitch + rows);
+
+            // Scale helper: moved up or down, the note lands on a scale note (left
+            // where it is while only moved in time, even if it is off the scale).
+            if (rows != 0)
+                newPitch = snapPitch (newPitch, rows > 0);
 
             if (std::abs (newStart - (double) dragNote[ids::b]) > 1.0e-6)
                 dragNote.setProperty (ids::b, newStart, um);
@@ -477,8 +520,134 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
 
     title.setColour (juce::Label::textColourId, theme::colours::muted);
     title.setFont (theme::ui (11.0f));
+    title.setMinimumHorizontalScale (1.0f);
     addAndMakeVisible (title);
+
+    // Scale helper (off by default: notes go anywhere).
+    theme::setIcon (scaleButton, theme::Icon::note);
+    theme::setStyle (scaleButton, "toggle");
+    scaleButton.setClickingTogglesState (false);
+    scaleButton.onClick = [this] { showScaleMenu(); };
+    addAndMakeVisible (scaleButton);
+    updateScaleButton();
+
+    // Own window / full screen (icon buttons).
+    for (auto* b : { &detachButton, &fullScreenButton })
+    {
+        b->getProperties().set ("iconOnly", true);
+        addAndMakeVisible (b);
+    }
+
+    detachButton.onClick = [this] { if (onDetachToggle) onDetachToggle(); };
+    fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
+    setDetached (false);
+    setFullScreenState (false);
     startTimerHz (30);
+}
+
+void PianoRoll::setDetached (bool isDetached)
+{
+    detached = isDetached;
+    theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
+    detachButton.setTooltip (detached ? TRANS ("Put the piano roll back in the main window (closing its window does the same)")
+                                      : TRANS ("Give the piano roll a window of its own - e.g. on your second monitor"));
+    setFullScreenState (false);
+}
+
+void PianoRoll::setFullScreenState (bool isFullScreen)
+{
+    theme::setIcon (fullScreenButton, isFullScreen ? theme::Icon::exitFullScreen : theme::Icon::fullScreen);
+    fullScreenButton.setTooltip (isFullScreen ? TRANS ("Back to the normal size (Esc)")
+                                              : detached ? TRANS ("Fill the whole screen with the piano roll")
+                                                         : TRANS ("Make the piano roll fill the window (Esc goes back)"));
+    fullScreenButton.repaint();
+}
+
+void PianoRoll::updateScaleButton()
+{
+    scaleButton.setButtonText (state.scaleSnap ? scales::describe (state.scaleKey, state.scaleType) : TRANS ("Scale"));
+    scaleButton.setToggleState (state.scaleSnap, juce::dontSendNotification);
+    scaleButton.setTooltip (state.scaleSnap
+                              ? TRANS ("Notes you place or move up/down land on {SCALE} (the shaded rows are outside it). Click to change or turn it off")
+                                  .replace ("{SCALE}", scales::describe (state.scaleKey, state.scaleType))
+                              : TRANS ("Scale helper: pick a key and a scale, and the notes you place land only on its notes (handy for chords in key). Off: notes go anywhere"));
+    resized();
+}
+
+void PianoRoll::showScaleMenu()
+{
+    juce::PopupMenu m, keys, types;
+
+    for (int k = 0; k < 12; ++k)
+        keys.addItem (100 + k, scales::keyName (k), true, k == state.scaleKey);
+
+    for (int t = 0; t < scales::numTypes; ++t)
+    {
+        if (t == 9)
+            types.addSeparator();
+
+        types.addItem (200 + t, TRANS (scales::types[t].name), true, t == state.scaleType);
+    }
+
+    m.addSectionHeader (TRANS ("Scale helper (only on your screen)"));
+    m.addItem (1, TRANS ("Off - place notes anywhere"), true, ! state.scaleSnap);
+    m.addItem (2, TRANS ("On - keep notes in") + " " + scales::describe (state.scaleKey, state.scaleType), true, state.scaleSnap);
+    m.addSeparator();
+    m.addSubMenu (TRANS ("Key") + ": " + scales::keyName (state.scaleKey), keys);
+    m.addSubMenu (TRANS ("Scale") + ": " + TRANS (scales::type (state.scaleType).name), types);
+    m.addSeparator();
+
+    auto* channel = state.getSelectedChannel();
+    const bool canFit = state.getEdit() != nullptr && channel != nullptr && ! song::isAudioChannel (*channel);
+    m.addItem (3, TRANS ("Move this channel's notes into") + " " + scales::describe (state.scaleKey, state.scaleType), canFit);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (scaleButton),
+                     [safe = juce::Component::SafePointer<PianoRoll> (this)] (int r)
+    {
+        if (safe == nullptr || r == 0)
+            return;
+
+        auto& st = safe->state;
+
+        if (r == 1)                     st.scaleSnap = false;
+        else if (r == 2)                st.scaleSnap = true;
+        else if (r >= 100 && r < 112)   { st.scaleKey = r - 100;  st.scaleSnap = true; }
+        else if (r >= 200)              { st.scaleType = r - 200; st.scaleSnap = true; }
+        else if (r == 3)
+        {
+            // Every note of this channel in the viewed pattern onto the nearest scale note.
+            auto* edit = st.getEdit();
+            auto* ch = st.getSelectedChannel();
+
+            if (edit != nullptr && ch != nullptr)
+            {
+                st.beginAction();
+                int moved = 0;
+
+                for (auto& n : getNotes (st.getPattern(), getChannelID (*ch)))
+                {
+                    const int pitch = n[ids::p];
+                    const int target = scales::nearest (st.scaleKey, st.scaleType, pitch, false, lowestPitch, highestPitch);
+
+                    if (target != pitch)
+                    {
+                        n.setProperty (ids::p, target, &edit->getUndoManager());
+                        ++moved;
+                    }
+                }
+
+                st.session.logMessage (TRANS ("{N} note(s) of {CHANNEL} moved into {SCALE} (Ctrl+Z undoes it)")
+                                         .replace ("{N}", juce::String (moved)).replace ("{CHANNEL}", ch->getName())
+                                         .replace ("{SCALE}", scales::describe (st.scaleKey, st.scaleType)));
+            }
+        }
+
+        safe->updateScaleButton();
+        safe->grid->repaint();
+
+        if (safe->onScaleChanged)
+            safe->onScaleChanged();
+    });
 }
 
 PianoRoll::~PianoRoll()
@@ -525,6 +694,17 @@ void PianoRoll::resized()
 {
     auto r = getLocalBounds();
     auto top = r.removeFromTop (titleHeight).reduced (12, 0);
+
+    // Right side of the title row: Scale, own window, full screen.
+    auto buttons = top.reduced (0, 3);
+    fullScreenButton.setBounds (buttons.removeFromRight (30));
+    buttons.removeFromRight (4);
+    detachButton.setBounds (buttons.removeFromRight (30));
+    buttons.removeFromRight (8);
+    const int scaleWidth = (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), scaleButton.getButtonText()) + 15 + 6 + 26;
+    scaleButton.setBounds (buttons.removeFromRight (juce::jmin (220, scaleWidth)));
+    top.setRight (scaleButton.getX() - 8);
+
     const int headingWidth = 18 + (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), heading) + 8;
     title.setBounds (top.withTrimmedLeft (headingWidth));
     ruler->setBounds (r.removeFromTop (20).withTrimmedRight (viewport.getScrollBarThickness()));

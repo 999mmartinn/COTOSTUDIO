@@ -43,6 +43,11 @@ public:
 
     static constexpr int rowHeight = 34, stepsX = 236, bottomHeight = 38;
 
+    /** Own window (e.g. a second monitor) and full screen there (set up by the main window). */
+    std::function<void()> onDetachToggle, onFullScreenToggle;
+    void setDetached (bool);
+    void setFullScreenState (bool isFullScreen);
+
 private:
     class Row;
 
@@ -53,6 +58,7 @@ private:
     juce::Viewport viewport;
     juce::TextButton addButton { TRANS ("Channel") };
     juce::ComboBox filterBox;
+    juce::TextButton detachButton, fullScreenButton;
     juce::StringArray rowIDs;
     juce::Array<int> rowColourIndexes;
     int lastPlayhead = -2;

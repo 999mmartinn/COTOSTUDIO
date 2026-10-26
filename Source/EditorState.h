@@ -21,6 +21,12 @@ struct EditorState
     enum class RackFilter { all, instruments, audio };
     RackFilter rackFilter = RackFilter::all;   // which channels the rack shows (this PC only)
 
+    // The piano roll's scale helper (this PC only): with snapping on, notes land
+    // only on notes of this key's scale. Off by default: notes go anywhere.
+    bool scaleSnap = false;
+    int scaleKey = 0;      // 0 = C ... 11 = B
+    int scaleType = 1;     // index in scales::types (1 = minor)
+
     std::function<void()> onSelectionChanged;
 
     // Automation

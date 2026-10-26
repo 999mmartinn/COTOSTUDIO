@@ -63,20 +63,21 @@ struct MainComponent::SimulatedMic  : private juce::Timer
 
 
 //==============================================================================
-/** The mixer in a window of its own (e.g. full screen on a second monitor).
-    Closing it puts the mixer back in the main window. */
-class MainComponent::MixerWindow  : public juce::DocumentWindow
+/** A panel (mixer, piano roll, channel rack) in a window of its own - e.g. full
+    screen on a second monitor. Closing it puts the panel back in the main window. */
+class MainComponent::PanelWindow  : public juce::DocumentWindow
 {
 public:
-    explicit MixerWindow (MainComponent& o)
-        : DocumentWindow (TRANS ("Mixer") + "  -  COTOSTUDIO", theme::colours::bg, DocumentWindow::allButtons), owner (o)
+    PanelWindow (MainComponent& o, Panel p)
+        : DocumentWindow (o.panelName (p) + "  -  COTOSTUDIO", theme::colours::bg, DocumentWindow::allButtons),
+          owner (o), panel (p)
     {
         setUsingNativeTitleBar (true);
         setResizable (true, false);
-        setResizeLimits (480, 260, 8000, 5000);
-        setContentNonOwned (&owner.mixer, false);
+        setResizeLimits (480, 220, 8000, 5000);
+        setContentNonOwned (&owner.panelComponent (panel), false);
 
-        const auto saved = owner.settings()->getValue ("mixerWindow");
+        const auto saved = owner.settings()->getValue (owner.panelKey (panel) + "Window");
 
         if (saved.isEmpty() || ! restoreWindowStateFromString (saved))
         {
@@ -88,62 +89,124 @@ public:
                 if (! d.isMain)
                     area = d.userArea;
 
-            setBounds (area.withSizeKeepingCentre (juce::jmin (1400, area.getWidth() - 80), juce::jmin (700, area.getHeight() - 80)));
+            const auto size = panel == Panel::rack ? juce::Point<int> (1100, 600)
+                            : panel == Panel::pianoRoll ? juce::Point<int> (1500, 820)
+                                                        : juce::Point<int> (1400, 700);
+            setBounds (area.withSizeKeepingCentre (juce::jmin (size.x, area.getWidth() - 80), juce::jmin (size.y, area.getHeight() - 80)));
         }
 
         setVisible (true);
         ready = true;
     }
 
-    ~MixerWindow() override
+    ~PanelWindow() override
     {
-        clearContentComponent();   // the mixer belongs to the main window
+        clearContentComponent();   // the panel belongs to the main window
     }
 
-    void closeButtonPressed() override                        { owner.setMixerDetached (false); }
-    bool keyPressed (const juce::KeyPress& key) override      { return owner.keyPressed (key); }   // Space, Ctrl+S... work here too
+    void closeButtonPressed() override                        { owner.setPanelDetached (panel, false); }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (key == juce::KeyPress::escapeKey && isFullScreen())
+        {
+            setFullScreen (false);
+            return true;
+        }
+
+        return owner.keyPressed (key);   // Space, Ctrl+S... work here too
+    }
+
     void moved() override                                     { DocumentWindow::moved(); remember(); }
-    void resized() override                                   { DocumentWindow::resized(); remember(); }
+
+    void resized() override
+    {
+        DocumentWindow::resized();
+        remember();
+
+        if (ready)
+            owner.updateFullScreenButtons();
+    }
 
 private:
     MainComponent& owner;
+    const Panel panel;
     bool ready = false;
 
     void remember()
     {
         if (ready)
-            owner.settings()->setValue ("mixerWindow", getWindowStateAsString());
+            owner.settings()->setValue (owner.panelKey (panel) + "Window", getWindowStateAsString());
     }
 };
 
-/** What the Mixer tab shows while the mixer has its own window. */
-class MainComponent::MixerPlaceholder  : public juce::Component
+/** What a detached panel's place in the main window shows meanwhile: a note and
+    "Show the window" / "Bring it back here". The rack's is a slim strip. */
+class MainComponent::PanelPlaceholder  : public juce::Component
 {
 public:
-    explicit MixerPlaceholder (MainComponent& o) : owner (o)
+    PanelPlaceholder (MainComponent& o, Panel p) : owner (o), panel (p)
     {
         theme::setStyle (showButton, "accent");
         theme::setIcon (backButton, theme::Icon::attach);
-        backButton.onClick = [this] { owner.setMixerDetached (false); };
-        showButton.onClick = [this] { owner.showMixer(); };
+        backButton.onClick = [this] { owner.setPanelDetached (panel, false); };
+        showButton.onClick = [this] { owner.showPanel (panel); };
         addAndMakeVisible (backButton);
         addAndMakeVisible (showButton);
     }
 
+    bool isStrip() const        { return panel == Panel::rack; }
+
+    juce::String message() const
+    {
+        return panel == Panel::rack      ? TRANS ("The channel rack is in its own window.")
+             : panel == Panel::pianoRoll ? TRANS ("The piano roll is in its own window.")
+                                         : TRANS ("The mixer is in its own window.");
+    }
+
     void paint (juce::Graphics& g) override
     {
+        if (isStrip())
+        {
+            auto r = getLocalBounds().withTrimmedBottom (6);
+            theme::fillPanel (g, r);
+            r.reduce (14, 0);
+            theme::drawIcon (g, theme::Icon::detach, r.removeFromLeft (18).toFloat().withSizeKeepingCentre (16.0f, 16.0f),
+                             theme::colours::accent, 1.6f);
+            r.removeFromLeft (10);
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::ui (12.5f, theme::Weight::medium));
+            g.drawText (message(), r.withRight (showButton.getX() - 10), juce::Justification::centredLeft, true);
+            return;
+        }
+
         g.fillAll (theme::colours::wellAlt);
         auto top = getLocalBounds().withTrimmedBottom (getHeight() / 2 - 10);
         theme::drawIcon (g, theme::Icon::detach, top.removeFromBottom (24).withTrimmedBottom (2).toFloat().withSizeKeepingCentre (22.0f, 22.0f),
                          theme::colours::accent, 1.8f);
         g.setColour (theme::colours::muted);
         g.setFont (theme::ui (13.5f, theme::Weight::medium));
-        g.drawFittedText (TRANS ("The mixer is in its own window."), top.withTrimmedBottom (10),
-                          juce::Justification::centredBottom, 1);
+        g.drawFittedText (message(), top.withTrimmedBottom (10), juce::Justification::centredBottom, 1);
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (isStrip())
+            theme::framePanel (g, getLocalBounds().withTrimmedBottom (6));
     }
 
     void resized() override
     {
+        if (isStrip())
+        {
+            auto r = getLocalBounds().withTrimmedBottom (6).reduced (10, 0);
+            r = r.withSizeKeepingCentre (r.getWidth(), 28);
+            backButton.setBounds (r.removeFromRight (170));
+            r.removeFromRight (8);
+            showButton.setBounds (r.removeFromRight (160));
+            return;
+        }
+
         auto r = getLocalBounds().withTrimmedTop (getHeight() / 2 + 6).removeFromTop (30).withSizeKeepingCentre (380, 30);
         showButton.setBounds (r.removeFromLeft (170));
         r.removeFromLeft (10);
@@ -152,6 +215,7 @@ public:
 
 private:
     MainComponent& owner;
+    const Panel panel;
     juce::TextButton backButton { TRANS ("Bring it back here") }, showButton { TRANS ("Show the window") };
 };
 
@@ -257,7 +321,7 @@ MainComponent::MainComponent (te::Engine& e)
              logo.get(), &fileButton, &soundsButton, &sessionPill, &lcd, &settingsButton,
              &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &undoButton, &redoButton,
-             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, dock.get(), &statusBar })
+             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &dividerNoRack, dock.get(), &statusBar })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -443,7 +507,7 @@ MainComponent::MainComponent (te::Engine& e)
         refresh();
     };
 
-    recordButton.setTooltip (TRANS ("Record (R): records every armed mixer insert from the song start marker. Press Stop or Space to finish. Right-click: count-in"));
+    recordButton.setTooltip (TRANS ("Record (R): records every armed mixer insert from the song start marker (or the punch range). Press Stop or Space to finish. Right-click: recording options (count-in, punch in/out, disarm all...)"));
 
     clickButton.setClickingTogglesState (false);
     clickButton.setTooltip (TRANS ("Metronome on/off (only you hear it). Right-click: count-in before recording"));
@@ -472,7 +536,17 @@ MainComponent::MainComponent (te::Engine& e)
         else if (session.getRecorder().getNumArmed() == 0)
             showRecordSetupMenu();
         else if (session.startRecording (state.beatsToSeconds (state.songStartBeat)))
-            appendLog (TRANS ("Recording... press Stop or Space to finish"));
+        {
+            const auto& punch = session.getRecorder().getPunch();
+            auto bar = [] (double beat) { return juce::String (beat / 4.0 + 1.0, std::abs (std::fmod (beat, 4.0)) < 0.001 ? 0 : 2); };
+
+            if (punch.isActive())
+                appendLog (TRANS ("Punch recording bars {FROM} to {TO}: the song plays from bar {START}; recording stops by itself at the punch-out")
+                             .replace ("{FROM}", bar (punch.inBeat)).replace ("{TO}", bar (punch.outBeat))
+                             .replace ("{START}", bar (juce::jmax (0.0, punch.inBeat - 4.0 * punch.preRollBars))));
+            else
+                appendLog (TRANS ("Recording... press Stop or Space to finish"));
+        }
 
         refresh();
     };
@@ -492,21 +566,41 @@ MainComponent::MainComponent (te::Engine& e)
     bottomTabs.setOutline (0);
     bottomTabs.setIndent (0);
 
-    // The mixer can have a window of its own (e.g. full screen on a second monitor).
-    mixerPlaceholder = std::make_unique<MixerPlaceholder> (*this);
-    mixer.onDetachToggle = [this] { setMixerDetached (mixerWindow == nullptr); };
-    mixer.onFullScreenToggle = [this]
+    // The mixer, piano roll and channel rack can each have a window of their own
+    // (e.g. full screen on a second monitor); the playlist and the piano roll can
+    // also fill the main window.
+    for (int i = 0; i < numPanels; ++i)
+        placeholders[i] = std::make_unique<PanelPlaceholder> (*this, (Panel) i);
+
+    mixer.onDetachToggle    = [this] { setPanelDetached (Panel::mixer, ! isDetached (Panel::mixer)); };
+    mixer.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::mixer); };
+    pianoRoll.onDetachToggle = [this] { setPanelDetached (Panel::pianoRoll, ! isDetached (Panel::pianoRoll)); };
+    pianoRoll.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::pianoRoll); };
+    rack.onDetachToggle     = [this] { setPanelDetached (Panel::rack, ! isDetached (Panel::rack)); };
+    rack.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::rack); };
+    playlist.onFullScreenToggle = [this]
     {
-        if (mixerWindow != nullptr)
-            mixerWindow->setFullScreen (! mixerWindow->isFullScreen());
+        setMaximised (maximised == Maximised::playlist ? Maximised::none : Maximised::playlist);
     };
 
-    if (prefs->getBoolValue ("mixerDetached", false))
-        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
-        {
-            if (safe != nullptr)
-                safe->setMixerDetached (true);
-        });
+    // The scale helper is remembered (this PC only).
+    state.scaleSnap = prefs->getBoolValue ("scaleSnap", false);
+    state.scaleKey = juce::jlimit (0, 11, prefs->getIntValue ("scaleKey", 0));
+    state.scaleType = prefs->getIntValue ("scaleType", 1);
+    pianoRoll.onScaleChanged = [this]
+    {
+        settings()->setValue ("scaleSnap", state.scaleSnap);
+        settings()->setValue ("scaleKey", state.scaleKey);
+        settings()->setValue ("scaleType", state.scaleType);
+    };
+
+    juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        if (safe != nullptr)
+            for (int i = 0; i < numPanels; ++i)
+                if (safe->settings()->getBoolValue (panelKey ((Panel) i) + "Detached", false))
+                    safe->setPanelDetached ((Panel) i, true);
+    });
 
     // Panels: playlist, divider, rack, divider, piano roll / mixer tabs (sizes are proportions or pixels).
     panelLayout.setItemLayout (0, 110, -0.7, -0.30);
@@ -514,6 +608,11 @@ MainComponent::MainComponent (te::Engine& e)
     panelLayout.setItemLayout (2, 110, -0.6, -0.31);
     panelLayout.setItemLayout (3, 6, 6, 6);
     panelLayout.setItemLayout (4, 120, -0.8, -0.39);
+
+    panelLayoutNoRack.setItemLayout (0, 110, -0.8, -0.45);
+    panelLayoutNoRack.setItemLayout (1, 6, 6, 6);
+    panelLayoutNoRack.setItemLayout (2, 50, 50, 50);
+    panelLayoutNoRack.setItemLayout (3, 120, -0.85, -0.55);
 
     for (auto* b : { &patModeButton, &songModeButton })
     {
@@ -588,6 +687,20 @@ MainComponent::MainComponent (te::Engine& e)
 
     session.createLocalEdit();
 
+    // Recording: your inputs (which input feeds which insert, armed or not), monitoring
+    // and punch settings are remembered on this PC.
+    {
+        auto& rec = session.getRecorder();
+        rec.setMonitoring (prefs->getBoolValue ("monitorInputs", true));
+        rec.restoreChoices (lastRecordChoices = prefs->getValue ("recordInputs"));
+        lastRecordChoices = rec.saveChoices();
+        Recorder::Punch punch;
+        punch.preRollBars = prefs->getIntValue ("punchPreRoll", 1);
+        rec.setPunch (punch);
+    }
+
+    playlist.onPunchChanged = [this] { refresh(); };
+
     // Developer option for screenshots: SyncTest --demo-mixer
     if (juce::JUCEApplication::getCommandLineParameterArray().contains ("--demo-mixer"))
     {
@@ -643,7 +756,11 @@ MainComponent::~MainComponent()
 {
     stopTimer();
     saveSoundsState();
-    mixerWindow.reset();
+    settings()->setValue ("recordInputs", session.getRecorder().saveChoices());
+
+    for (auto& w : panelWindows)
+        w.reset();
+
     logWindow.reset();   // shows logView, which goes first otherwise
     settings()->setValue ("previewVolume", (double) previewer.getGain());
     session.clearCallbacks();   // the session goes after the window's parts: it must not call into them
@@ -831,8 +948,10 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
 
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
-    if (key == juce::KeyPress::F7Key)                                               { bottomTabs.setCurrentTabIndex (0); return true; }
+    if (key == juce::KeyPress::F6Key)                                               { showPanel (Panel::rack); return true; }
+    if (key == juce::KeyPress::F7Key)                                               { showPanel (Panel::pianoRoll); return true; }
     if (key == juce::KeyPress::F9Key)                                               { showMixer(); return true; }
+    if (key == juce::KeyPress::escapeKey && maximised != Maximised::none)           { setMaximised (Maximised::none); return true; }
     if (key == juce::KeyPress (juce::KeyPress::F8Key, juce::ModifierKeys::altModifier, 0)) { setSoundsVisible (! soundsVisible); return true; }
     if (key == juce::KeyPress::F8Key)                                               { setBrowserVisible (! browserVisible); return true; }
 
@@ -911,39 +1030,136 @@ void MainComponent::saveSoundsState()
     }
 }
 
-void MainComponent::showMixer()
+juce::Component& MainComponent::panelComponent (Panel p)
 {
-    if (mixerWindow != nullptr)
-        mixerWindow->toFront (true);
-    else
-        bottomTabs.setCurrentTabIndex (1);
+    switch (p)
+    {
+        case Panel::pianoRoll:  return pianoRoll;
+        case Panel::rack:       return rack;
+        case Panel::mixer:      break;
+    }
+
+    return mixer;
 }
 
-void MainComponent::setMixerDetached (bool detached)
+juce::String MainComponent::panelName (Panel p) const
 {
-    if (detached == (mixerWindow != nullptr))
+    return p == Panel::pianoRoll ? TRANS ("Piano roll") : p == Panel::rack ? TRANS ("Channel rack") : TRANS ("Mixer");
+}
+
+juce::String MainComponent::panelKey (Panel p)
+{
+    return p == Panel::pianoRoll ? "pianoRoll" : p == Panel::rack ? "rack" : "mixer";
+}
+
+void MainComponent::showPanel (Panel p)
+{
+    if (auto& w = panelWindows[(int) p])
+    {
+        w->toFront (true);
+        return;
+    }
+
+    if (p == Panel::pianoRoll)  bottomTabs.setCurrentTabIndex (0);
+    if (p == Panel::mixer)      bottomTabs.setCurrentTabIndex (1);
+
+    // A panel hidden by the other one filling the window comes back.
+    if ((p == Panel::rack && maximised != Maximised::none)
+         || (p != Panel::rack && maximised == Maximised::playlist))
+        setMaximised (Maximised::none);
+}
+
+void MainComponent::setPanelDetached (Panel p, bool detached)
+{
+    const int i = (int) p;
+
+    if (detached == isDetached (p))
         return;
 
-    const auto colour = bottomTabs.getTabBackgroundColour (1);
+    if (detached && p == Panel::pianoRoll && maximised == Maximised::pianoRoll)
+        setMaximised (Maximised::none);
+
+    // The panel's tab (piano roll 0, mixer 1) keeps its place, showing a note meanwhile.
+    const int tab = p == Panel::pianoRoll ? 0 : p == Panel::mixer ? 1 : -1;
+    const auto colour = tab >= 0 ? bottomTabs.getTabBackgroundColour (tab) : juce::Colour();
+    const bool wasCurrent = tab >= 0 && bottomTabs.getCurrentTabIndex() == tab;
 
     if (detached)
     {
-        // The Mixer tab keeps its place (with a note); the mixer moves to its window.
-        bottomTabs.removeTab (1);
-        bottomTabs.addTab (TRANS ("Mixer"), colour, mixerPlaceholder.get(), false, 1);
-        mixerWindow = std::make_unique<MixerWindow> (*this);
-        appendLog (TRANS ("The mixer has its own window now: move it to your other screen (F9 brings it to the front)"));
+        if (tab >= 0)
+        {
+            bottomTabs.removeTab (tab);
+            bottomTabs.addTab (panelName (p), colour, placeholders[i].get(), false, tab);
+
+            if (wasCurrent)
+                bottomTabs.setCurrentTabIndex (tab);
+        }
+
+        panelWindows[i] = std::make_unique<PanelWindow> (*this, p);
+        appendLog (TRANS ("{PANEL} has its own window now: move it to your other screen").replace ("{PANEL}", panelName (p))
+                     + (p == Panel::rack ? " (F6)" : p == Panel::pianoRoll ? " (F7)" : " (F9)"));
     }
     else
     {
-        mixerWindow.reset();
-        bottomTabs.removeTab (1);
-        bottomTabs.addTab (TRANS ("Mixer"), colour, &mixer, false, 1);
-        bottomTabs.setCurrentTabIndex (1);
+        panelWindows[i].reset();
+
+        if (tab >= 0)
+        {
+            bottomTabs.removeTab (tab);
+            bottomTabs.addTab (panelName (p), colour, &panelComponent (p), false, tab);
+            bottomTabs.setCurrentTabIndex (tab);
+        }
+        else
+        {
+            addAndMakeVisible (rack);   // back from its window
+        }
     }
 
-    mixer.setDetached (detached);
-    settings()->setValue ("mixerDetached", detached);
+    if (p == Panel::mixer)          mixer.setDetached (detached);
+    if (p == Panel::pianoRoll)      pianoRoll.setDetached (detached);
+    if (p == Panel::rack)           rack.setDetached (detached);
+
+    settings()->setValue (panelKey (p) + "Detached", detached);
+    resized();
+    updateFullScreenButtons();
+}
+
+void MainComponent::togglePanelFullScreen (Panel p)
+{
+    if (auto& w = panelWindows[(int) p])
+    {
+        w->setFullScreen (! w->isFullScreen());
+        w->toFront (true);
+    }
+    else if (p == Panel::pianoRoll)
+    {
+        setMaximised (maximised == Maximised::pianoRoll ? Maximised::none : Maximised::pianoRoll);
+    }
+
+    updateFullScreenButtons();
+}
+
+void MainComponent::setMaximised (Maximised m)
+{
+    if (m == Maximised::pianoRoll && isDetached (Panel::pianoRoll))
+        m = Maximised::none;
+
+    maximised = m;
+
+    if (m == Maximised::pianoRoll)
+        bottomTabs.setCurrentTabIndex (0);
+
+    resized();
+    updateFullScreenButtons();
+}
+
+void MainComponent::updateFullScreenButtons()
+{
+    auto windowFull = [this] (Panel p) { auto& w = panelWindows[(int) p]; return w != nullptr && w->isFullScreen(); };
+
+    playlist.setFullScreenState (maximised == Maximised::playlist);
+    pianoRoll.setFullScreenState (isDetached (Panel::pianoRoll) ? windowFull (Panel::pianoRoll) : maximised == Maximised::pianoRoll);
+    rack.setFullScreenState (windowFull (Panel::rack));
 }
 
 void MainComponent::setSoundsVisible (bool shouldBeVisible)
@@ -981,6 +1197,18 @@ void MainComponent::timerCallback()
     {
         ticksSinceSoundsSave = 0;
         saveSoundsState();
+    }
+
+    // Which input feeds which insert (and armed or not), every 2 s if it changed.
+    if (ticksSinceSoundsSave == 0)
+    {
+        const auto choices = session.getRecorder().saveChoices();
+
+        if (choices != lastRecordChoices)
+        {
+            lastRecordChoices = choices;
+            settings()->setValue ("recordInputs", choices);
+        }
     }
 
     // A backup every 3 minutes while there are changes.
@@ -1125,17 +1353,53 @@ void MainComponent::createAutomation (const juce::String& pluginID, const juce::
 
 void MainComponent::showRecordOptionsMenu (juce::Component* target)
 {
-    juce::PopupMenu m;
+    auto& rec = session.getRecorder();
+    const auto punch = rec.getPunch();
     const int bars = session.getCountInBars();
-    m.addSectionHeader (TRANS ("Count-in before recording (metronome)"));
-    m.addItem (1, TRANS ("None"), true, bars == 0);
-    m.addItem (2, TRANS ("1 bar"), true, bars == 1);
-    m.addItem (3, TRANS ("2 bars"), true, bars == 2);
-    m.addSeparator();
+    auto bar = [] (double beat) { return juce::String (beat / 4.0 + 1.0, std::abs (std::fmod (beat, 4.0)) < 0.001 ? 0 : 2); };
+
+    juce::PopupMenu m, countIn, punchFrom, preRoll;
+    m.addSectionHeader (TRANS ("Recording options"));
+
+    countIn.addItem (1, TRANS ("None"), true, bars == 0);
+    countIn.addItem (2, TRANS ("1 bar"), true, bars == 1);
+    countIn.addItem (3, TRANS ("2 bars"), true, bars == 2);
+    m.addSubMenu (TRANS ("Count-in before recording") + (bars > 0 ? ": " + juce::String (bars) : juce::String()), countIn);
     m.addItem (4, TRANS ("Metronome while playing"), true, session.isMetronomeOn());
+
+    // Punch in / out
+    m.addSeparator();
+    m.addItem (10, punch.hasRange() ? TRANS ("Punch in / out: bars {FROM} to {TO}").replace ("{FROM}", bar (punch.inBeat)).replace ("{TO}", bar (punch.outBeat))
+                                    : TRANS ("Punch in / out (set the range first)"),
+               punch.hasRange(), punch.isActive());
+
+    for (int n : { 1, 2, 4, 8 })
+        punchFrom.addItem (10 + n, TRANS ("{N} bar(s)").replace ("{N}", juce::String (n)));
+
+    m.addSubMenu (TRANS ("Punch range from the start marker (bar {BAR})").replace ("{BAR}", bar (state.songStartBeat)), punchFrom);
+    m.addItem (19, TRANS ("Clear the punch range"), punch.hasRange());
+
+    for (int n = 0; n <= 2; ++n)
+        preRoll.addItem (30 + n, n == 0 ? TRANS ("None") : TRANS ("{N} bar(s)").replace ("{N}", juce::String (n)), true, punch.preRollBars == n);
+
+    m.addSubMenu (TRANS ("Pre-roll before the punch-in") + ": " + juce::String (punch.preRollBars), preRoll);
+    m.addItem (-1, TRANS ("Tip: Ctrl + drag on the playlist ruler draws the punch range"), false);
+
+    // Inputs
+    m.addSeparator();
+    const int armed = rec.getNumArmed();
+    const auto disarmed = rec.getDisarmedWithInput();
+    m.addItem (40, TRANS ("Disarm all") + (armed > 0 ? " (" + juce::String (armed) + ")" : juce::String()), armed > 0);
+    m.addItem (41, TRANS ("Arm every insert that has an input") + (! disarmed.isEmpty() ? " (" + juce::String (disarmed.size()) + ")" : juce::String()),
+               ! disarmed.isEmpty());
+    m.addItem (42, TRANS ("Hear the inputs through their inserts (monitoring)"), true, rec.isMonitoring());
+    m.addItem (43, TRANS ("Sound card and MIDI..."));
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [this] (int r)
     {
+        auto& recorder = session.getRecorder();
+        auto p = recorder.getPunch();
+
         if (r >= 1 && r <= 3)
         {
             session.setCountInBars (r - 1);
@@ -1148,9 +1412,71 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
             session.setMetronome (! session.isMetronomeOn());
             settings()->setValue ("metronome", session.isMetronomeOn());
         }
+        else if (r == 10)
+        {
+            p.on = ! p.on;
+            recorder.setPunch (p);
+            appendLog (p.on ? TRANS ("Punch in / out on: Rec keeps only the punch range") : TRANS ("Punch in / out off: Rec records from the start marker"));
+        }
+        else if (r >= 11 && r <= 18)
+        {
+            setPunchFromStartMarker (r - 10);
+        }
+        else if (r == 19)
+        {
+            const int preRollBars = p.preRollBars;
+            p = {};
+            p.preRollBars = preRollBars;
+            recorder.setPunch (p);
+        }
+        else if (r >= 30 && r <= 32)
+        {
+            p.preRollBars = r - 30;
+            recorder.setPunch (p);
+            savePunchSettings();
+        }
+        else if (r == 40)
+        {
+            recorder.disarmAll();
+            appendLog (TRANS ("Every insert disarmed (their inputs stay, so you still hear them)"));
+        }
+        else if (r == 41)
+        {
+            recorder.armAllWithInput();
+        }
+        else if (r == 42)
+        {
+            recorder.setMonitoring (! recorder.isMonitoring());
+            settings()->setValue ("monitorInputs", recorder.isMonitoring());
+            appendLog (recorder.isMonitoring() ? TRANS ("Monitoring on: you hear your inputs through their inserts' effects")
+                                               : TRANS ("Monitoring off: use your interface's direct monitor to hear yourself"));
+        }
+        else if (r == 43)
+        {
+            showAudioSettings();
+        }
 
+        playlist.repaint();
         refresh();
     });
+}
+
+void MainComponent::setPunchFromStartMarker (int bars)
+{
+    auto& recorder = session.getRecorder();
+    auto p = recorder.getPunch();
+    p.inBeat = std::floor (state.songStartBeat / 4.0 + 1.0e-6) * 4.0;
+    p.outBeat = p.inBeat + 4.0 * bars;
+    p.on = true;
+    recorder.setPunch (p);
+    appendLog (TRANS ("Punch in / out: bars {FROM} to {TO}. Rec plays from a bar before and keeps only this part")
+                 .replace ("{FROM}", juce::String (p.inBeat / 4.0 + 1.0, 0)).replace ("{TO}", juce::String (p.outBeat / 4.0 + 1.0, 0)));
+    playlist.repaint();
+}
+
+void MainComponent::savePunchSettings()
+{
+    settings()->setValue ("punchPreRoll", session.getRecorder().getPunch().preRollBars);
 }
 
 //==============================================================================
@@ -1330,7 +1656,36 @@ void MainComponent::showRecordSetupMenu()
     auto inputs = session.getRecorder().getInputs();
 
     juce::PopupMenu m;
-    m.addSectionHeader (TRANS ("Nothing is armed. Record from:"));
+    auto& recorder = session.getRecorder();
+    const auto disarmed = recorder.getDisarmedWithInput();
+    auto* edit = state.getEdit();
+
+    if (! disarmed.isEmpty() && edit != nullptr)
+    {
+        m.addSectionHeader (TRANS ("Nothing is armed. Arm:"));
+
+        for (int i = 0; i < disarmed.size(); ++i)
+        {
+            auto* insert = song::findInsert (*edit, disarmed[i]);
+            juce::String inputName;
+
+            for (auto& in : inputs)
+                if (in.id == recorder.getInputFor (disarmed[i]))
+                    inputName = in.name;
+
+            m.addItem (200 + i, (insert != nullptr ? insert->getName() : juce::String ("?")) + "  (" + inputName + ")");
+        }
+
+        if (disarmed.size() > 1)
+            m.addItem (199, TRANS ("All of them"));
+
+        m.addSeparator();
+        m.addSectionHeader (TRANS ("Or record from a new insert:"));
+    }
+    else
+    {
+        m.addSectionHeader (TRANS ("Nothing is armed. Record from:"));
+    }
 
     for (int i = 0; i < inputs.size(); ++i)
         m.addItem (100 + i, inputs[i].name);
@@ -1341,12 +1696,26 @@ void MainComponent::showRecordSetupMenu()
     m.addSeparator();
     m.addItem (1, TRANS ("Audio settings..."));
 
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (recordButton), [this, inputs] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (recordButton), [this, inputs, disarmed] (int r)
     {
         auto* edit = state.getEdit();
 
         if (r == 1)
             showAudioSettings();
+
+        if (r == 199 || juce::isPositiveAndBelow (r - 200, disarmed.size()))
+        {
+            auto& rec = session.getRecorder();
+
+            if (r == 199)
+                rec.armAllWithInput();
+            else
+                rec.setArmed (disarmed[r - 200], true);
+
+            appendLog (TRANS ("Armed: press Rec (or R) to record"));
+            refresh();
+            return;
+        }
 
         if (edit == nullptr || ! juce::isPositiveAndBelow (r - 100, inputs.size()))
             return;
@@ -1438,7 +1807,34 @@ void MainComponent::showFileMenu()
         return i;
     };
 
-    m.addItem (item (1, TRANS ("New song"), canReplace, "Ctrl+N"));
+    const auto templates = appdata::findTemplates();
+    const auto startFrom = defaultTemplate();
+
+    m.addItem (item (1, startFrom.existsAsFile() ? TRANS ("New song from \"{NAME}\"").replace ("{NAME}", startFrom.getFileNameWithoutExtension())
+                                                 : TRANS ("New song"), canReplace, "Ctrl+N"));
+
+    // Templates: songs to start from (e.g. your recording setup with all its plugins).
+    juce::PopupMenu templateMenu, defaultMenu;
+
+    if (templates.isEmpty())
+        templateMenu.addItem (-1, TRANS ("(no templates yet: save one below)"), false);
+
+    for (int i = 0; i < templates.size(); ++i)
+        templateMenu.addItem (300 + i, TRANS ("New song from") + " \"" + templates[i].getFileNameWithoutExtension() + "\"", canReplace);
+
+    templateMenu.addSeparator();
+    templateMenu.addItem (30, TRANS ("Save this song as a template..."));
+
+    defaultMenu.addItem (31, TRANS ("An empty song"), true, ! startFrom.existsAsFile());
+
+    for (int i = 0; i < templates.size(); ++i)
+        defaultMenu.addItem (400 + i, templates[i].getFileNameWithoutExtension(), true, templates[i] == startFrom);
+
+    templateMenu.addSubMenu (TRANS ("New song (Ctrl+N) starts from"), defaultMenu);
+    templateMenu.addItem (32, TRANS ("New empty song"), canReplace);
+    templateMenu.addItem (33, TRANS ("Open the Templates folder"));
+    m.addSubMenu (TRANS ("Templates"), templateMenu);
+
     m.addItem (item (2, TRANS ("Open..."), canReplace, "Ctrl+O"));
 
     recentFiles.createPopupMenuItems (recent, 100, false, true);
@@ -1467,9 +1863,27 @@ void MainComponent::showFileMenu()
         m.addItem (-1, TRANS ("(only the host can open or start songs during a session)"), false);
     }
 
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fileButton), [this] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fileButton), [this, templates] (int r)
     {
-        if (r == 1)        newSong();
+        if (juce::isPositiveAndBelow (r - 300, templates.size()))
+        {
+            newSongFromTemplate (templates[r - 300]);
+            return;
+        }
+
+        if (juce::isPositiveAndBelow (r - 400, templates.size()) || r == 31)
+        {
+            const auto chosen = r == 31 ? juce::File() : templates[r - 400];
+            settings()->setValue ("newSongTemplate", chosen.getFileNameWithoutExtension());
+            appendLog (r == 31 ? TRANS ("New song (Ctrl+N) starts an empty song")
+                               : TRANS ("New song (Ctrl+N) starts from the template \"{NAME}\"").replace ("{NAME}", chosen.getFileNameWithoutExtension()));
+            return;
+        }
+
+        if (r == 30)       saveAsTemplate();
+        else if (r == 32)  newEmptySong();
+        else if (r == 33)  { appdata::templatesFolder().createDirectory(); appdata::templatesFolder().startAsProcess(); }
+        else if (r == 1)   newSong();
         else if (r == 2)   openSong();
         else if (r == 3)   saveSong (false);
         else if (r == 4)   saveSong (true);
@@ -1541,7 +1955,142 @@ void MainComponent::askToSaveChanges (std::function<void()> proceed)
     });
 }
 
+juce::File MainComponent::defaultTemplate() const
+{
+    const auto name = userSettings->getValue ("newSongTemplate");
+    return name.isNotEmpty() ? appdata::templateFileForName (name) : juce::File();
+}
+
 void MainComponent::newSong()
+{
+    // New song starts from your chosen template, if you picked one (File > Templates).
+    const auto t = defaultTemplate();
+
+    if (t.existsAsFile())
+        newSongFromTemplate (t);
+    else
+        newEmptySong();
+}
+
+void MainComponent::newSongFromTemplate (const juce::File& file)
+{
+    if (! session.canReplaceSong())
+    {
+        appendLog (TRANS ("Only the host can start a new song during a session"));
+        return;
+    }
+
+    askToSaveChanges ([this, file]
+    {
+        if (session.isBusyWithFile())
+        {
+            appendLog (TRANS ("Still busy saving or opening the last song..."));
+            return;
+        }
+
+        const auto name = file.getFileNameWithoutExtension();
+        appendLog (TRANS ("New song from the template \"{NAME}\"...").replace ("{NAME}", name));
+        expectingOwnSong = true;
+
+        session.openProject (file, [safe = juce::Component::SafePointer<MainComponent> (this), file, name] (juce::String error)
+        {
+            if (safe == nullptr)
+                return;
+
+            auto& self = *safe;
+            self.expectingOwnSong = false;
+
+            if (error.isNotEmpty())
+            {
+                self.appendLog (TRANS ("Could not open {FILE}").replace ("{FILE}", file.getFileName()) + ": " + error);
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Could not open the template"), error);
+                return;
+            }
+
+            // A new, untitled song: Save asks for its name (the template itself stays as it is).
+            self.currentFile = juce::File();
+            self.savedHash = self.lastAutosaveHash = self.currentHash();
+            self.dirty = false;
+            self.state.viewedPattern = self.state.selectedChannel = self.state.placeAudioChannel = self.state.selectedInsert = {};
+
+            // The template's recording inputs (which input feeds which insert, armed or not).
+            const auto inputs = file.getSiblingFile ("Inputs.txt");
+
+            if (inputs.existsAsFile())
+                self.session.getRecorder().restoreChoices (inputs.loadFileAsString());
+
+            const int armed = self.session.getRecorder().getNumArmed();
+            self.appendLog (TRANS ("New song from \"{NAME}\"").replace ("{NAME}", name)
+                             + (armed > 0 ? " - " + TRANS ("{N} insert(s) armed: press Rec to record").replace ("{N}", juce::String (armed)) : juce::String()));
+            self.refresh();
+        }, "Untitled");
+    });
+}
+
+void MainComponent::saveAsTemplate()
+{
+    if (session.isBusyWithFile())
+    {
+        appendLog (TRANS ("Still busy saving or opening the last song..."));
+        return;
+    }
+
+    auto* w = new juce::AlertWindow (TRANS ("Save as a template"),
+                                     TRANS ("A template is a song to start new ones from: channels, mixer inserts and their effects (with their settings), patterns, tempo and the sounds in it, plus which input records into which insert on this PC.\n\nName of the template:"),
+                                     juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", session.getSongTitle() == "Untitled" ? TRANS ("Recording") : session.getSongTitle());
+    w->addButton (TRANS ("Save"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<MainComponent> (this), w] (int r)
+    {
+        const auto name = w->getTextEditorContents ("name").trim();
+
+        if (safe == nullptr || r != 1 || name.isEmpty())
+            return;
+
+        const auto file = appdata::templateFileForName (name);
+
+        auto write = [safe, file]
+        {
+            if (safe == nullptr)
+                return;
+
+            const auto inputs = safe->session.getRecorder().saveChoices (true);
+            safe->appendLog (TRANS ("Saving the template \"{NAME}\"...").replace ("{NAME}", file.getFileNameWithoutExtension()));
+
+            safe->session.saveProject (file, true, [safe, file, inputs] (project::SaveResult result)
+            {
+                if (safe == nullptr)
+                    return;
+
+                if (! result.ok())
+                {
+                    safe->appendLog (TRANS ("Could not save") + ": " + result.error);
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Could not save the template"), result.error);
+                    return;
+                }
+
+                file.getSiblingFile ("Inputs.txt").replaceWithText (inputs);
+                safe->appendLog (TRANS ("Template \"{NAME}\" saved. File > Templates starts a new song from it (or make it what New song starts from)")
+                                   .replace ("{NAME}", file.getFileNameWithoutExtension()));
+            });
+        };
+
+        if (file.existsAsFile())
+        {
+            auto options = juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::QuestionIcon, TRANS ("Replace it?"),
+                                                                         TRANS ("There is already a template called \"{NAME}\". Replace it with this song?")
+                                                                           .replace ("{NAME}", file.getFileNameWithoutExtension()),
+                                                                         TRANS ("Replace"), TRANS ("Cancel"), safe.getComponent());
+            juce::AlertWindow::showAsync (options, [write] (int result) { if (result == 1) write(); });
+            return;
+        }
+
+        write();
+    }), true);
+}
+
+void MainComponent::newEmptySong()
 {
     if (! session.canReplaceSong())
     {
@@ -2114,8 +2663,47 @@ void MainComponent::resized()
 
     r.removeFromLeft (8);
 
-    bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
-    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, dock.get() };
-    panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
+    // Playlist, rack and the piano roll / mixer / automation tabs - or one of them
+    // filling the space (full screen), or the rack's note while it has its own window.
+    const bool rackHere = ! isDetached (Panel::rack);
+    auto* rackStrip = placeholders[(int) Panel::rack].get();
+    const bool normal = maximised == Maximised::none;
+
+    playlist.setVisible (maximised != Maximised::pianoRoll);
+    dock->setVisible (maximised != Maximised::playlist);
+    divider1.setVisible (normal && rackHere);
+    divider2.setVisible (normal && rackHere);
+    dividerNoRack.setVisible (normal && ! rackHere);
+
+    if (rackHere)
+        rack.setVisible (normal);
+
+    if (rackStrip != nullptr)
+    {
+        if (! rackHere && normal)
+            addAndMakeVisible (rackStrip);
+        else
+            rackStrip->setVisible (false);
+    }
+
+    if (maximised == Maximised::playlist)
+    {
+        playlist.setBounds (r);
+    }
+    else if (maximised == Maximised::pianoRoll)
+    {
+        dock->setBounds (r);
+    }
+    else if (rackHere)
+    {
+        juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, dock.get() };
+        panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
+    }
+    else
+    {
+        juce::Component* panels[] = { &playlist, &dividerNoRack, rackStrip, dock.get() };
+        panelLayoutNoRack.layOutComponents (panels, 4, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
+    }
+
     bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
 }

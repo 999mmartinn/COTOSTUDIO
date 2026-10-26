@@ -21,7 +21,8 @@ namespace te = tracktion;
         routed to that insert, with a playlist clip at exactly the recorded
         position. From there it travels to everyone like an imported file.
 */
-class Recorder  : private te::TransportControl::Listener
+class Recorder  : private te::TransportControl::Listener,
+                  private juce::Timer
 {
 public:
     Recorder (te::Engine&, AssetStore&);
@@ -41,8 +42,44 @@ public:
     bool isArmed (const juce::String& insertID) const;
     void setArmed (const juce::String& insertID, bool);
     int getNumArmed() const;
+    /** Inserts that have an input but aren't armed (they could be armed with one click). */
+    juce::StringArray getDisarmedWithInput() const;
+    /** Disarms every insert (inputs stay assigned; you still hear them). */
+    void disarmAll();
+    /** Arms every insert that has an input. */
+    void armAllWithInput();
 
-    /** Starts recording every armed insert from this position. False if nothing is armed. */
+    /** Whether assigned inputs are heard through their inserts (monitoring). Turn it
+        off if your interface's own "direct monitor" already lets you hear yourself. */
+    void setMonitoring (bool);
+    bool isMonitoring() const noexcept                   { return monitoring; }
+
+    /** Which input feeds which insert, as text (kept in your settings and in templates).
+        Inserts are matched by ID and name, so another song's inserts are never picked up.
+        onlyThisSong: just the current song's inserts (for a template). */
+    juce::String saveChoices (bool onlyThisSong = false) const;
+    /** Adds the choices saved by saveChoices() for inserts of the current song. */
+    void restoreChoices (const juce::String&);
+
+    /** Punch in / out (like FL): only the part of a take between punch-in and
+        punch-out is kept, and recording stops by itself at the punch-out while the
+        song plays on. Playback starts `preRollBars` before the punch-in.
+        Beats are song beats; this PC only. */
+    struct Punch
+    {
+        bool on = false;
+        double inBeat = 0.0, outBeat = 0.0;
+        int preRollBars = 1;
+
+        bool hasRange() const noexcept                   { return outBeat > inBeat + 0.01; }
+        bool isActive() const noexcept                   { return on && hasRange(); }
+    };
+
+    void setPunch (const Punch& p)                       { punch = p; punch.preRollBars = juce::jlimit (0, 4, punch.preRollBars); }
+    const Punch& getPunch() const noexcept               { return punch; }
+
+    /** Starts recording every armed insert from this position (with punch in/out on:
+        from the pre-roll before the punch-in instead). False if nothing is armed. */
     bool start (double startSeconds);
 
     /** Bars of metronome before the take starts (0, 1 or 2). The take still starts
@@ -67,8 +104,21 @@ private:
     AssetStore& assets;
     te::Edit* edit = nullptr;
 
-    struct Choice { juce::String inputID; bool armed = false; };
+    struct Choice
+    {
+        juce::String inputID;
+        bool armed = false;
+        juce::String insertName;   // to tell this song's insert from another song's with the same ID
+        bool live = false;         // matched to an insert of the current song
+    };
+    void enableInput (const juce::String& inputID);
+    /** The choice for an insert of the current song, or nullptr. */
+    const Choice* liveChoice (const juce::String& insertID) const;
     int countInBars = 0;
+    bool monitoring = true;
+    Punch punch;
+    double takePunchIn = -1.0, takePunchOut = -1.0;   // seconds, for the take being recorded (-1 = no punch)
+    void timerCallback() override;
     std::map<juce::String, Choice> choices;   // insert ID -> this PC's choice
     std::atomic<int> pendingTakes { 0 };
     juce::ThreadPool pool { 1 };

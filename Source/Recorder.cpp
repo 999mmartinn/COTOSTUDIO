@@ -69,6 +69,10 @@ void Recorder::attachTo (te::Edit* newEdit)
     edit->getTransport().addListener (this);
     const auto folder = recordingFolderFor (assets);
 
+    // Which remembered choices belong to this song's inserts is decided again.
+    for (auto& [id, choice] : choices)
+        choice.live = false;
+
     {
         const juce::ScopedLock sl (folderLock());
         recordingFolders()[edit] = folder;
@@ -129,13 +133,24 @@ void Recorder::applyChoices()
     for (auto& [insertID, choice] : choices)
     {
         auto* insert = song::findInsert (*edit, insertID);
+
+        // Another song's insert with the same ID isn't this one (a renamed insert of
+        // this song still is: it was matched before it was renamed).
+        if (insert == nullptr || (! choice.live && choice.insertName.isNotEmpty() && insert->getName() != choice.insertName))
+        {
+            choice.live = false;
+            continue;
+        }
+
+        choice.live = true;
+        choice.insertName = insert->getName();
         auto* idi = findInstance (choice.inputID);
 
-        if (insert == nullptr || idi == nullptr)
+        if (idi == nullptr)
             continue;
 
-        // Heard through the insert's effects whenever it's selected (like FL).
-        idi->getInputDevice().setMonitorMode (te::InputDevice::MonitorMode::on);
+        // Heard through the insert's effects (like FL), unless monitoring is off.
+        idi->getInputDevice().setMonitorMode (monitoring ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
 
         if (! idi->getTargets().contains (insert->itemID))
             if (auto dest = idi->setTarget (insert->itemID, true, nullptr); ! dest)
@@ -146,10 +161,25 @@ void Recorder::applyChoices()
     }
 }
 
-juce::String Recorder::getInputFor (const juce::String& insertID) const
+const Recorder::Choice* Recorder::liveChoice (const juce::String& insertID) const
 {
     auto it = choices.find (insertID);
-    return it != choices.end() ? it->second.inputID : juce::String();
+    return it != choices.end() && it->second.live ? &it->second : nullptr;
+}
+
+juce::String Recorder::getInputFor (const juce::String& insertID) const
+{
+    auto* c = liveChoice (insertID);
+    return c != nullptr ? c->inputID : juce::String();
+}
+
+void Recorder::enableInput (const juce::String& inputID)
+{
+    auto& dm = engine.getDeviceManager();
+
+    for (auto* d : dm.getWaveInputDevices())
+        if (d->getDeviceID() == inputID && ! d->isEnabled())
+            dm.setDeviceEnabled (*d, true);
 }
 
 void Recorder::setInputFor (const juce::String& insertID, const juce::String& inputID)
@@ -169,31 +199,40 @@ void Recorder::setInputFor (const juce::String& insertID, const juce::String& in
     if (inputID.isEmpty())
         return;
 
-    // One input feeds one insert (selecting it here takes it away from another one).
+    // One input feeds one insert of this song (selecting it here takes it away from
+    // another one; other songs keep theirs).
     for (auto it = choices.begin(); it != choices.end();)
-        it = it->second.inputID == inputID ? choices.erase (it) : std::next (it);
+    {
+        if (it->second.inputID == inputID && it->second.live)
+        {
+            if (auto* other = edit != nullptr ? song::findInsert (*edit, it->first) : nullptr)
+                if (auto* old = findInstance (inputID); old != nullptr && old->getTargets().contains (other->itemID))
+                    (void) old->removeTarget (other->itemID, nullptr);
 
-    auto& dm = engine.getDeviceManager();
+            it = choices.erase (it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
 
-    for (auto* d : dm.getWaveInputDevices())
-        if (d->getDeviceID() == inputID && ! d->isEnabled())
-            dm.setDeviceEnabled (*d, true);
-
-    choices[insertID] = { inputID, true };
+    enableInput (inputID);
+    choices[insertID] = { inputID, true, insert != nullptr ? insert->getName() : juce::String(), true };
     applyChoices();
 }
 
 bool Recorder::isArmed (const juce::String& insertID) const
 {
-    auto it = choices.find (insertID);
-    return it != choices.end() && it->second.armed;
+    auto* c = liveChoice (insertID);
+    return c != nullptr && c->armed;
 }
 
 void Recorder::setArmed (const juce::String& insertID, bool shouldBeArmed)
 {
     auto it = choices.find (insertID);
 
-    if (it == choices.end())
+    if (it == choices.end() || ! it->second.live)
         return;
 
     it->second.armed = shouldBeArmed;
@@ -206,10 +245,84 @@ int Recorder::getNumArmed() const
 
     if (edit != nullptr)
         for (auto& [insertID, choice] : choices)
-            if (choice.armed && song::findInsert (*edit, insertID) != nullptr && findInstance (choice.inputID) != nullptr)
+            if (choice.live && choice.armed && song::findInsert (*edit, insertID) != nullptr && findInstance (choice.inputID) != nullptr)
                 ++n;
 
     return n;
+}
+
+juce::StringArray Recorder::getDisarmedWithInput() const
+{
+    juce::StringArray list;
+
+    if (edit != nullptr)
+        for (auto& [insertID, choice] : choices)
+            if (choice.live && ! choice.armed && song::findInsert (*edit, insertID) != nullptr && findInstance (choice.inputID) != nullptr)
+                list.add (insertID);
+
+    return list;
+}
+
+void Recorder::disarmAll()
+{
+    for (auto& [insertID, choice] : choices)
+        if (choice.live)
+            choice.armed = false;
+
+    applyChoices();
+}
+
+void Recorder::armAllWithInput()
+{
+    for (auto& [insertID, choice] : choices)
+        if (choice.live)
+            choice.armed = true;
+
+    applyChoices();
+}
+
+void Recorder::setMonitoring (bool shouldMonitor)
+{
+    monitoring = shouldMonitor;
+
+    if (edit == nullptr)
+        return;
+
+    for (auto& [insertID, choice] : choices)
+        if (choice.live)
+            if (auto* idi = findInstance (choice.inputID))
+                idi->getInputDevice().setMonitorMode (monitoring ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
+}
+
+juce::String Recorder::saveChoices (bool onlyThisSong) const
+{
+    juce::StringArray lines;
+
+    for (auto& [insertID, choice] : choices)
+        if (choice.live || ! onlyThisSong)
+            lines.add (insertID + "\t" + choice.insertName + "\t" + choice.inputID + "\t" + (choice.armed ? "1" : "0"));
+
+    return lines.joinIntoString ("\n");
+}
+
+void Recorder::restoreChoices (const juce::String& text)
+{
+    for (auto& line : juce::StringArray::fromLines (text))
+    {
+        auto parts = juce::StringArray::fromTokens (line, "\t", {});
+
+        if (parts.size() < 4 || parts[0].isEmpty() || parts[2].isEmpty())
+            continue;
+
+        // A choice made here in this run wins over a remembered one.
+        if (auto it = choices.find (parts[0]); it != choices.end() && it->second.live)
+            continue;
+
+        choices[parts[0]] = { parts[2], parts[3] == "1", parts[1], false };
+        enableInput (parts[2]);
+    }
+
+    applyChoices();
 }
 
 //==============================================================================
@@ -236,12 +349,52 @@ bool Recorder::start (double startSeconds)
     // No looping: the take starts right where the song start marker is and simply runs
     // on past the end of the song if you keep going. With a count-in, the engine starts
     // that many bars earlier with the click, and the take still starts at the marker.
-    edit->setCountInMode (countInBars == 2 ? te::Edit::CountIn::twoBar
-                                           : countInBars == 1 ? te::Edit::CountIn::oneBar : te::Edit::CountIn::none);
+    auto countIn = countInBars == 2 ? te::Edit::CountIn::twoBar
+                 : countInBars == 1 ? te::Edit::CountIn::oneBar : te::Edit::CountIn::none;
+    takePunchIn = takePunchOut = -1.0;
+
+    if (punch.isActive())
+    {
+        // Punch in / out: the song plays from the pre-roll before the punch-in (you
+        // hear what leads into it); what's kept is the part between the punch points.
+        auto& ts = edit->tempoSequence;
+        auto toSeconds = [&ts] (double beat) { return ts.toTime (te::BeatPosition::fromBeats (beat)).inSeconds(); };
+        const double preRollBeats = ts.getTimeSig (0)->numerator * punch.preRollBars;
+        takePunchIn = toSeconds (punch.inBeat);
+        takePunchOut = toSeconds (punch.outBeat);
+        startSeconds = toSeconds (juce::jmax (0.0, punch.inBeat - preRollBeats));
+        countIn = te::Edit::CountIn::none;   // the pre-roll is the count-in
+    }
+
+    edit->setCountInMode (countIn);
     transport.looping = false;
     transport.setPosition (te::TimePosition::fromSeconds (juce::jmax (0.0, startSeconds)));
     transport.record (false, false);
+
+    if (takePunchOut >= 0.0)
+        startTimerHz (60);   // watches for the punch-out
+
     return true;
+}
+
+void Recorder::timerCallback()
+{
+    if (edit == nullptr || ! isRecording() || takePunchOut < 0.0)
+    {
+        stopTimer();
+        return;
+    }
+
+    // Past the punch-out: recording stops, the song plays on (like FL).
+    auto* ctx = edit->getTransport().getCurrentPlaybackContext();
+    const double position = ctx != nullptr ? ctx->getPosition().inSeconds() : edit->getTransport().getPosition().inSeconds();
+
+    if (position >= takePunchOut + 0.05)
+    {
+        stopTimer();
+        edit->getTransport().stopRecording (false);
+        log ("Punch out: recording stopped, the song plays on");
+    }
 }
 
 double Recorder::getPreRollStart (double startSeconds) const
@@ -269,10 +422,21 @@ void Recorder::recordingFinished (te::InputDeviceInstance&, te::EditItemID targe
 
         const auto file = wave->getSourceFileReference().getFile();
         const auto position = wave->getPosition();
-        const double start = position.getStart().inSeconds();
-        const double offset = position.getOffset().inSeconds();
-        const double length = position.getLength().inSeconds();
+        double start = position.getStart().inSeconds();
+        double offset = position.getOffset().inSeconds();
+        double length = position.getLength().inSeconds();
         const auto insertID = targetID.toString();
+
+        // Punch in / out: keep only the part between the punch points (the rest of the
+        // recording stays in the file: drag the clip's edges out to get it back).
+        if (takePunchIn >= 0.0 && takePunchOut > takePunchIn)
+        {
+            const double from = juce::jmax (start, takePunchIn);
+            const double to = juce::jmin (start + length, takePunchOut);
+            offset += from - start;
+            start = from;
+            length = to - from;
+        }
 
         // The engine put the take on the insert itself; from now on the song model
         // plays it (as a shared file), so this engine clip goes.
