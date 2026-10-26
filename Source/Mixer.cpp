@@ -1242,12 +1242,17 @@ void Mixer::resized()
     auto r = getLocalBounds().reduced (8);
     auto right = r.removeFromRight (slotsWidth);
     auto top = right.removeFromTop (28);
-    detachButton.setBounds (top.removeFromRight (fullScreenButton.isVisible() ? 190 : 124));
+    auto widthFor = [] (juce::TextButton& b)
+    {
+        return (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), b.getButtonText()) + 15 + 6 + 24;
+    };
+
+    detachButton.setBounds (top.removeFromRight (widthFor (detachButton)));
 
     if (fullScreenButton.isVisible())
     {
         top.removeFromRight (6);
-        fullScreenButton.setBounds (top.removeFromRight (118));
+        fullScreenButton.setBounds (top.removeFromRight (widthFor (fullScreenButton)));
     }
 
     right.removeFromTop (8);

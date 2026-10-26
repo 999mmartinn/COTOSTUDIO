@@ -58,7 +58,7 @@ jobs:
       - name: Self-test (3 peers over TCP on this Windows machine)
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Recurse build -Filter SyncTest.exe | Select-Object -First 1
+          $exe = Get-ChildItem -Recurse build -Filter COTOSTUDIO.exe | Select-Object -First 1
           $vst = Get-ChildItem -Recurse build -Directory -Filter SyncTestGain.vst3 | Select-Object -First 1
           $p = Start-Process -FilePath $exe.FullName -ArgumentList "--selftest","--plugin=$($vst.FullName)" `
                  -NoNewWindow -Wait -PassThru -RedirectStandardOutput selftest.txt
@@ -83,23 +83,6 @@ jobs:
             }
           }
 
-      - name: Package
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $exe = Get-ChildItem -Recurse build -Filter SyncTest.exe | Select-Object -First 1
-          Copy-Item $exe.FullName dist/
-          Copy-Item README.md dist/
-          Copy-Item LICENSE dist/LICENSE.txt
-          Copy-Item selftest.txt dist/ -ErrorAction SilentlyContinue
-          # The GPL source of the ASIO part travels with the program (GPLv3 / AGPLv3).
-          if ($env:ASIO_SDK) { Copy-Item asiosdk.zip dist/ASIO-SDK-source-GPLv3.zip }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: SyncTest-windows
-          path: dist/
-
       - name: Read version
         id: version
         shell: pwsh
@@ -107,20 +90,52 @@ jobs:
           $v = (Get-Content VERSION.txt -Raw).Trim()
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      # dist/ holds the release files; the zip has the program with its README and
+      # every licence (AGPLv3, the fonts' OFL, ASIO's GPLv3 source when used).
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist, pkg, pkg/licences | Out-Null
+          $exe = Get-ChildItem -Recurse build -Filter COTOSTUDIO.exe | Select-Object -First 1
+          Copy-Item $exe.FullName dist/
+          Copy-Item README.md dist/
+          Copy-Item selftest.txt dist/ -ErrorAction SilentlyContinue
+          # The GPL source of the ASIO part travels with the program (GPLv3 / AGPLv3).
+          if ($env:ASIO_SDK) { Copy-Item asiosdk.zip dist/ASIO-SDK-source-GPLv3.zip }
+
+          Copy-Item $exe.FullName pkg/
+          Copy-Item README.md pkg/
+          Copy-Item LICENSE pkg/LICENSE.txt
+          Copy-Item Resources/Fonts/Inter-LICENSE.txt pkg/licences/Inter-OFL.txt
+          Copy-Item Resources/Fonts/JetBrainsMono-LICENSE.txt pkg/licences/JetBrainsMono-OFL.txt
+          if ($env:ASIO_SDK) {
+            Copy-Item asiosdk.zip pkg/licences/ASIO-SDK-source-GPLv3.zip
+            "ASIO is a trademark and software of Steinberg Media Technologies GmbH." | Out-File pkg/licences/ASIO.txt -Encoding utf8
+          }
+          Compress-Archive -Path pkg/* -DestinationPath "dist/COTOSTUDIO-${{ steps.version.outputs.version }}-windows.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: COTOSTUDIO-windows
+          path: dist/
+
       # A public download link (no GitHub login needed) for every build of main.
       - name: Publish release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}-build${{ github.run_number }}
-          name: SyncTest ${{ steps.version.outputs.version }} (build ${{ github.run_number }})
-          prerelease: true
+          name: COTOSTUDIO ${{ steps.version.outputs.version }} (build ${{ github.run_number }})
+          prerelease: false
           make_latest: true
           body: |
-            Test build of the multiplayer DAW. Download **SyncTest.exe** below; README.md explains how to use it and how to test with a friend.
+            COTOSTUDIO, the multiplayer DAW. Download **COTOSTUDIO.exe** below (or the zip, which also has the README and the licences); README.md explains what's new, where your files go and how to play with friends.
             Self-test on Windows: passed (3 peers over TCP).
+            Free software under the GNU AGPLv3. Fonts: Inter and JetBrains Mono (SIL Open Font License).
+            ASIO is a trademark and software of Steinberg Media Technologies GmbH.
           files: |
-            dist/SyncTest.exe
+            dist/COTOSTUDIO.exe
+            dist/COTOSTUDIO-${{ steps.version.outputs.version }}-windows.zip
             dist/README.md
             dist/ASIO-SDK-source-GPLv3.zip
           fail_on_unmatched_files: false

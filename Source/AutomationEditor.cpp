@@ -155,7 +155,7 @@ void AutomationEditor::paint (juce::Graphics& g)
         g.setColour (theme::colours::muted);
         g.setFont (theme::ui (12.5f));
         g.drawFittedText (TRANS ("No automation clip selected.") + "\n" + TRANS ("Right-click a volume or pan knob (channel rack or mixer) and choose \"Create automation clip\", or use \"Automate...\" in the playlist for any knob, including your plugins'. Then click the clip in the playlist to edit it here."),
-                          area.withHeight (80), juce::Justification::centredTop, 5);
+                          area.withHeight (80).withSizeKeepingCentre (juce::jmin (620, area.getWidth()), 80), juce::Justification::centredTop, 5);
         return;
     }
 

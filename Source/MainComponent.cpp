@@ -264,6 +264,7 @@ MainComponent::MainComponent (te::Engine& e)
     logView.setReadOnly (true);
     logView.setScrollbarsShown (true);
     logView.setFont (theme::mono (12.5f));
+    logView.setIndents (10, 8);
     logView.setColour (juce::TextEditor::backgroundColourId, theme::colours::well);
 
     // Top bar look: icons, styles, help texts.

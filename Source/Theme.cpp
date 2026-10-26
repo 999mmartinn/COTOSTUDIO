@@ -300,12 +300,26 @@ juce::Typeface::Ptr Look::getTypefaceForFont (const juce::Font& f)
 }
 
 //==============================================================================
+/** A button's style: its "style" property, or "accent" for the first (main) button of a
+    dialog with several (Save, OK, Export, Accept...). */
+static juce::String styleOf (juce::Button& b)
+{
+    auto style = b.getProperties()["style"].toString();
+
+    if (style.isEmpty())
+        if (auto* aw = dynamic_cast<juce::AlertWindow*> (b.getParentComponent()))
+            if (aw->getNumButtons() > 1 && aw->getButton (0) == &b)
+                return "accent";
+
+    return style;
+}
+
 static float cornerFor (juce::Rectangle<float> r)   { return juce::jmin (7.0f, r.getHeight() * 0.3f); }
 
 void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour& colour, bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    const auto style = b.getProperties()["style"].toString();
+    const auto style = styleOf (b);
     const bool on = b.getToggleState();
     const float corner = cornerFor (r);
     juce::Colour fill = colour, border = line;
@@ -396,7 +410,7 @@ juce::Font Look::getTextButtonFont (juce::TextButton& b, int h)
 
 void Look::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool)
 {
-    const auto style = b.getProperties()["style"].toString();
+    const auto style = styleOf (b);
     const auto icon = (Icon) (int) b.getProperties()["icon"];
     const bool on = b.getToggleState();
     auto textColour = b.findColour (on ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId);

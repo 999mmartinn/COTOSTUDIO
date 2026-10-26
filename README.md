@@ -1,9 +1,275 @@
-# SyncTest — a multiplayer, FL-style DAW for Windows (work in progress)
+# COTOSTUDIO — make music together, in sync
 
-Several people work on the **same song at the same time**, each on their own PC,
-each using their own native **VST3 plugins** (Waves, FabFilter...).
+A multiplayer, FL-style DAW for Windows. Several people work on the **same song at
+the same time**, each on their own PC, each using their own **VST3 plugins**
+(Waves, FabFilter...). Friends connect over **Tailscale** (or the same Wi-Fi).
 
-Built step by step, with stability first.
+![COTOSTUDIO](docs/screenshot.jpg)
+
+Free software under the **GNU AGPLv3** (see `LICENSE`), built on
+[Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (GPLv3) and
+[JUCE](https://juce.com) (AGPLv3). Formerly called *SyncTest*.
+
+## Download and first start
+
+1. From the newest release, download **COTOSTUDIO.exe** (or the zip with the
+   README and licences) and run it. Windows may say it doesn't know the app:
+   *More info → Run anyway*.
+2. If you used SyncTest before, the first start **moves its files off C:** into
+   the new data folder (a window shows the progress): your songs, takes, backups,
+   settings and plugin list. Nothing is lost; a file is only removed from its old
+   place once its copy is complete.
+3. The first time, open **Settings** (the gear, top right) → **Find my plugins
+   (VST3)...** → *Options → Scan for new or updated VST3 plug-ins* (the default
+   folder `C:\Program Files\Common Files\VST3` is where Waves and FabFilter
+   install). *Waves:* make sure Waves Central installed the VST3 "WaveShell" files.
+4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
+   lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
+
+## What's new in 1.0
+
+* **A new look ("Nocturno")**: dark purple-grey with a lilac accent, rounded
+  panels, the Inter and JetBrains Mono fonts built in, drawn icons, a
+  Pro Tools-style counter (bar.beat.step and time) and session badge in the top
+  bar, and a status bar at the bottom. Everything is flat - no blur, shadows or
+  animations - so it stays light on older graphics cards: only things that move
+  (playhead, meters, counter) repaint while playing.
+* **Mixer strips in a Pro Tools style**: a coloured name plate, the insert's
+  effects on the strip (click one to open it, the dashed one to add), pan, a
+  fader with a dB scale, stereo meters, M / S, sends and output.
+* **The mixer can have its own window** (*Own window*, top right of the mixer):
+  put it on your second monitor and press **Full screen**. The Mixer tab stays in
+  the main window (*Show the window* / *Bring it back here*), F9 brings the window
+  to the front, and keys like Space and Ctrl+S work in it. Closing it puts the
+  mixer back. COTOSTUDIO remembers where the window was (and whether it was
+  detached) for next time.
+* **Everything in one data folder, off C:** - `D:\COTOSTUDIO` when that folder
+  exists (otherwise `Documents\COTOSTUDIO`), organised by project. See below.
+* **Projects are folders**: saving a song makes `Projects\<name>\` with the
+  song file and its **Audio**, **Takes**, **Exports** and **Backups** folders, so
+  you can find your recordings and samples as normal files.
+* **The Sounds column remembers where you left it**: open folders, scroll
+  position and the sound you picked are back the next time (the sound is shown,
+  not played).
+* **Spanish**: *Settings → Language → Español* (English stays the default). It
+  applies the next time COTOSTUDIO starts.
+* The main window opens filling the screen the first time and then where you
+  left it.
+* How copies talk to each other didn't change: a 0.12 copy can still join a 1.0
+  session. Update anyway, so everyone gets the new data folder and look.
+
+## Where your files live
+
+```
+D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOSTUDIO)
+  Projects\<song>\              one folder per song
+      <song>.cotosong             the song (notes, patterns, mixer, plugin settings)
+      Audio\                     the sounds it uses (imported files, samples)
+      Takes\                     its recordings ("Vocals take 1.flac"...)
+      Exports\                   what you exported from it
+      Backups\                   its automatic backups (the 10 newest)
+  Backups\                     backups of songs never saved yet
+  Exports\                     exports of songs never saved yet
+  Settings\                    your settings, plugin list and sound card
+  Cache\                       working files (audio shared in sessions, takes
+                                being recorded) - safe to empty when the app is closed
+```
+
+* **File → Save as...** only asks for the project's name; **File → Show this
+  project's folder** opens it. Songs from older versions (`.syncsong`) still open.
+* A file used by several songs is stored once on the disk (a second name for the
+  same bytes), so projects don't fill the drive with copies.
+* **Settings → Data folder → Use another data folder...** moves the data folder
+  somewhere else from the next start (only a one-line note of where it is stays
+  in `%APPDATA%\COTOSTUDIO`).
+
+## The screen
+
+* **Top bar**: File, Sounds, PAT / SONG, Play, Rec, Click (metronome), the
+  counter with the tempo, the pattern you're editing, Share / Focus, your
+  **session badge** (who's in, and whether you're in sync), undo / redo and
+  Settings.
+* **Sounds** (left, Alt+F8): your own folders of kits, loops and MIDI - only on
+  your PC until you drag a sound into the song.
+* **Browser** (F8): Patterns, Audio in the song, and Session (your name, who's
+  connected, chat).
+* **Playlist**, **channel rack**, and the **Piano roll / Mixer / Automation**
+  tabs (F7 / F9); drag the bars between them to resize.
+* **Status bar**: the last message (click it to see all of them), sync state,
+  what's playing, CPU and your sound card.
+
+## Playing together
+
+1. Everyone: install the same COTOSTUDIO version.
+2. Host: click the **session badge** (top right, *Offline - Click to host or
+   join*) → **Host** (port 47800). The panel shows your Tailscale address and a
+   **Copy** button to send it to your friends.
+3. Friends: click the session badge, type the host's address under **Join a
+   friend** → **Join**. The badge turns green when you're in sync.
+4. Edits (notes, patterns, playlist, mixer, effects, takes, sounds you drop in)
+   are shared live. Your playback is yours: press **Share** to make the others
+   hear what you play; **Focus** keeps you working on your own.
+
+## How it works (short version)
+
+* Every PC has its **own full copy** of the song and makes its **own audio**.
+  Only *edits* travel over the network, never audio. That keeps it light and
+  makes latency only matter for "when do I see your change", not for playback.
+* One PC **hosts**, the others **join**. The host passes every change on to
+  everyone else.
+* Two kinds of changes are sent:
+  1. **Song edits** – channels, patterns, notes, plugin inserts, built-in synth
+     settings, tempo, volume/pan/mute.
+     Every changed part is sent as "this is how it looks now"; the other PC
+     compares and changes only what differs. Notes get a small sync ID so two
+     people can edit the same pattern at the same time without erasing each
+     other's notes.
+  2. **Plugin knobs** – when you turn a knob in a Waves/FabFilter window, the
+     new value is sent (about 30 times a second while dragging).
+     When you **close** a plugin window, its full state (preset) is sent too;
+     that's the moment a preset you loaded reaches the others.
+* Every 1.5 s the host sends a fingerprint of the song. If a joiner's copy
+  ever differs, it automatically asks for a fresh copy.
+* **Plugins are per person.** The song only says "FabFilter Pro-Q 3 with these
+  settings". Each PC must have that plugin installed and licensed. If you
+  don't have it, the slot shows *(not installed here)* and the song still
+  works; you just don't hear that plugin.
+
+## A first test with a friend
+
+1. Both of you: run COTOSTUDIO and find your plugins (see *Download and first
+   start*).
+2. Host: session badge → **Host**. Friend: session badge → address → **Join**.
+   The badge turns green: *Joined - in sync*.
+3. Try it:
+   * click steps in the channel rack or notes in the piano roll on either PC –
+     the other sees them;
+   * right-click a channel name → **Add effect** → pick a Waves/FabFilter
+     plugin – it appears on both PCs;
+   * click the plugin's button to open its window and move a knob – the
+     other PC's knob moves;
+   * press **Share**, then **Play** on either PC – both play the loop.
+
+### Which address do I type?
+
+* **Same house / same Wi-Fi:** the host's local IP (in Windows: `ipconfig`,
+  "IPv4 Address", e.g. `192.168.1.23`).
+* **Over the internet**, choose one:
+  * **A free virtual LAN app** (easiest, no router changes): both install
+    Tailscale (recommended) or Radmin VPN, join the same network (in Tailscale:
+    share the host's machine with the friend's account), and type the host's
+    address from that app (Tailscale addresses start with `100.`).
+  * **Port forwarding:** the host forwards **TCP port 47800** on the router to
+    their PC and gives the friend their public IP.
+* Windows Firewall will ask the host to allow COTOSTUDIO the first time:
+  allow it on private networks.
+
+You can also run **two copies on one PC** to try it alone: Host in one,
+Join `127.0.0.1` in the other. The second copy keeps its audio files in its own
+folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
+
+## Known limits
+
+* If two people change the *same thing* at the same moment (both move the
+  same knob, rename the same channel, or reorder tracks), the last change wins. Rarely the copies can
+  briefly differ; the fingerprint check catches it and the joiner gets a fresh
+  copy within a few seconds.
+* A knob turned in the very first instant after a plugin finishes loading
+  (a few hundredths of a second) may not be sent. Closing its window sends its
+  full state anyway.
+* Plugin *audio* isn't compared, only settings. A plugin that behaves
+  differently on two PCs (different version) will sound different.
+* What the engine plays is generated on each PC from the shared patterns
+  (never sent), so every PC plays exactly the same notes.
+* Routing is stored by each insert's permanent ID and applied on every PC, so
+  adding or deleting tracks never sends audio to the wrong insert.
+* Audio files are sent person to person through the host. A joiner's file goes
+  to the host first, then to the others, so the host's upload speed matters for
+  big files (a 3-minute stereo recording is roughly 15-30 MB as FLAC).
+* Recording: one take per armed insert each time you press Rec; inputs are
+  mono; no punch-in or loop recording yet. The engine places takes
+  using the latency your interface's driver reports.
+* Chat isn't saved: it lives as long as the session (the host keeps it).
+* Plugins are saved with their settings, but each PC needs them installed to
+  hear them (as before).
+* Sharing follows the person sharing as fast as the network allows: on the
+  internet the others hear it a few hundredths of a second later.
+* Export ignores your solo (it exports the song as everyone has it); use stems
+  to get single parts. Stems are rendered before the master's effects.
+* Automation points are straight lines between points (no curve shapes yet);
+  send levels can't be automated yet. Undo only undoes your own changes, and it
+  starts fresh after opening a song.
+* Saving or opening a very big song (many long takes) can take a few seconds;
+  the app keeps working meanwhile.
+* Sounds: a sampler channel plays one sound (no multi-sample kits, loops don't
+  follow the tempo, sounds longer than 5 minutes are cut). A MIDI file's notes
+  all go to one channel and its tempo changes are ignored. Previews go straight
+  to your speakers, not through the mixer.
+* No encryption or passwords: only join people you trust, on a private network.
+
+## Self-test
+
+`COTOSTUDIO.exe --selftest --plugin=<path to SyncTestGain.vst3>` runs a host
+and two joiners inside one process over real TCP and checks notes, built-in
+plugin settings, third-party plugin insertion and knob sync (both directions,
+including a fast 200-step drag), simultaneous edits, ID clashes, personal
+playback, sharing it (following in sync, only the sharer controls it, leaving,
+joining, Focus, a late joiner following a running share, everyone back where
+they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
+in a share), sends (built on each PC, loops refused, really audible), the
+metronome staying personal, recording with a count-in (lined up to the sample),
+export (mix + stems, a seamless pattern loop, MP3 on Windows), automation
+clips (shared; built by each PC in SONG mode only; the knob follows the curve
+without anything being sent; audible in a render; point edits; deleting),
+the playlist, the mixer, saving and opening songs (a fourth PC opening the
+saved file must get the identical song and audio; the host switching songs
+for everyone; IDs staying unique), the people list and chat, split by channel (the song
+must play exactly the same notes before and after), deleting audio from the
+project, recording from a simulated sound card (the take must
+line up with the song to the exact sample, and survive other people's edits),
+audio file sharing (each simulated PC has its own
+folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no
+files), leaving and rejoining, and your sounds (a preview reaches the speakers
+and changes nothing in the song; a sound dropped on the rack becomes a sampler
+channel on every PC, its file arrives and plays exactly on its steps in a render;
+replacing its sound; Cut itself; an export copy loading it; MIDI files onto a
+channel and onto empty space; deleting the file removes its channel), and two
+people changing different things of the same channel at the same moment (all
+four changes kept), and the data folder (a project saved as a folder with its
+Audio and Takes, saving again writes nothing new, an old `.syncsong` still opens,
+and an older version's files are moved into the data folder intact).
+The self-test never touches your data folder. The Windows build on GitHub runs
+it automatically.
+
+## Building
+
+Needs CMake ≥ 3.22 and Visual Studio 2022 (Desktop C++ workload).
+
+```
+git clone --recurse-submodules <this repo>
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
+
+`external/tracktion_engine` is a git submodule (it brings JUCE with it).
+For ASIO, download Steinberg's ASIO SDK (https://www.steinberg.net/asiosdk,
+GPLv3 or proprietary licence) and add `-DSYNCTEST_ASIO_SDK=<its folder>`.
+Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
+
+## Licences
+
+* COTOSTUDIO: GNU AGPLv3 (`LICENSE`). Tracktion Engine: GPLv3. JUCE: AGPLv3.
+* Fonts built into the app: **Inter** and **JetBrains Mono**, both under the SIL
+  Open Font License 1.1 (`Resources/Fonts/*-LICENSE.txt`, also in the release zip).
+* ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+
+---
+
+## History
+
+What each earlier step added (names and places are from those versions: since
+1.0 Host / Join are in the session badge, *Scan plugins* and *Audio settings*
+are in Settings, and files live in the data folder described above).
 
 **Step 9 – Your sounds: your own folders of kits, loops and MIDI (v0.12)**
 * A new column on the far left, **Sounds** (button in the top bar, or
@@ -246,154 +512,3 @@ Built step by step, with stability first.
 Built on [Tracktion Engine](https://github.com/Tracktion/tracktion_engine) (GPLv3)
 and [JUCE](https://juce.com) (AGPLv3). This project is published under the
 **GNU AGPLv3** (see `LICENSE`).
-
----
-
-## How it works (short version)
-
-* Every PC has its **own full copy** of the song and makes its **own audio**.
-  Only *edits* travel over the network, never audio. That keeps it light and
-  makes latency only matter for "when do I see your change", not for playback.
-* One PC **hosts**, the others **join**. The host passes every change on to
-  everyone else.
-* Two kinds of changes are sent:
-  1. **Song edits** – channels, patterns, notes, plugin inserts, built-in synth
-     settings, tempo, volume/pan/mute.
-     Every changed part is sent as "this is how it looks now"; the other PC
-     compares and changes only what differs. Notes get a small sync ID so two
-     people can edit the same pattern at the same time without erasing each
-     other's notes.
-  2. **Plugin knobs** – when you turn a knob in a Waves/FabFilter window, the
-     new value is sent (about 30 times a second while dragging).
-     When you **close** a plugin window, its full state (preset) is sent too;
-     that's the moment a preset you loaded reaches the others.
-* Every 1.5 s the host sends a fingerprint of the song. If a joiner's copy
-  ever differs, it automatically asks for a fresh copy.
-* **Plugins are per person.** The song only says "FabFilter Pro-Q 3 with these
-  settings". Each PC must have that plugin installed and licensed. If you
-  don't have it, the slot shows *(not installed here)* and the song still
-  works; you just don't hear that plugin.
-
-## Running the test with a friend
-
-1. Both of you: download `SyncTest.exe`, run it.
-2. Both of you, the first time: press **Scan plugins...** → in that window use
-   **Options → Scan for new or updated VST3 plug-ins** (default folder
-   `C:\Program Files\Common Files\VST3` is where Waves and FabFilter install).
-   *Waves:* make sure Waves Central installed the VST3 "WaveShell" files.
-3. Host: press **Host** (port 47800 by default).
-4. Friend: type the host's address in **Host address**, press **Join**.
-   The status turns green: "Joined as peer 1 - in sync".
-5. Try it:
-   * click steps in the channel rack or notes in the piano roll on either PC –
-     the other sees them;
-   * right-click a channel name → **Add effect** → pick a Waves/FabFilter
-     plugin – it appears on both PCs;
-   * click the plugin's button to open its window and move a knob – the
-     other PC's knob moves;
-   * press **Share**, then **Play** on either PC – both play the loop.
-
-### Which address do I type?
-
-* **Same house / same Wi-Fi:** the host's local IP (in Windows: `ipconfig`,
-  "IPv4 Address", e.g. `192.168.1.23`).
-* **Over the internet**, choose one:
-  * **A free virtual LAN app** (easiest, no router changes): both install
-    Tailscale (recommended) or Radmin VPN, join the same network (in Tailscale:
-    share the host's machine with the friend's account), and type the host's
-    address from that app (Tailscale addresses start with `100.`).
-  * **Port forwarding:** the host forwards **TCP port 47800** on the router to
-    their PC and gives the friend their public IP.
-* Windows Firewall will ask the host to allow SyncTest the first time:
-  allow it on private networks.
-
-You can also run **two copies on one PC** to try it alone: Host in one,
-Join `127.0.0.1` in the other. The second copy keeps its audio files in its own
-folder (`Assets-2`), so file sharing really happens, like with a second PC.
-
-## Known limits of this test (on purpose)
-
-* If two people change the *same thing* at the same moment (both move the
-  same knob, rename the same channel, or reorder tracks), the last change wins. Rarely the copies can
-  briefly differ; the fingerprint check catches it and the joiner gets a fresh
-  copy within a few seconds.
-* A knob turned in the very first instant after a plugin finishes loading
-  (a few hundredths of a second) may not be sent. Closing its window sends its
-  full state anyway.
-* Plugin *audio* isn't compared, only settings. A plugin that behaves
-  differently on two PCs (different version) will sound different.
-* What the engine plays is generated on each PC from the shared patterns
-  (never sent), so every PC plays exactly the same notes.
-* Routing is stored by each insert's permanent ID and applied on every PC, so
-  adding or deleting tracks never sends audio to the wrong insert.
-* Audio files are sent person to person through the host. A joiner's file goes
-  to the host first, then to the others, so the host's upload speed matters for
-  big files (a 3-minute stereo recording is roughly 15-30 MB as FLAC).
-* Recording: one take per armed insert each time you press Rec; inputs are
-  mono; no count-in, punch-in or loop recording yet. The engine places takes
-  using the latency your interface's driver reports.
-* Chat isn't saved: it lives as long as the session (the host keeps it).
-* Plugins are saved with their settings, but each PC needs them installed to
-  hear them (as before).
-* Sharing follows the person sharing as fast as the network allows: on the
-  internet the others hear it a few hundredths of a second later.
-* Export ignores your solo (it exports the song as everyone has it); use stems
-  to get single parts. Stems are rendered before the master's effects.
-* Automation points are straight lines between points (no curve shapes yet);
-  send levels can't be automated yet. Undo only undoes your own changes, and it
-  starts fresh after opening a song.
-* Saving or opening a very big song (many long takes) can take a few seconds;
-  the app keeps working meanwhile.
-* Sounds: a sampler channel plays one sound (no multi-sample kits, loops don't
-  follow the tempo, sounds longer than 5 minutes are cut). A MIDI file's notes
-  all go to one channel and its tempo changes are ignored. Previews go straight
-  to your speakers, not through the mixer.
-* No encryption or passwords: only join people you trust, on a private network.
-
-## Self-test
-
-`SyncTest.exe --selftest --plugin=<path to SyncTestGain.vst3>` runs a host
-and two joiners inside one process over real TCP and checks notes, built-in
-plugin settings, third-party plugin insertion and knob sync (both directions,
-including a fast 200-step drag), simultaneous edits, ID clashes, personal
-playback, sharing it (following in sync, only the sharer controls it, leaving,
-joining, Focus, a late joiner following a running share, everyone back where
-they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
-in a share), sends (built on each PC, loops refused, really audible), the
-metronome staying personal, recording with a count-in (lined up to the sample),
-export (mix + stems, a seamless pattern loop, MP3 on Windows), automation
-clips (shared; built by each PC in SONG mode only; the knob follows the curve
-without anything being sent; audible in a render; point edits; deleting),
-the playlist, the mixer, saving and opening songs (a fourth PC opening the
-saved file must get the identical song and audio; the host switching songs
-for everyone; IDs staying unique), the people list and chat, split by channel (the song
-must play exactly the same notes before and after), deleting audio from the
-project, recording from a simulated sound card (the take must
-line up with the song to the exact sample, and survive other people's edits),
-audio file sharing (each simulated PC has its own
-folder; includes a 10 MB file sent at a capped speed while edits keep flowing, a damaged transfer and a late joiner with no
-files), leaving and rejoining, and your sounds (a preview reaches the speakers
-and changes nothing in the song; a sound dropped on the rack becomes a sampler
-channel on every PC, its file arrives and plays exactly on its steps in a render;
-replacing its sound; Cut itself; an export copy loading it; MIDI files onto a
-channel and onto empty space; deleting the file removes its channel), and two
-people changing different things of the same channel at the same moment (all
-four changes kept).
-The Windows build on GitHub runs this automatically.
-
-## Building
-
-Needs CMake ≥ 3.22 and Visual Studio 2022 (Desktop C++ workload).
-
-```
-git clone --recurse-submodules <this repo>
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-```
-
-`external/tracktion_engine` is a git submodule (it brings JUCE with it).
-For ASIO, download Steinberg's ASIO SDK (https://www.steinberg.net/asiosdk,
-GPLv3 or proprietary licence) and add `-DSYNCTEST_ASIO_SDK=<its folder>`.
-Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
-
-ASIO is a trademark and software of Steinberg Media Technologies GmbH.
