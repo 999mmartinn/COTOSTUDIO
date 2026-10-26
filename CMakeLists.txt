@@ -55,6 +55,8 @@ target_sources(COTOSTUDIO PRIVATE
     Source/Mp3Encoder.cpp
     Source/AutomationEditor.cpp
     Source/SamplerPlugin.cpp
+    Source/ParametricEQPlugin.cpp
+    Source/ParametricEQEditor.cpp
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
     Source/SoundBrowser.cpp

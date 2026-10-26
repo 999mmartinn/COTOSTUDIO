@@ -1,6 +1,7 @@
 #include "SongModel.h"
 #include "DrumSynthPlugin.h"
 #include "SamplerPlugin.h"
+#include "ParametricEQPlugin.h"
 
 namespace song
 {
@@ -900,6 +901,7 @@ te::Plugin::Ptr addMasterEffect (te::Edit& edit, const juce::PluginDescription& 
 juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
 {
     juce::Array<std::pair<juce::String, juce::String>> list;
+    list.add ({ ParametricEQPlugin::xmlTypeName,   "Parametric EQ (7 band)" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
     list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor" });
     list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb" });

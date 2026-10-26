@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "EditSync.h"
 #include "Look.h"
+#include "ParametricEQEditor.h"
 
 namespace te = tracktion;
 
@@ -117,6 +118,9 @@ public:
                     content = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
             }
         }
+
+        if (auto* eq = dynamic_cast<ParametricEQPlugin*> (&plugin))
+            content = std::make_unique<ParametricEQEditor> (*eq);
 
         if (content == nullptr)
             content = std::make_unique<GenericPluginPanel> (plugin);

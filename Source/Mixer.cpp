@@ -1299,7 +1299,7 @@ void Mixer::showEffectMenu (te::Engine& engine, juce::Component* target, EffectC
     auto builtIns = getBuiltInEffects();
 
     for (int i = 0; i < builtIns.size(); ++i)
-        builtIn.addItem (1 + i, builtIns[i].second);
+        builtIn.addItem (1 + i, TRANS (builtIns[i].second));
 
     juce::Array<juce::PluginDescription> types;
 

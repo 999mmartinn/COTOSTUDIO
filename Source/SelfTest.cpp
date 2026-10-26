@@ -10,6 +10,7 @@
 #include "SongModel.h"
 #include "PatternCompiler.h"
 #include "DrumSynthPlugin.h"
+#include "ParametricEQPlugin.h"
 #include "MixerRouter.h"
 #include "ProjectFile.h"
 #include "Scales.h"
@@ -243,6 +244,7 @@ private:
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
     int resyncsBefore = 0, channelsBefore = 0, clipsBefore = 0, insertsBefore = 0;
+    bool eqEdited = false;
 
     // Tempo approval, sharing playback
     std::map<collab::Session*, juce::Array<collab::Session::TempoQuestion>> tempoAsked;
@@ -3101,6 +3103,108 @@ private:
                     return v != nullptr && t->isMuted (false)
                         && std::abs (v->volParam->getCurrentNormalisedValue() - 0.5f) < 0.001f
                         && std::abs (v->panParam->getCurrentNormalisedValue() - 0.2f) < 0.001f;
+                });
+            },
+            8000, 600 });
+
+        //==============================================================================
+        // Parametric EQ (our own built-in effect)
+        steps.push_back ({ "Parametric EQ: measured with test tones (peak +6 dB at 1 kHz, 48 dB/oct low cut, shelf, notch, main level, curve = sound)",
+            [] {},
+            []
+            {
+                const double sr = 48000.0;
+
+                // Gain in dB of a sine at `hz` through the EQ (steady state).
+                auto measure = [sr] (const std::array<peq::Band, peq::numBands>& bands, double mainDb, double hz)
+                {
+                    peq::Processor proc;
+                    proc.prepare (sr);
+                    proc.setTarget (bands, mainDb);
+                    const int n = (int) sr;   // 1 s
+                    juce::AudioBuffer<float> buf (2, n);
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < n; ++i)
+                            buf.setSample (ch, i, 0.25f * (float) std::sin (juce::MathConstants<double>::twoPi * hz * i / sr));
+
+                    proc.process (buf.getArrayOfWritePointers(), 2, n);
+                    const int from = n / 2;   // skip the start
+                    const float in = 0.25f / std::sqrt (2.0f);
+                    return juce::Decibels::gainToDecibels (buf.getRMSLevel (0, from, n - from) / in, -200.0f);
+                };
+
+                auto flat = [] { std::array<peq::Band, peq::numBands> b; for (int i = 0; i < peq::numBands; ++i) b[(size_t) i] = ParametricEQPlugin::defaultBand (i); return b; };
+                bool ok = true;
+                auto check = [&ok] (const char* what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi;
+                    std::cout << "    " << what << ": " << juce::String (got, 2) << " dB" << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                auto bands = flat();
+                check ("flat EQ at 1 kHz", measure (bands, 0.0, 1000.0), -0.05, 0.05);
+
+                bands[3] = { peq::peak, 0, 1000.0, 6.0, 1.0 };
+                check ("peak +6 dB @ 1 kHz, at 1 kHz", measure (bands, 0.0, 1000.0), 5.8, 6.2);
+                check ("same peak, at 100 Hz", measure (bands, 0.0, 100.0), -0.1, 0.3);
+                check ("curve drawn at 1 kHz", peq::responseDb (bands, 0.0, 1000.0, sr), 5.95, 6.05);
+
+                bands = flat();
+                bands[0] = { peq::highPass, 3, 1000.0, 0.0, 0.707 };
+                check ("48 dB/oct low cut @ 1 kHz, at 250 Hz", measure (bands, 0.0, 250.0), -200.0, -60.0);
+                check ("same low cut, at 8 kHz", measure (bands, 0.0, 8000.0), -0.2, 0.2);
+                check ("same low cut, at the cut-off (Butterworth: -3 dB)", measure (bands, 0.0, 1000.0), -3.3, -2.7);
+
+                bands = flat();
+                bands[6] = { peq::highShelf, 0, 4000.0, -6.0, 0.707 };
+                check ("high shelf -6 dB @ 4 kHz, at 16 kHz", measure (bands, 0.0, 16000.0), -6.3, -5.5);
+                check ("same shelf, at 200 Hz", measure (bands, 0.0, 200.0), -0.1, 0.1);
+
+                bands = flat();
+                bands[2] = { peq::notch, 0, 500.0, 0.0, 4.0 };
+                check ("notch @ 500 Hz, at 500 Hz", measure (bands, 0.0, 500.0), -200.0, -30.0);
+
+                check ("main level -6 dB", measure (flat(), -6.0, 1000.0), -6.05, -5.95);
+                return ok;
+            } });
+
+        steps.push_back ({ "Parametric EQ: host puts one on the master, peer 1 boosts band 4 (+6 dB @ 1.2 kHz) and makes band 1 a 48 dB/oct low cut at 80 Hz -> the same on every PC",
+            [this]
+            {
+                song::putEffect (H(), nullptr, song::createEffect (H(), ParametricEQPlugin::xmlTypeName, nullptr), -1);
+            },
+            [this]
+            {
+                auto findEq = [] (te::Edit& e) -> ParametricEQPlugin*
+                {
+                    for (auto* p : e.getMasterPluginList())
+                        if (auto* eq = dynamic_cast<ParametricEQPlugin*> (p))
+                            return eq;
+                    return nullptr;
+                };
+
+                // Peer 1 edits once its copy has the EQ.
+                if (auto* eq = findEq (P1()); eq != nullptr && ! eqEdited)
+                {
+                    P1().getUndoManager().beginNewTransaction();
+                    eq->setBand (3, { peq::peak, 0, 1200.0, 6.0, 1.0 });
+                    eq->setBand (0, { peq::highPass, 3, 80.0, 0.0, 0.707 });
+                    eqEdited = true;
+                    return false;
+                }
+
+                return eqEdited && hashesEqual() && everywhere ([&findEq] (te::Edit& e)
+                {
+                    auto* eq = findEq (e);
+
+                    if (eq == nullptr)
+                        return false;
+
+                    auto b = eq->getBands();
+                    return b[3].type == peq::peak && std::abs (b[3].gain - 6.0) < 1.0e-3 && std::abs (b[3].freq - 1200.0) < 0.5
+                        && b[0].type == peq::highPass && b[0].order == 3 && std::abs (b[0].freq - 80.0) < 0.5;
                 });
             },
             8000, 600 });

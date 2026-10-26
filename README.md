@@ -26,6 +26,17 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.3
+
+* **Parametric EQ (7 band)**, our own built-in EQ in the spirit of FL's
+  Parametric EQ 2 (written from scratch, no FL code): mixer slot → *Built-in* →
+  *Parametric EQ (7 band)*. Seven bands (low / high cut 12-48 dB/oct, low / high
+  shelf, peaking, notch, band pass), a curve with a draggable point per band and a
+  live spectrum behind it. Drag a point = frequency and gain (Ctrl: fine), mouse
+  wheel = width (Q), Shift+click and hold = hear only that band, Alt+click = reset
+  the band, double-click = band off / on, right-click = type and slope. Every knob
+  syncs and can be automated; solo and the spectrum are only on your PC.
+
 ## What's new in 1.2
 
 * **Right-click a channel in the rack → Piano roll (full screen)**, like FL: the
