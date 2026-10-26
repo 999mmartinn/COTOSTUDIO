@@ -145,7 +145,7 @@ namespace song
 
     //==============================================================================
     // Playlist (song arrangement)
-    constexpr int numLanes = 16;
+    constexpr int numLanes = 200;   // playlist tracks (was 16 before 1.2)
 
     juce::Array<juce::ValueTree> getClips (te::Edit&);
     juce::ValueTree addClip (te::Edit&, const juce::String& patternSid, int lane, double startBeat);

@@ -1180,11 +1180,13 @@ juce::StringArray getSamplerChannelsUsing (te::Edit& edit, const juce::String& h
 
 int findFreeLane (te::Edit& edit, double startBeat, double endBeat)
 {
+    const auto clips = getClips (edit);
+
     for (int lane = 0; lane < numLanes; ++lane)
     {
         bool busy = false;
 
-        for (auto& c : getClips (edit))
+        for (auto& c : clips)
             if ((int) c[ids::lane] == lane && (double) c[ids::start] < endBeat
                  && (double) c[ids::start] + getClipLength (edit, c) > startBeat)
                 busy = true;

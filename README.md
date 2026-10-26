@@ -26,6 +26,15 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.2
+
+* **Right-click a channel in the rack → Piano roll (full screen)**, like FL: the
+  piano roll opens on that channel's notes and fills the window (or its own
+  window goes full screen, if it has one). **Esc** goes back.
+* **200 playlist tracks** instead of 16. Mixer inserts never had a fixed limit.
+* Everyone in a session needs 1.2 (protocol 9): a 1.1 copy can't join a 1.2
+  session, so tracks above 16 never get squashed on an old copy.
+
 ## What's new in 1.1.1
 
 * **The counter can show minutes and seconds big**: right-click the counter in

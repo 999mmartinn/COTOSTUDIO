@@ -225,7 +225,11 @@ public:
 
         auto visible = g.getClipBounds();
 
-        for (int lane = 0; lane < numLanes; ++lane)
+        // Only the tracks on screen (there are 200).
+        const int firstLane = juce::jmax (0, visible.getY() / laneHeight);
+        const int lastLane = juce::jmin (numLanes - 1, visible.getBottom() / laneHeight);
+
+        for (int lane = firstLane; lane <= lastLane; ++lane)
         {
             g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
@@ -872,7 +876,10 @@ public:
         const int scrollY = owner.viewport->getViewPositionY();
         g.setFont (theme::ui (11.0f, theme::Weight::semibold));
 
-        for (int lane = 0; lane < numLanes; ++lane)
+        const int firstLane = juce::jmax (0, scrollY / laneHeight);
+        const int lastLane = juce::jmin (numLanes - 1, (scrollY + getHeight()) / laneHeight);
+
+        for (int lane = firstLane; lane <= lastLane; ++lane)
         {
             const int y = lane * laneHeight - scrollY;
             g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
@@ -1066,12 +1073,13 @@ void Playlist::showImportDialog()
 
         // First lane that is free at the song start marker.
         int lane = 0;
+        const auto clips = getClips (*edit);
 
         for (; lane < numLanes - 1; ++lane)
         {
             bool busy = false;
 
-            for (auto& c : getClips (*edit))
+            for (auto& c : clips)
                 if ((int) c[ids::lane] == lane && (double) c[ids::start] <= state.songStartBeat
                      && (double) c[ids::start] + getClipLength (*edit, c) > state.songStartBeat)
                     busy = true;

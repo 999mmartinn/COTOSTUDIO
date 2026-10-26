@@ -752,7 +752,7 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         {
             if ((int) msg[ids::protocol] != protocolVersion)
             {
-                log ("Rejected " + msg[ids::peerName].toString() + ": different SyncTest version");
+                log ("Rejected " + msg[ids::peerName].toString() + ": different COTOSTUDIO version (everyone needs the same one)");
                 from.disconnect();
                 return;
             }

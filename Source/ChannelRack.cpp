@@ -837,6 +837,10 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         return ext != nullptr && ext->getAudioPluginInstance() == nullptr;
     }();
 
+    // Like FL: jump straight to this channel's notes, with the piano roll full screen.
+    m.addItem (6, TRANS ("Piano roll (full screen)"), ! song::isAudioChannel (*track));
+    m.addSeparator();
+
     m.addItem (1, instrument != nullptr ? TRANS ("Open instrument") + " (" + instrument->getName() + (missing ? ", " + TRANS ("not installed here") + ")" : ")")
                                         : (song::isAudioChannel (*track) ? TRANS ("Audio channel (no instrument)") : TRANS ("No instrument")),
                instrument != nullptr && ! missing);
@@ -888,7 +892,12 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         if (t == nullptr || result == 0)
             return;
 
-        if (result == 1)
+        if (result == 6)
+        {
+            if (onOpenPianoRoll)
+                onOpenPianoRoll (channelID);
+        }
+        else if (result == 1)
         {
             if (auto* inst = song::getInstrument (*t))
                 inst->showWindowExplicitly();

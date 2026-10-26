@@ -588,6 +588,31 @@ MainComponent::MainComponent (te::Engine& e)
     pianoRoll.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::pianoRoll); };
     rack.onDetachToggle     = [this] { setPanelDetached (Panel::rack, ! isDetached (Panel::rack)); };
     rack.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::rack); };
+    rack.onOpenPianoRoll = [this] (const juce::String& channelID)
+    {
+        // That channel's notes in the pattern you're viewing, with the piano roll full
+        // screen: filling the main window, or its own window if it has one. Esc goes back.
+        state.selectedChannel = channelID;
+        state.placeAudioChannel = {};
+
+        if (state.onSelectionChanged)
+            state.onSelectionChanged();
+
+        if (auto& w = panelWindows[(int) Panel::pianoRoll])
+        {
+            w->setFullScreen (true);
+            w->toFront (true);
+            updateFullScreenButtons();
+        }
+        else
+        {
+            setMaximised (Maximised::pianoRoll);
+
+            // The menu came from the rack, which is hidden now: take the keyboard back so
+            // Esc (leave full screen), Space and the other shortcuts work straight away.
+            grabKeyboardFocus();
+        }
+    };
     playlist.onFullScreenToggle = [this]
     {
         setMaximised (maximised == Maximised::playlist ? Maximised::none : Maximised::playlist);

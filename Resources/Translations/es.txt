@@ -445,3 +445,4 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "Song position. Right-click: show bars and beats or minutes and seconds" = "Posición de la canción. Clic derecho: mostrar compases y tiempos o minutos y segundos"
 "Counter: minutes and seconds (right-click it to switch back)" = "Contador: minutos y segundos (clic derecho para volver)"
 "Counter: bars and beats (right-click it to show minutes and seconds)" = "Contador: compases y tiempos (clic derecho para ver minutos y segundos)"
+"Piano roll (full screen)" = "Piano roll (pantalla completa)"

@@ -242,7 +242,7 @@ private:
     project::SaveResult saveResult;
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
-    int resyncsBefore = 0, channelsBefore = 0;
+    int resyncsBefore = 0, channelsBefore = 0, clipsBefore = 0, insertsBefore = 0;
 
     // Tempo approval, sharing playback
     std::map<collab::Session*, juce::Array<collab::Session::TempoQuestion>> tempoAsked;
@@ -1292,6 +1292,43 @@ private:
                     return false;
                 }) && std::abs (song::getSongLengthBeats (H()) - 20.0) < 1.0e-6;
             } });
+
+        steps.push_back ({ "Playlist: 200 tracks - peer 2 places a clip on track 150 -> on track 150 everywhere",
+            [this]
+            {
+                clipsBefore = song::getClips (H()).size();
+                song::addClip (P2(), pat (P2(), "Pattern 1")[song::ids::sid].toString(), 149, 0.0);
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([this] (te::Edit& e)
+                {
+                    int onTrack150 = 0;
+
+                    for (auto& c : song::getClips (e))
+                        if ((int) c[song::ids::lane] == 149)
+                            ++onTrack150;
+
+                    return song::getClips (e).size() == clipsBefore + 1 && onTrack150 == 1;
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Playlist: peer 2 removes the track-150 clip again -> gone everywhere",
+            [this]
+            {
+                for (auto& c : song::getClips (P2()))
+                    if ((int) c[song::ids::lane] == 149)
+                    {
+                        song::removeClip (P2(), c);
+                        break;
+                    }
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([this] (te::Edit& e) { return song::getClips (e).size() == clipsBefore; });
+            },
+            8000, 600 });
 
         steps.push_back ({ "Peer 1 shares in SONG mode and plays -> everyone plays the arrangement",
             [this]
@@ -2757,10 +2794,11 @@ private:
             },
             30000, 600 });
 
-        steps.push_back ({ "Song file: afterwards peer 1 adds a channel and peer 2 a note -> everywhere, no ID clashes",
+        steps.push_back ({ "Song file: afterwards peer 1 adds a channel and peer 2 a note -> everywhere, no ID clashes; the channel plays into the master (no insert made for it)",
             [this]
             {
                 channelsBefore = song::getChannels (H()).size();
+                insertsBefore = song::getInserts (H()).size();
                 song::addChannel (P1(), song::InstrumentKind::synth);
                 song::setStep (P2(), pat (P2(), "Beat - Kick"), *ch (P2(), "Kick"), 6, true);
             },
@@ -2769,8 +2807,11 @@ private:
                 return hashesEqual() && compiledEqualEverywhere()
                     && everywhere ([this] (te::Edit& e)
                        {
-                           return song::getChannels (e).size() == channelsBefore + 1 && idsUnique (e)
-                               && hasStep (e, "Beat - Kick", "Kick", 6);
+                           auto channels = song::getChannels (e);
+                           return channels.size() == channelsBefore + 1 && idsUnique (e)
+                               && hasStep (e, "Beat - Kick", "Kick", 6)
+                               && song::getRoute (*channels.getLast()).isEmpty()
+                               && song::getInserts (e).size() == insertsBefore;
                        });
             },
             8000, 600 });

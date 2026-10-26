@@ -45,6 +45,8 @@ public:
 
     /** Own window (e.g. a second monitor) and full screen there (set up by the main window). */
     std::function<void()> onDetachToggle, onFullScreenToggle;
+    /** "Piano roll" in a channel's right-click menu: show that channel's notes, full screen. */
+    std::function<void (const juce::String& channelID)> onOpenPianoRoll;
     void setDetached (bool);
     void setFullScreenState (bool isFullScreen);
 
