@@ -26,6 +26,13 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.1.1
+
+* **The counter can show minutes and seconds big**: right-click the counter in
+  the top bar and choose *Minutes and seconds* (or *Bars and beats*). The big
+  number switches to min:sec.ms and the small box shows the bar, or the other
+  way round. COTOSTUDIO remembers your choice.
+
 ## What's new in 1.1
 
 * **The piano roll and the channel rack can have their own window**, like the

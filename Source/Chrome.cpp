@@ -6,6 +6,7 @@ using namespace theme::colours;
 LcdDisplay::LcdDisplay (EditorState& s) : state (s)
 {
     setOpaque (false);
+    setTooltip (TRANS ("Song position. Right-click: show bars and beats or minutes and seconds"));
     startTimerHz (25);
 }
 
@@ -73,11 +74,17 @@ void LcdDisplay::paint (juce::Graphics& g)
         g.drawText (t, a.removeFromTop (12), juce::Justification::bottomLeft, false);
     };
 
+    // The big number is bars (default) or minutes:seconds; the small box shows the other.
+    const auto bigText   = timeFirst ? time : pos;
+    const auto smallText = timeFirst ? pos : time;
+    const auto bigLabel   = timeFirst ? TRANS ("TIME") : TRANS ("BAR");
+    const auto smallLabel = timeFirst ? TRANS ("BAR") : TRANS ("TIME");
+
     auto posArea = area.removeFromLeft (104);
-    label (posArea, TRANS ("BAR"));
+    label (posArea, bigLabel);
     g.setColour (lcdText);
     g.setFont (theme::mono (19.0f, true));
-    g.drawText (pos, posArea.withTrimmedTop (12), juce::Justification::centredLeft, false);
+    g.drawFittedText (bigText, posArea.withTrimmedTop (12), juce::Justification::centredLeft, 1, 0.8f);
 
     g.setColour (juce::Colours::white.withAlpha (0.08f));
     g.fillRect (area.removeFromLeft (1).withTrimmedTop (4).withTrimmedBottom (4));
@@ -86,10 +93,10 @@ void LcdDisplay::paint (juce::Graphics& g)
     {
         area.removeFromLeft (10);
         auto timeArea = area.removeFromLeft (86);
-        label (timeArea, TRANS ("TIME"));
+        label (timeArea, smallLabel);
         g.setColour (lcdText);
         g.setFont (theme::mono (15.0f));
-        g.drawText (time, timeArea.withTrimmedTop (12), juce::Justification::centredLeft, false);
+        g.drawFittedText (smallText, timeArea.withTrimmedTop (12), juce::Justification::centredLeft, 1, 0.8f);
 
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.fillRect (area.removeFromLeft (1).withTrimmedTop (4).withTrimmedBottom (4));
@@ -97,6 +104,29 @@ void LcdDisplay::paint (juce::Graphics& g)
 
     area.removeFromLeft (8);
     label (area, "BPM");
+}
+
+void LcdDisplay::mouseDown (const juce::MouseEvent& e)
+{
+    if (! e.mods.isPopupMenu())
+        return;
+
+    juce::PopupMenu m;
+    m.addSectionHeader (TRANS ("Counter shows"));
+    m.addItem (1, TRANS ("Bars and beats (bar.beat.step)"), true, ! timeFirst);
+    m.addItem (2, TRANS ("Minutes and seconds (min:sec.ms)"), true, timeFirst);
+
+    juce::Component::SafePointer<LcdDisplay> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safe] (int result)
+    {
+        if (safe == nullptr || result == 0)
+            return;
+
+        safe->setTimeFirst (result == 2);
+
+        if (safe->onTimeFirstChanged)
+            safe->onTimeFirstChanged (safe->timeFirst);
+    });
 }
 
 //==============================================================================

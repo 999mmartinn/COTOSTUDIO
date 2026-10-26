@@ -12,6 +12,7 @@
 /** The Pro Tools-style counter: bar.beat.step and time, with the tempo box on the right
     (the main window puts its tempo control in getTempoArea()). Repaints only while playing. */
 class LcdDisplay  : public juce::Component,
+                    public juce::SettableTooltipClient,
                     private juce::Timer
 {
 public:
@@ -20,7 +21,14 @@ public:
 
     juce::Rectangle<int> getTempoArea() const;
     void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
     void refresh()                          { repaint(); }
+
+    /** True: the big number is minutes:seconds (bars go in the small box).
+        Right-click the counter to switch; the main window saves the choice. */
+    void setTimeFirst (bool t)              { if (t != timeFirst) { timeFirst = t; repaint(); } }
+    bool isTimeFirst() const                { return timeFirst; }
+    std::function<void (bool timeFirst)> onTimeFirstChanged;
 
     /** Narrow windows: bar and tempo only (no time). */
     void setCompact (bool c)                { if (c != compact) { compact = c; repaint(); } }
@@ -30,6 +38,7 @@ public:
 private:
     EditorState& state;
     bool compact = false;
+    bool timeFirst = false;
     int positionWidth() const               { return compact ? 125 : 214; }
     juce::String lastText;
     void timerCallback() override;

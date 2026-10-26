@@ -314,6 +314,15 @@ MainComponent::MainComponent (te::Engine& e)
     session.setMetronome (prefs->getBoolValue ("metronome", false));
     session.setCountInBars (prefs->getIntValue ("countInBars", 0));
 
+    // The counter's big number: bars (default) or minutes:seconds (right-click it to switch).
+    lcd.setTimeFirst (prefs->getBoolValue ("counterShowsTime", false));
+    lcd.onTimeFirstChanged = [this] (bool timeFirst)
+    {
+        userSettings->setValue ("counterShowsTime", timeFirst);
+        appendLog (timeFirst ? TRANS ("Counter: minutes and seconds (right-click it to switch back)")
+                               : TRANS ("Counter: bars and beats (right-click it to show minutes and seconds)"));
+    };
+
     logo = std::make_unique<Logo> (*this);
     dock = std::make_unique<Dock>();
     dock->addAndMakeVisible (bottomTabs);
