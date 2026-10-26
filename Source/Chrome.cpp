@@ -13,7 +13,7 @@ LcdDisplay::~LcdDisplay()   { stopTimer(); }
 
 juce::Rectangle<int> LcdDisplay::getTempoArea() const
 {
-    return getLocalBounds().withTrimmedLeft (214).reduced (6, 0).withTrimmedTop (15).withTrimmedBottom (3);
+    return getLocalBounds().withTrimmedLeft (positionWidth()).reduced (6, 0).withTrimmedTop (15).withTrimmedBottom (3);
 }
 
 juce::String LcdDisplay::positionText (juce::String& timeText) const
@@ -50,7 +50,7 @@ void LcdDisplay::timerCallback()
     if (text != lastText)
     {
         lastText = text;
-        repaint (getLocalBounds().withWidth (214));
+        repaint (getLocalBounds().withWidth (positionWidth()));
     }
 }
 
@@ -81,16 +81,20 @@ void LcdDisplay::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.08f));
     g.fillRect (area.removeFromLeft (1).withTrimmedTop (4).withTrimmedBottom (4));
-    area.removeFromLeft (10);
 
-    auto timeArea = area.removeFromLeft (86);
-    label (timeArea, TRANS ("TIME"));
-    g.setColour (lcdText);
-    g.setFont (theme::mono (15.0f));
-    g.drawText (time, timeArea.withTrimmedTop (12), juce::Justification::centredLeft, false);
+    if (! compact)
+    {
+        area.removeFromLeft (10);
+        auto timeArea = area.removeFromLeft (86);
+        label (timeArea, TRANS ("TIME"));
+        g.setColour (lcdText);
+        g.setFont (theme::mono (15.0f));
+        g.drawText (time, timeArea.withTrimmedTop (12), juce::Justification::centredLeft, false);
 
-    g.setColour (juce::Colours::white.withAlpha (0.08f));
-    g.fillRect (area.removeFromLeft (1).withTrimmedTop (4).withTrimmedBottom (4));
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect (area.removeFromLeft (1).withTrimmedTop (4).withTrimmedBottom (4));
+    }
+
     area.removeFromLeft (8);
     label (area, "BPM");
 }
@@ -160,7 +164,7 @@ void SessionPill::paintButton (juce::Graphics& g, bool over, bool down)
             break;
     }
 
-    g.setColour (text);
+    g.setColour (theme::colours::text);
     g.setFont (theme::ui (11.5f, theme::Weight::bold));
     g.drawText (status, top, juce::Justification::bottomLeft, true);
     g.setColour (muted);

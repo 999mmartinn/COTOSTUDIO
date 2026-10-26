@@ -3,7 +3,7 @@
 
 using namespace song;
 
-static const juce::Colour panelColour (0xff2a2f36), stripColour (0xff31373f), selectedStrip (0xff3d4550), accent (0xfff28c28);
+namespace col = theme::colours;
 
 //==============================================================================
 /** A vertical peak meter reading an engine LevelMeasurer (local only, nothing is sent). */
@@ -25,50 +25,65 @@ public:
             }
         }
 
-        float db = -100.0f;
+        bool changed = false;
 
-        if (attached != nullptr)
-            for (int ch = 0; ch < 2; ++ch)
-                db = juce::jmax (db, client.getAndClearAudioLevel (ch).dB);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float db = attached != nullptr ? client.getAndClearAudioLevel (ch).dB : -100.0f;
 
-        // Fast attack, slow fall.
-        const float target = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
-        level = target > level ? target : juce::jmax (target, level - 0.025f);
-        clipped = db > 0.0f || (clipped && ++clipHold < 60);
+            // Fast attack, slow fall.
+            const float target = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
+            const float before = level[ch];
+            level[ch] = target > level[ch] ? target : juce::jmax (target, level[ch] - 0.025f);
+            changed = changed || std::abs (before - level[ch]) > 0.002f;
 
-        if (db > 0.0f)
-            clipHold = 0;
+            const bool wasClipped = clipped[ch];
+            clipped[ch] = db > 0.0f || (clipped[ch] && ++clipHold[ch] < 60);
 
-        repaint();
+            if (db > 0.0f)
+                clipHold[ch] = 0;
+
+            changed = changed || wasClipped != clipped[ch];
+        }
+
+        if (changed)
+            repaint();   // (a silent meter costs nothing)
     }
 
     void paint (juce::Graphics& g) override
     {
+        // Two bars (left / right): green, amber from -12 dB, a red light when it clips.
         auto r = getLocalBounds().toFloat();
-        g.setColour (juce::Colour (0xff15181c));
-        g.fillRoundedRectangle (r, 2.0f);
+        const float w = (r.getWidth() - 2.0f) * 0.5f;
+        const float amberFrom = 48.0f / 66.0f;   // -12 dB
 
-        auto filled = r.reduced (1.0f);
-        filled = filled.removeFromBottom (filled.getHeight() * level);
-        juce::ColourGradient grad (juce::Colour (0xffe04040), r.getX(), r.getY(),
-                                   juce::Colour (0xff4fc04f), r.getX(), r.getBottom(), false);
-        grad.addColour (0.25, juce::Colour (0xffe0c040));
-        g.setGradientFill (grad);
-        g.fillRect (filled);
-
-        if (clipped)
+        for (int ch = 0; ch < 2; ++ch)
         {
-            g.setColour (juce::Colour (0xffff3030));
-            g.fillRect (r.removeFromTop (4.0f));
+            auto bar = juce::Rectangle<float> (r.getX() + ch * (w + 2.0f), r.getY(), w, r.getHeight());
+            g.setColour (theme::colours::stepOff);
+            g.fillRoundedRectangle (bar, 2.0f);
+
+            auto inner = bar.withTrimmedTop (5.0f);
+            const float h = inner.getHeight();
+            const float greenH = h * juce::jmin (level[ch], amberFrom);
+            const float amberH = h * juce::jmax (0.0f, level[ch] - amberFrom);
+
+            g.setColour (theme::colours::green);
+            g.fillRect (inner.getX(), inner.getBottom() - greenH, inner.getWidth(), greenH);
+            g.setColour (theme::colours::amber);
+            g.fillRect (inner.getX(), inner.getBottom() - greenH - amberH, inner.getWidth(), amberH);
+
+            g.setColour (clipped[ch] ? theme::colours::red : theme::colours::stepOffAlt);
+            g.fillRoundedRectangle (bar.withHeight (4.0f), 1.5f);
         }
     }
 
 private:
     te::LevelMeasurer::Client client;
     juce::WeakReference<te::LevelMeasurer> attached;
-    float level = 0.0f;
-    bool clipped = false;
-    int clipHold = 0;
+    float level[2] = { 0.0f, 0.0f };
+    bool clipped[2] = { false, false };
+    int clipHold[2] = { 0, 0 };
 
     void detach()
     {
@@ -89,7 +104,7 @@ public:
     {
         title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
         addAndMakeVisible (title);
-        addButton.setTooltip ("Feed another insert from this one too (e.g. a reverb or delay insert)");
+        addButton.setTooltip (TRANS ("Feed another insert from this one too (e.g. a reverb or delay insert)"));
         addButton.onClick = [this] { showAddMenu(); };
         addAndMakeVisible (addButton);
         rebuild();
@@ -154,7 +169,7 @@ private:
         if (insert == nullptr)
             return;
 
-        title.setText ("Sends from " + juce::String (getInsertNumber (*e, *insert)) + " " + insert->getName(), juce::dontSendNotification);
+        title.setText (TRANS ("Sends from") + " " + juce::String (getInsertNumber (*e, *insert)) + " " + insert->getName(), juce::dontSendNotification);
 
         for (auto s : getSendsFrom (*e, insertID))
         {
@@ -169,10 +184,10 @@ private:
             auto& k = row->knob;
             k.setRange (0.0, 1.0);
             k.setLookAndFeel (&knobLook());
-            k.setColour (juce::Slider::rotarySliderFillColourId, accent);
+            k.setColour (juce::Slider::rotarySliderFillColourId, col::accent);
             k.setDoubleClickReturnValue (true, te::decibelsToVolumeFaderPosition (0.0f));
             k.describeDefault = [] { return juce::String ("0 dB"); };
-            k.setTooltip ("Send level (right-click: reset to 0 dB). All the way down = off");
+            k.setTooltip (TRANS ("Send level (right-click: reset to 0 dB). All the way down = off"));
             k.setValue (te::decibelsToVolumeFaderPosition ((float) getSendLevel (s)), juce::dontSendNotification);
             k.onDragStart = [this] { state.beginAction(); };
             k.onValueChange = [this, row]
@@ -187,7 +202,7 @@ private:
 
             row->value.setText (dbText (getSendLevel (s)), juce::dontSendNotification);
             row->value.setJustificationType (juce::Justification::centredRight);
-            row->remove.setTooltip ("Remove this send");
+            row->remove.setTooltip (TRANS ("Remove this send"));
             row->remove.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff5a3030));
             row->remove.onClick = [this, sid = row->sid]
             {
@@ -219,7 +234,7 @@ private:
             return;
 
         juce::PopupMenu m;
-        m.addSectionHeader ("Send to");
+        m.addSectionHeader (TRANS ("Send to"));
         juce::StringArray targets;
 
         for (auto* t : getInserts (*e))
@@ -236,7 +251,7 @@ private:
         }
 
         if (targets.isEmpty())
-            m.addItem (-1, "(make another insert first: + Insert)", false);
+            m.addItem (-1, TRANS ("(make another insert first: + Insert)"), false);
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addButton),
                          [self = juce::Component::SafePointer<SendsPanel> (this), targets] (int r)
@@ -319,8 +334,7 @@ public:
         fader.setSliderStyle (juce::Slider::LinearVertical);
         fader.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         fader.setRange (0.0, 1.0);
-        fader.setColour (juce::Slider::trackColourId, accent);
-        fader.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+        fader.setColour (juce::Slider::trackColourId, col::accent);
         fader.onDragStart = [this] { mixer.state.beginAction(); };
         fader.onValueChange = [this]
         {
@@ -332,11 +346,13 @@ public:
         pan.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         pan.setRange (0.0, 1.0);
         pan.setDoubleClickReturnValue (true, 0.5);
-        pan.setColour (juce::Slider::rotarySliderFillColourId, accent);
+        pan.setColour (juce::Slider::rotarySliderFillColourId, col::lilac);
+        pan.setColour (juce::Slider::rotarySliderOutlineColourId, col::stepOffAlt);
+        pan.getProperties().set ("bipolar", true);
         pan.setLookAndFeel (&knobLook());
-        pan.setTooltip ("Pan (right-click: reset to centre)");
-        pan.describeDefault = [] { return juce::String ("centre"); };
-        fader.setTooltip (isMaster() ? "Volume (right-click: reset to -3 dB)" : "Volume (right-click: reset to 0 dB)");
+        pan.setTooltip (TRANS ("Pan (right-click: reset to centre)"));
+        pan.describeDefault = [] { return TRANS ("centre"); };
+        fader.setTooltip (isMaster() ? TRANS ("Volume (right-click: reset to -3 dB)") : TRANS ("Volume (right-click: reset to 0 dB)"));
         fader.describeDefault = [this] { return juce::String (isMaster() ? "-3 dB" : "0 dB"); };
         pan.onDragStart = [this] { mixer.state.beginAction(); };
         mixer.state.enableAutomation (fader, [this] { return (te::Plugin*) getVolume(); }, "volume");
@@ -355,7 +371,8 @@ public:
                 showMenu();
         };
 
-        mute.setTooltip ("Mute (for everyone)");
+        mute.setButtonText ("M");
+        mute.setTooltip (TRANS ("Mute (for everyone)"));
         mute.onClick = [this]
         {
             if (auto* t = getTrack())
@@ -366,8 +383,7 @@ public:
         };
 
         solo.setButtonText ("S");
-        solo.setTooltip ("Solo: hear only this insert (and what flows into and out of it). "
-                         "Only on your PC - people following your share hear it too");
+        solo.setTooltip (TRANS ("Solo: hear only this insert (and what flows into and out of it). Only on your PC - people following your share hear it too"));
         solo.onClick = [this]
         {
             auto& session = mixer.state.session;
@@ -378,14 +394,14 @@ public:
             mixer.refresh();
         };
 
-        sends.setTooltip ("Sends: also feed other inserts from this one, each at its own level (e.g. a reverb insert)");
+        sends.setTooltip (TRANS ("Sends: also feed other inserts from this one, each at its own level (e.g. a reverb insert)"));
         sends.onClick = [this] { showSends(); };
 
-        input.setTooltip ("Audio input recorded into this insert (your interface / mic). "
-                          "You hear it through this insert's effects");
+        input.setTooltip (TRANS ("Audio input recorded into this insert (your interface / mic). You hear it through this insert's effects"));
         input.onClick = [this] { showInputMenu(); };
-        arm.setTooltip ("Arm for recording: the Record button records this insert's input");
-        arm.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f"));   // a dot
+        arm.setTooltip (TRANS ("Arm for recording: the Record button records this insert's input"));
+        theme::setIcon (arm, theme::Icon::record);
+        theme::setStyle (arm, "record");
         arm.onClick = [this]
         {
             auto& rec = mixer.state.session.getRecorder();
@@ -398,7 +414,7 @@ public:
             refresh();
         };
 
-        route.setTooltip ("Where this insert's sound goes");
+        route.setTooltip (TRANS ("Where this insert's sound goes"));
         route.onClick = [this]
         {
             if (auto* t = getTrack())
@@ -419,8 +435,26 @@ public:
         }
 
         dbLabel.setJustificationType (juce::Justification::centred);
-        dbLabel.setFont (juce::FontOptions (11.0f));
-        dbLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
+        dbLabel.setFont (theme::mono (10.5f));
+        dbLabel.setColour (juce::Label::textColourId, col::text);
+        dbLabel.setInterceptsMouseClicks (false, false);
+
+        // The name plate is painted (coloured); the button on it only takes clicks.
+        name.setAlpha (0.0f);
+
+        for (auto* b : { &mute, &solo, &sends, &route, &input, &arm })
+            b->getProperties().set ("small", true);
+    }
+
+    juce::Colour getColour() const
+    {
+        auto* edit = mixer.state.getEdit();
+        auto* t = getTrack();
+
+        if (isMaster() || edit == nullptr || t == nullptr)
+            return col::accent;
+
+        return theme::channelColour (getInsertNumber (*edit, *t) - 1);
     }
 
     ~Strip() override    { pan.setLookAndFeel (nullptr); }
@@ -460,14 +494,14 @@ public:
         const auto current = rec.getInputFor (insertID);
 
         juce::PopupMenu m;
-        m.addSectionHeader ("Record from (this PC only)");
-        m.addItem (1, "No input", true, current.isEmpty());
+        m.addSectionHeader (TRANS ("Record from (this PC only)"));
+        m.addItem (1, TRANS ("No input"), true, current.isEmpty());
 
         for (int i = 0; i < inputs.size(); ++i)
             m.addItem (100 + i, inputs[i].name, true, inputs[i].id == current);
 
         if (inputs.isEmpty())
-            m.addItem (-1, "(no inputs: choose your interface in Audio settings...)", false);
+            m.addItem (-1, TRANS ("(no inputs: choose your interface in Audio settings...)"), false);
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (input),
                          [self = juce::Component::SafePointer<Strip> (this), inputs] (int r)
@@ -494,8 +528,8 @@ public:
             return;
 
         juce::PopupMenu m;
-        m.addItem (1, "Rename...");
-        m.addItem (2, "Delete insert");
+        m.addItem (1, TRANS ("Rename..."));
+        m.addItem (2, TRANS ("Delete insert"));
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (name),
                          [self = juce::Component::SafePointer<Strip> (this)] (int r)
@@ -518,10 +552,10 @@ public:
 
             if (r == 1)
             {
-                auto* w = new juce::AlertWindow ("Rename insert", {}, juce::MessageBoxIconType::NoIcon);
+                auto* w = new juce::AlertWindow (TRANS ("Rename insert"), {}, juce::MessageBoxIconType::NoIcon);
                 w->addTextEditor ("name", track->getName());
-                w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-                w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+                w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
                 const auto id = insertID;
                 auto& st = mixer.state;
                 w->enterModalState (true, juce::ModalCallbackFunction::create ([&st, id, w] (int res)
@@ -554,36 +588,50 @@ public:
         auto* t = getTrack();
 
         if (isMaster())
-            name.setButtonText ("Master");
+            plateText = TRANS ("Master");
         else if (t != nullptr)
-            name.setButtonText (juce::String (getInsertNumber (*edit, *t)) + " " + t->getName());
+            plateText = juce::String (getInsertNumber (*edit, *t)) + " " + t->getName();
 
-        name.setColour (juce::TextButton::buttonColourId, selected ? accent.darker (0.2f) : juce::Colour (0xff3a414a));
-        name.setColour (juce::TextButton::textColourOffId, selected ? juce::Colours::black : juce::Colours::white);
+        name.setTooltip (plateText + "  -  " + TRANS ("click: select (its effects on the right). Right-click: rename, delete"));
+        juce::ignoreUnused (selected);
+
+        // Effects shown on the strip (Pro Tools-style inserts).
+        effectNames.clearQuick();
+        effectStates.clearQuick();
+
+        for (auto* p : (t != nullptr ? getInsertEffects (*t) : getMasterEffects (*edit)))
+        {
+            auto* ext = dynamic_cast<te::ExternalPlugin*> (p);
+            effectNames.add (p->getName());
+            effectStates.add (ext != nullptr && ext->getAudioPluginInstance() == nullptr ? 2 : p->isEnabled() ? 0 : 1);
+        }
 
         if (t != nullptr)
         {
             const bool muted = t->isMuted (false);
-            mute.setButtonText (muted ? "Muted" : "On");
-            mute.setColour (juce::TextButton::buttonColourId, muted ? juce::Colour (0xff555555) : juce::Colour (0xff3f7a3f));
+            mute.setToggleState (muted, juce::dontSendNotification);
+            mute.setColour (juce::TextButton::buttonOnColourId, col::muted);
+            mute.setColour (juce::TextButton::textColourOnId, col::accentText);
 
             auto* dest = resolveRoute (*edit, *t);
-            route.setButtonText (dest != nullptr ? "-> " + juce::String (getInsertNumber (*edit, *dest)) : juce::String ("-> Master"));
+            route.setButtonText (juce::String::fromUTF8 ("\xe2\x86\x92 ") + (dest != nullptr ? juce::String (getInsertNumber (*edit, *dest)) + " " + dest->getName()
+                                                                                       : TRANS ("Master")));
 
             const int numSends = getSendsFrom (*edit, insertID).size();
-            sends.setButtonText (numSends > 0 ? "Sends (" + juce::String (numSends) + ")" : juce::String ("Sends"));
-            sends.setColour (juce::TextButton::buttonColourId, numSends > 0 ? juce::Colour (0xff3d5a6a) : juce::Colour (0xff3a414a));
+            sends.setButtonText (numSends > 0 ? TRANS ("Sends") + " (" + juce::String (numSends) + ")" : TRANS ("Sends"));
+            sends.setToggleState (numSends > 0, juce::dontSendNotification);
 
             // Solo is personal: yellow = soloed here; the strip fades when a solo elsewhere silences it.
             const bool soloed = mixer.state.session.isSoloed (insertID);
-            solo.setColour (juce::TextButton::buttonColourId, soloed ? juce::Colour (0xfff0d040) : juce::Colour (0xff3a414a));
-            solo.setColour (juce::TextButton::textColourOffId, soloed ? juce::Colours::black : juce::Colours::white);
-            setAlpha (mixer.state.session.isSilencedBySolo (insertID) ? 0.45f : 1.0f);
+            solo.setToggleState (soloed, juce::dontSendNotification);
+            solo.setColour (juce::TextButton::buttonOnColourId, col::amber);
+            solo.setColour (juce::TextButton::textColourOnId, col::accentText);
+            setAlpha (mixer.state.session.isSilencedBySolo (insertID) || muted ? 0.6f : 1.0f);
 
             // This PC's recording input (not shared: everyone records their own mic).
             auto& rec = mixer.state.session.getRecorder();
             const auto inputID = rec.getInputFor (insertID);
-            juce::String inputName ("No input");
+            juce::String inputName (TRANS ("No input"));
 
             for (auto& in : rec.getInputs())
                 if (in.id == inputID)
@@ -591,9 +639,8 @@ public:
 
             const bool armed = rec.isArmed (insertID);
             input.setButtonText (inputName);
-            input.setColour (juce::TextButton::textColourOffId, inputID.isEmpty() ? juce::Colours::grey : juce::Colours::white);
-            arm.setColour (juce::TextButton::buttonColourId, armed ? juce::Colour (0xffd03a3a) : juce::Colour (0xff3a414a));
-            arm.setColour (juce::TextButton::textColourOffId, armed ? juce::Colours::white : juce::Colour (0xffd06060));
+            input.setColour (juce::TextButton::textColourOffId, inputID.isEmpty() ? col::dim : col::text);
+            arm.setToggleState (armed, juce::dontSendNotification);
         }
 
         if (auto* v = getVolume())
@@ -609,7 +656,7 @@ public:
             fader.setDoubleClickReturnValue (true, (te::decibelsToVolumeFaderPosition (isMaster() ? -3.0f : 0.0f) - range.getStart())
                                                      / juce::jmax (0.0001f, range.getLength()));
             const float db = te::volumeFaderPositionToDB (v->volParam->getCurrentValue());
-            dbLabel.setText (db <= -96.0f ? juce::String ("-inf") : juce::String (db, 1) + " dB", juce::dontSendNotification);
+            dbLabel.setText (db <= -96.0f ? juce::String::fromUTF8 ("-\xe2\x88\x9e") : (db > 0.05f ? "+" : "") + juce::String (db, 1), juce::dontSendNotification);
         }
 
         repaint();
@@ -637,46 +684,202 @@ public:
     void paint (juce::Graphics& g) override
     {
         const bool selected = mixer.state.selectedInsert == insertID;
-        g.setColour (selected ? selectedStrip : stripColour);
-        g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (2.0f, 0.0f), 4.0f);
+        auto box = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (selected ? col::panel : col::well);
+        g.fillRoundedRectangle (box, 8.0f);
+        g.setColour (selected ? col::accent : col::line);
+        g.drawRoundedRectangle (box, 8.0f, 1.0f);
+
+        // Name plate in the strip's colour.
+        g.setColour (getColour());
+        g.fillRoundedRectangle (plateArea.toFloat(), 5.0f);
+        g.setColour (col::accentText);
+        g.setFont (theme::ui (11.0f, theme::Weight::bold));
+        g.drawFittedText (plateText, plateArea.reduced (4, 0), juce::Justification::centred, 1, 0.8f);
+
+        // Inserts (effects): click one to open it, the empty one to add.
+        for (int i = 0; i < numEffectRows; ++i)
+        {
+            auto row = effectRow (i).toFloat();
+
+            if (row.isEmpty())
+                break;
+
+            if (i < effectNames.size())
+            {
+                const int st = effectStates[i];
+                g.setColour (col::wellAlt);
+                g.fillRoundedRectangle (row, 3.0f);
+                g.setColour (st == 2 ? col::red : col::line);
+                g.drawRoundedRectangle (row.reduced (0.5f), 3.0f, 1.0f);
+                auto textArea = row.reduced (5.0f, 0.0f);
+
+                // More effects than rows: the last row says how many aren't shown ("+2").
+                if (i == numEffectRows - 1 && effectNames.size() > numEffectRows)
+                {
+                    g.setColour (col::accent);
+                    g.setFont (theme::ui (9.5f, theme::Weight::bold));
+                    g.drawText ("+" + juce::String (effectNames.size() - numEffectRows), textArea.removeFromRight (18.0f),
+                                juce::Justification::centredRight, false);
+                }
+
+                g.setColour (st == 0 ? col::text : st == 1 ? col::dim : col::red);
+                g.setFont (theme::ui (9.5f, theme::Weight::medium));
+                g.drawText (effectNames[i], textArea, juce::Justification::centredLeft, true);
+            }
+            else
+            {
+                juce::Path outline, dashed;
+                outline.addRoundedRectangle (row.reduced (0.5f), 3.0f);
+                const float dashes[] = { 3.0f, 2.5f };
+                juce::PathStrokeType (1.0f).createDashedStroke (dashed, outline, dashes, 2);
+                g.setColour (col::line);
+                g.fillPath (dashed);
+                g.setColour (col::muted);
+                g.setFont (theme::ui (9.5f));
+                g.drawText ("+ " + TRANS ("effect"), row.reduced (5.0f, 0.0f), juce::Justification::centredLeft, true);
+                break;
+            }
+        }
+
+        // dB scale next to the fader.
+        auto f = fader.getBounds();
+
+        if (f.getHeight() > 50)
+        {
+            g.setFont (theme::mono (8.5f));
+            g.setColour (col::muted);
+            const float thumb = 14.0f;
+            const float top = (float) f.getY() + thumb, bottom = (float) f.getBottom() - thumb;
+
+            // From the top; a mark is skipped when it would touch the last one drawn.
+            float lastY = -100.0f;
+
+            for (auto db : { 6.0f, 0.0f, -6.0f, -12.0f, -24.0f, -48.0f })
+            {
+                const float pos = te::decibelsToVolumeFaderPosition (db);
+                const float y = bottom - pos * (bottom - top);
+
+                if (y - lastY < 11.0f || bottom - y < 11.0f)
+                    continue;
+
+                g.drawText (db > 0.0f ? "+" + juce::String ((int) db) : juce::String ((int) db),
+                            juce::Rectangle<float> ((float) scaleArea.getX(), y - 5.0f, (float) scaleArea.getWidth(), 10.0f),
+                            juce::Justification::centredRight, false);
+                lastY = y;
+            }
+
+            g.drawText (juce::String::fromUTF8 ("-\xe2\x88\x9e"),
+                        juce::Rectangle<float> ((float) scaleArea.getX(), bottom - 5.0f, (float) scaleArea.getWidth(), 10.0f),
+                        juce::Justification::centredRight, false);
+        }
+    }
+
+    juce::Rectangle<int> effectRow (int i) const
+    {
+        const int h = 17, gap = 2;
+
+        if (effectsArea.getHeight() < (i + 1) * (h + gap) - gap)
+            return {};
+
+        return effectsArea.withHeight (h).translated (0, i * (h + gap));
     }
 
     void mouseDown (const juce::MouseEvent&) override   { select(); }
 
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (e.mouseWasDraggedSinceMouseDown() || ! e.mods.isLeftButtonDown())
+            return;
+
+        for (int i = 0; i < numEffectRows; ++i)
+        {
+            if (! effectRow (i).contains (e.getPosition()))
+                continue;
+
+            auto* edit = mixer.state.getEdit();
+
+            if (edit == nullptr)
+                return;
+
+            auto* t = getTrack();
+            auto chain = t != nullptr ? getInsertEffects (*t) : getMasterEffects (*edit);
+
+            if (i < chain.size())
+            {
+                chain[i]->showWindowExplicitly();
+            }
+            else if (i >= chain.size())
+            {
+                auto& st = mixer.state;
+                const auto id = insertID;
+
+                Mixer::showEffectMenu (mixer.engine, this, [&st, id] (const juce::String& type, const juce::PluginDescription* desc)
+                {
+                    if (auto* e2 = st.getEdit())
+                    {
+                        st.beginAction();
+                        putEffect (*e2, findInsert (*e2, id), createEffect (*e2, type, desc), -1);
+                    }
+                });
+            }
+
+            return;
+        }
+    }
+
     void resized() override
     {
-        auto r = getLocalBounds().reduced (6, 4);
-        name.setBounds (r.removeFromTop (24));
-        r.removeFromTop (4);
+        auto r = getLocalBounds().reduced (6);
+        const int total = getHeight();
+        plateArea = r.removeFromTop (22);
+        name.setBounds (plateArea);
+        r.removeFromTop (5);
 
-        // Input + arm row (kept empty on the master so faders line up).
-        auto inputRow = r.removeFromTop (22);
-        r.removeFromTop (4);
+        // Input + arm (kept empty on the master so faders line up).
+        auto inputRow = r.removeFromTop (20);
+        r.removeFromTop (5);
 
         if (! isMaster())
         {
-            arm.setBounds (inputRow.removeFromRight (24));
+            arm.setBounds (inputRow.removeFromRight (22));
             inputRow.removeFromRight (3);
             input.setBounds (inputRow);
         }
 
+        // Inserts (effects): more rows on taller strips (e.g. the mixer full screen).
+        numEffectRows = total >= 620 ? 6 : total >= 520 ? 5 : total >= 440 ? 4 : total >= 360 ? 3 : total >= 300 ? 2 : total >= 250 ? 1 : 0;
+        effectsArea = r.removeFromTop (numEffectRows * 19);
+
+        if (numEffectRows > 0)
+            r.removeFromTop (4);
+
+        pan.setBounds (r.removeFromTop (28).withSizeKeepingCentre (28, 28));
+        r.removeFromTop (4);
+
+        // Bottom: Sends | output, M | S, the dB value (empty on the master, so faders line up).
+        auto outRow = r.removeFromBottom (19);
+        r.removeFromBottom (3);
+        auto muteRow = r.removeFromBottom (20);
+        r.removeFromBottom (3);
+
         if (! isMaster())
         {
-            route.setBounds (r.removeFromBottom (22));
-            r.removeFromBottom (3);
-            sends.setBounds (r.removeFromBottom (22));
-            r.removeFromBottom (3);
-            auto muteRow = r.removeFromBottom (22);
-            solo.setBounds (muteRow.removeFromRight (24));
-            muteRow.removeFromRight (3);
-            mute.setBounds (muteRow);
-            r.removeFromBottom (3);
+            sends.setBounds (outRow.removeFromLeft ((outRow.getWidth() - 3) * 2 / 5));
+            outRow.removeFromLeft (3);
+            route.setBounds (outRow);
+            mute.setBounds (muteRow.removeFromLeft ((muteRow.getWidth() - 3) / 2));
+            muteRow.removeFromLeft (3);
+            solo.setBounds (muteRow);
         }
 
-        pan.setBounds (r.removeFromBottom (32).withSizeKeepingCentre (32, 32));
-        dbLabel.setBounds (r.removeFromBottom (16));
-        meter.setBounds (r.removeFromRight (10).reduced (0, 4));
+        dbLabel.setBounds (r.removeFromBottom (15));
+        r.removeFromBottom (2);
+
+        // Fader with its scale on the left and the stereo meter on the right.
+        meter.setBounds (r.removeFromRight (12).reduced (0, 2));
         r.removeFromRight (4);
+        scaleArea = r.removeFromLeft (juce::jmin (22, r.getWidth() / 3));
         fader.setBounds (r);
     }
 
@@ -696,6 +899,11 @@ public:
     MeterBar meter;
     ResetSlider fader, pan;
     juce::Label dbLabel;
+    juce::String plateText;
+    juce::StringArray effectNames;
+    juce::Array<int> effectStates;   // 0 on, 1 bypassed, 2 not installed here
+    juce::Rectangle<int> plateArea, effectsArea, scaleArea;
+    int numEffectRows = 0;
 };
 
 //==============================================================================
@@ -704,7 +912,9 @@ class Mixer::Slots  : public juce::Component
 public:
     explicit Slots (Mixer& m) : mixer (m)
     {
-        title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        title.setFont (theme::ui (12.5f, theme::Weight::bold));
+        title.setColour (juce::Label::textColourId, col::text);
+        title.setBorderSize ({});
         addAndMakeVisible (title);
 
         for (int i = 0; i < numSlots; ++i)
@@ -715,8 +925,10 @@ public:
 
             // A visible way to take an effect out of the chain.
             auto* x = removeButtons.add (new juce::TextButton (juce::String::fromUTF8 ("\xc3\x97")));
-            x->setTooltip ("Remove this effect");
-            x->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff5a3030));
+            x->setTooltip (TRANS ("Remove this effect"));
+            theme::setIcon (*x, theme::Icon::close);
+            x->setButtonText ({});
+            theme::setStyle (*x, "flat");
             x->onClick = [this, i] { removeEffect (i); };
             addChildComponent (x);
         }
@@ -768,9 +980,11 @@ public:
             mixer.state.selectedInsert = {};   // it was deleted
 
         auto* t = getInsert();
-        title.setText (t != nullptr ? "Insert " + juce::String (getInsertNumber (*edit, *t)) + " - " + t->getName() + ": effects"
-                                    : juce::String ("Master: effects"),
+        title.setText (t != nullptr ? juce::String (getInsertNumber (*edit, *t)) + " " + t->getName()
+                                    : TRANS ("Master"),
                        juce::dontSendNotification);
+        titleColour = t != nullptr ? theme::channelColour (getInsertNumber (*edit, *t) - 1) : col::accent;
+        repaint();
 
         auto chain = getChain();
 
@@ -784,18 +998,19 @@ public:
                 auto* ext = dynamic_cast<te::ExternalPlugin*> (p);
                 const bool missing = ext != nullptr && ext->getAudioPluginInstance() == nullptr;
                 b->setButtonText (juce::String (i + 1) + ". " + p->getName()
-                                    + (missing ? "  (not installed here)" : ! p->isEnabled() ? "  (bypassed)" : ""));
-                b->setColour (juce::TextButton::buttonColourId, missing ? juce::Colours::darkred
-                                                                : p->isEnabled() ? juce::Colour (0xff3f4a57) : juce::Colour (0xff2c3138));
-                b->setTooltip ("Click: open. Right-click: bypass, move, replace, remove");
-                removeButtons[i]->setVisible (true);
+                                    + (missing ? "  (" + TRANS ("not installed here") + ")" : ! p->isEnabled() ? "  (" + TRANS ("bypassed") + ")" : juce::String()));
+                b->setColour (juce::TextButton::buttonColourId, missing ? col::redSoft : p->isEnabled() ? col::raised : col::well);
+                b->setColour (juce::TextButton::textColourOffId, missing ? col::red : p->isEnabled() ? col::text : col::dim);
+                b->setTooltip (TRANS ("Click: open. Right-click: bypass, move, replace, remove"));
+                removeButtons[i]->setVisible (b->isVisible());
             }
             else
             {
                 removeButtons[i]->setVisible (false);
-                b->setButtonText (juce::String (i + 1) + ".  + add effect");
-                b->setColour (juce::TextButton::buttonColourId, juce::Colour (0xff262b32));
-                b->setTooltip ("Click to add an effect here");
+                b->setButtonText (juce::String (i + 1) + ".  + " + TRANS ("add effect"));
+                b->setColour (juce::TextButton::buttonColourId, col::wellAlt);
+                b->setColour (juce::TextButton::textColourOffId, col::dim);
+                b->setTooltip (TRANS ("Click to add an effect here"));
             }
         }
     }
@@ -835,12 +1050,12 @@ public:
         }
 
         juce::PopupMenu m;
-        m.addItem (1, "Open");
-        m.addItem (2, plugin->isEnabled() ? "Bypass" : "Enable");
-        m.addItem (3, "Move up", index > 0);
-        m.addItem (4, "Move down", index < chain.size() - 1);
-        m.addItem (5, "Replace...");
-        m.addItem (6, "Remove");
+        m.addItem (1, TRANS ("Open"));
+        m.addItem (2, plugin->isEnabled() ? TRANS ("Bypass") : TRANS ("Enable"));
+        m.addItem (3, TRANS ("Move up"), index > 0);
+        m.addItem (4, TRANS ("Move down"), index < chain.size() - 1);
+        m.addItem (5, TRANS ("Replace..."));
+        m.addItem (6, TRANS ("Remove"));
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (button), [this, plugin, index, button] (int r)
         {
@@ -882,29 +1097,46 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.setColour (juce::Colour (0xff23272d));
-        g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+        auto box = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (col::panel);
+        g.fillRoundedRectangle (box, 8.0f);
+        g.setColour (col::line);
+        g.drawRoundedRectangle (box, 8.0f, 1.0f);
+
+        theme::drawHeading (g, getLocalBounds().reduced (10, 0).removeFromTop (20).withTrimmedTop (4), TRANS ("Effects"));
+        const auto t = title.getBounds();
+        g.setColour (titleColour);
+        g.fillRoundedRectangle (juce::Rectangle<float> ((float) t.getX() - 14.0f, (float) t.getCentreY() - 4.0f, 8.0f, 8.0f), 2.0f);
     }
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (6);
-        title.setBounds (r.removeFromTop (22));
-        r.removeFromTop (4);
+        auto r = getLocalBounds().reduced (8);
+        r.removeFromTop (12);
+        title.setBounds (r.removeFromTop (18).withTrimmedLeft (16));
+        r.removeFromTop (6);
         const int h = juce::jlimit (18, 26, r.getHeight() / numSlots - 3);
 
         for (int i = 0; i < buttons.size(); ++i)
         {
+            // Slots that don't fit stay hidden (a short dock); the mixer's own window shows them all.
+            const bool fits = r.getHeight() >= h;
             auto row = r.removeFromTop (h);
             removeButtons[i]->setBounds (row.removeFromRight (h + 4));
             row.removeFromRight (3);
             buttons[i]->setBounds (row);
+            buttons[i]->setVisible (fits);
+
+            if (! fits)
+                removeButtons[i]->setVisible (false);
+
             r.removeFromTop (3);
         }
     }
 
     Mixer& mixer;
     juce::Label title;
+    juce::Colour titleColour { col::accent };
     juce::OwnedArray<MenuButton> buttons;
     juce::OwnedArray<juce::TextButton> removeButtons;
 };
@@ -921,7 +1153,13 @@ Mixer::Mixer (te::Engine& e, EditorState& s) : engine (e), state (s)
 
     detachButton.onClick = [this] { if (onDetachToggle) onDetachToggle(); };
     fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
-    fullScreenButton.setTooltip ("Fill the whole screen with the mixer (click again to go back)");
+    fullScreenButton.setTooltip (TRANS ("Fill the whole screen with the mixer (click again to go back)"));
+    fullScreenButton.setButtonText (TRANS ("Full screen"));
+    theme::setIcon (fullScreenButton, theme::Icon::fullScreen);
+    addInsertButton.setButtonText (TRANS ("Insert"));
+    theme::setIcon (addInsertButton, theme::Icon::plus);
+    addInsertButton.setTooltip (TRANS ("A new mixer insert (route channels into it)"));
+    stripsViewport.onScroll = [this] { repaint(); };
     addAndMakeVisible (detachButton);
     addChildComponent (fullScreenButton);
     setDetached (false);
@@ -974,35 +1212,47 @@ void Mixer::refresh()
 
 void Mixer::paint (juce::Graphics& g)
 {
-    g.setColour (panelColour);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    g.fillAll (col::wellAlt);
+
+    // The master strip stands apart from the inserts (a thin line between).
+    if (! strips.isEmpty())
+    {
+        const auto x = stripsViewport.getX() + stripWidth + stripGap / 2 - stripsViewport.getViewPositionX();
+
+        if (x > stripsViewport.getX() && x < stripsViewport.getRight())
+        {
+            g.setColour (col::line);
+            g.fillRect (x, stripsViewport.getY() + 6, 1, stripsViewport.getHeight() - 12 - stripsViewport.getScrollBarThickness());
+        }
+    }
 }
 
 void Mixer::setDetached (bool detached)
 {
-    detachButton.setButtonText (detached ? "Back in the main window" : "Own window");
-    detachButton.setTooltip (detached ? "Put the mixer back in the main window (closing its window does the same)"
-                                      : "Give the mixer a window of its own - e.g. full screen on your second monitor");
+    detachButton.setButtonText (detached ? TRANS ("Back in the main window") : TRANS ("Own window"));
+    theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
+    detachButton.setTooltip (detached ? TRANS ("Put the mixer back in the main window (closing its window does the same)")
+                                      : TRANS ("Give the mixer a window of its own - e.g. full screen on your second monitor"));
     fullScreenButton.setVisible (detached);
     resized();
 }
 
 void Mixer::resized()
 {
-    auto r = getLocalBounds().reduced (4);
+    auto r = getLocalBounds().reduced (8);
     auto right = r.removeFromRight (slotsWidth);
-    auto top = right.removeFromTop (24);
-    detachButton.setBounds (top.removeFromRight (fullScreenButton.isVisible() ? 150 : 100));
+    auto top = right.removeFromTop (28);
+    detachButton.setBounds (top.removeFromRight (fullScreenButton.isVisible() ? 190 : 124));
 
     if (fullScreenButton.isVisible())
     {
-        top.removeFromRight (4);
-        fullScreenButton.setBounds (top.removeFromRight (90));
+        top.removeFromRight (6);
+        fullScreenButton.setBounds (top.removeFromRight (118));
     }
 
-    right.removeFromTop (4);
+    right.removeFromTop (8);
     slots->setBounds (right);
-    r.removeFromRight (6);
+    r.removeFromRight (8);
     stripsViewport.setBounds (r);
     layoutStrips();
 }
@@ -1010,12 +1260,19 @@ void Mixer::resized()
 void Mixer::layoutStrips()
 {
     const int h = juce::jmax (100, stripsViewport.getHeight() - stripsViewport.getScrollBarThickness());
-    stripsContent.setSize (strips.size() * stripWidth + 100, h);
+    stripsContent.setSize (strips.size() * (stripWidth + stripGap) + 130, h);
+
+    // Master first, a gap, then the inserts.
+    int x = 0;
 
     for (int i = 0; i < strips.size(); ++i)
-        strips[i]->setBounds (i * stripWidth + (i > 0 ? 8 : 0), 0, stripWidth, h);
+    {
+        strips[i]->setBounds (x, 0, stripWidth, h);
+        x += stripWidth + (i == 0 ? stripGap * 2 : stripGap);
+    }
 
-    addInsertButton.setBounds (strips.size() * stripWidth + 14, 4, 80, 26);
+    addInsertButton.setBounds (x + 4, 0, 100, 30);
+    repaint();
 }
 
 void Mixer::timerCallback()
@@ -1046,12 +1303,12 @@ void Mixer::showEffectMenu (te::Engine& engine, juce::Component* target, EffectC
             types.add (d);
 
     if (types.isEmpty())
-        vst.addItem (-1, "(none found - use Scan plugins...)", false);
+        vst.addItem (-1, TRANS ("(none found - use Scan plugins...)"), false);
     else
         juce::KnownPluginList::addToMenu (vst, types, juce::KnownPluginList::sortByManufacturer);
 
-    m.addSubMenu ("Your plugins (VST3: Waves, FabFilter...)", vst);
-    m.addSubMenu ("Built-in", builtIn);
+    m.addSubMenu (TRANS ("Your plugins (VST3: Waves, FabFilter...)"), vst);
+    m.addSubMenu (TRANS ("Built-in"), builtIn);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [builtIns, types, onChosen] (int result)
     {
@@ -1080,7 +1337,7 @@ void Mixer::showRouteMenu (EditorState& state, te::AudioTrack& source, juce::Com
 
     juce::PopupMenu m;
     const auto current = getRoute (source);
-    m.addItem (1, "Master", true, resolveRoute (*edit, source) == nullptr);
+    m.addItem (1, TRANS ("Master"), true, resolveRoute (*edit, source) == nullptr);
 
     auto inserts = getInserts (*edit);
 
@@ -1096,7 +1353,7 @@ void Mixer::showRouteMenu (EditorState& state, te::AudioTrack& source, juce::Com
     }
 
     m.addSeparator();
-    m.addItem (2, "New insert for \"" + source.getName() + "\"");
+    m.addItem (2, TRANS ("New insert for") + " \"" + source.getName() + "\"");
 
     const auto sourceID = source.itemID.toString();
 

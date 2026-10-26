@@ -2,12 +2,12 @@
 
 using namespace song;
 
-static const juce::Colour rowColour (0xff2f353d), panelColour (0xff2a2f36);
+static const juce::Colour rowColour = theme::colours::well;
 
 static juce::Colour patternColourOf (const juce::ValueTree& pattern)
 {
     auto c = pattern[ids::colour].toString();
-    return c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colour (0xff5fb85f);
+    return c.isNotEmpty() ? juce::Colour::fromString (c) : theme::colours::mint;
 }
 
 /** Asks for a line of text (rename dialogs). */
@@ -15,8 +15,8 @@ static void askForText (const juce::String& title, const juce::String& initial, 
 {
     auto* w = new juce::AlertWindow (title, {}, juce::MessageBoxIconType::NoIcon);
     w->addTextEditor ("text", initial);
-    w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
     w->enterModalState (true, juce::ModalCallbackFunction::create ([w, onOK] (int result)
     {
         const auto text = w->getTextEditorContents ("text").trim();
@@ -39,7 +39,9 @@ public:
         list.setColour (juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (list);
 
-        newButton.setTooltip ("Make a new, empty pattern");
+        newButton.setTooltip (TRANS ("Make a new, empty pattern"));
+        newButton.setButtonText (TRANS ("New pattern"));
+        theme::setIcon (newButton, theme::Icon::plus);
         newButton.onClick = [this]
         {
             if (auto* edit = state.getEdit())
@@ -60,16 +62,25 @@ public:
         patterns = edit != nullptr ? getPatterns (*edit) : juce::Array<juce::ValueTree>();
         list.updateContent();
         list.repaint();
+        repaint (getLocalBounds().removeFromTop (headingHeight));
     }
 
     void resized() override
     {
         auto r = getLocalBounds();
-        newButton.setBounds (r.removeFromBottom (26).reduced (4, 0));
-        r.removeFromBottom (4);
+        newButton.setBounds (r.removeFromBottom (28).reduced (6, 0));
+        r.removeFromBottom (6);
+        r.removeFromTop (headingHeight);
         list.setBounds (r);
     }
 
+    void paint (juce::Graphics& g) override
+    {
+        theme::drawHeading (g, getLocalBounds().removeFromTop (headingHeight).reduced (10, 0),
+                            TRANS ("Patterns") + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String (patterns.size()));
+    }
+
+    static constexpr int headingHeight = 26;
     int getNumRows() override   { return patterns.size(); }
 
     void paintListBoxItem (int row, juce::Graphics& g, int w, int h, bool) override
@@ -83,13 +94,15 @@ public:
         const auto sid = p[ids::sid].toString();
         const bool viewed = sid == state.getPattern()[ids::sid].toString();
         const auto colour = patternColourOf (p);
-        auto r = juce::Rectangle<int> (0, 0, w, h).reduced (3, 2);
+        auto r = juce::Rectangle<int> (0, 0, w, h).reduced (6, 2);
 
-        g.setColour (viewed ? colour.withAlpha (0.30f) : rowColour);
-        g.fillRoundedRectangle (r.toFloat(), 3.0f);
+        g.setColour (viewed ? theme::colours::accentSoft : rowColour);
+        g.fillRoundedRectangle (r.toFloat(), 6.0f);
+        r.removeFromLeft (8);
         g.setColour (colour);
-        g.fillRoundedRectangle (r.removeFromLeft (6).toFloat(), 2.0f);
+        g.fillRoundedRectangle (r.removeFromLeft (10).toFloat().withSizeKeepingCentre (10.0f, 10.0f), 3.0f);
         r.removeFromLeft (6);
+        r.removeFromRight (6);
 
         // Who else is looking at this pattern (their colour).
         bool anyDot = false;
@@ -107,13 +120,13 @@ public:
         if (anyDot)
             r.removeFromRight (4);
 
-        g.setColour (juce::Colours::white.withAlpha (0.45f));
-        g.setFont (11.0f);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (10.5f));
         g.drawText (juce::String (getPatternChannels (*edit, p).size()) + " ch", r.removeFromRight (34),
                     juce::Justification::centredRight);
 
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (13.0f, viewed ? juce::Font::bold : juce::Font::plain));
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (12.5f, viewed ? theme::Weight::bold : theme::Weight::semibold));
         g.drawText (p[ids::name].toString(), r.reduced (2, 0), juce::Justification::centredLeft, true);
     }
 
@@ -176,13 +189,13 @@ private:
 
         const int numChannels = getPatternChannels (*edit, pattern).size();
         juce::PopupMenu m;
-        m.addItem (1, "Open");
-        m.addItem (2, "Rename...");
-        m.addItem (3, "Clone");
-        m.addItem (4, "Split by channel" + (numChannels >= 2 ? " (" + juce::String (numChannels) + " patterns)" : juce::String()),
+        m.addItem (1, TRANS ("Open"));
+        m.addItem (2, TRANS ("Rename..."));
+        m.addItem (3, TRANS ("Clone"));
+        m.addItem (4, TRANS ("Split by channel") + (numChannels >= 2 ? " (" + juce::String (numChannels) + " " + TRANS ("patterns") + ")" : juce::String()),
                    numChannels >= 2);
         m.addSeparator();
-        m.addItem (5, "Delete", getPatterns (*edit).size() > 1);
+        m.addItem (5, TRANS ("Delete"), getPatterns (*edit).size() > 1);
 
         m.showMenuAsync (juce::PopupMenu::Options(),
                          [this, pattern, safe = juce::Component::SafePointer<PatternList> (this)] (int r)
@@ -251,7 +264,9 @@ public:
         list.setColour (juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
         addAndMakeVisible (list);
 
-        importButton.setTooltip ("Add audio files (WAV, MP3, FLAC...) to the song");
+        importButton.setTooltip (TRANS ("Add audio files (WAV, MP3, FLAC...) to the song"));
+        importButton.setButtonText (TRANS ("Import audio..."));
+        theme::setIcon (importButton, theme::Icon::plus);
         importButton.onClick = [this] { if (owner.onImportAudio) owner.onImportAudio(); };
         addAndMakeVisible (importButton);
     }
@@ -262,6 +277,7 @@ public:
         assets = edit != nullptr ? getAssets (*edit) : juce::Array<juce::ValueTree>();
         list.updateContent();
         list.repaint();
+        repaint (getLocalBounds().removeFromTop (headingHeight));
     }
 
     bool anyMissing() const
@@ -276,11 +292,19 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
-        importButton.setBounds (r.removeFromBottom (26).reduced (4, 0));
-        r.removeFromBottom (4);
+        importButton.setBounds (r.removeFromBottom (28).reduced (6, 0));
+        r.removeFromBottom (6);
+        r.removeFromTop (headingHeight);
         list.setBounds (r);
     }
 
+    void paint (juce::Graphics& g) override
+    {
+        theme::drawHeading (g, getLocalBounds().removeFromTop (headingHeight).reduced (10, 0),
+                            TRANS ("Audio in the song") + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String (assets.size()));
+    }
+
+    static constexpr int headingHeight = 26;
     int getNumRows() override   { return assets.size(); }
 
     static te::AudioTrack* channelFor (te::Edit& edit, const juce::String& hash)
@@ -303,18 +327,18 @@ public:
         const auto hash = asset[ids::sid].toString();
         auto* channel = channelFor (*edit, hash);
         const auto colour = channel != nullptr ? EditorState::channelColour (getChannels (*edit).indexOf (channel))
-                                               : juce::Colours::grey;
+                                               : theme::colours::dim;
         const bool selected = channel != nullptr && state.placeAudioChannel == getChannelID (*channel);
-        auto r = juce::Rectangle<int> (0, 0, w, h).reduced (3, 2);
+        auto r = juce::Rectangle<int> (0, 0, w, h).reduced (6, 2);
 
-        g.setColour (selected ? colour.withAlpha (0.30f) : rowColour);
-        g.fillRoundedRectangle (r.toFloat(), 3.0f);
-        g.setColour (colour);
-        g.fillRoundedRectangle (r.removeFromLeft (6).toFloat(), 2.0f);
+        g.setColour (selected ? theme::colours::accentSoft : rowColour);
+        g.fillRoundedRectangle (r.toFloat(), 6.0f);
+        r.removeFromLeft (8);
+        theme::drawIcon (g, theme::Icon::wave, r.removeFromLeft (14).toFloat().withSizeKeepingCentre (14.0f, 14.0f), colour);
         r.removeFromLeft (6);
 
-        g.setColour (juce::Colours::white);
-        g.setFont (13.0f);
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (12.5f, theme::Weight::semibold));
         g.drawText (asset[ids::name].toString(), r.removeFromTop (r.getHeight() / 2 + 1).reduced (2, 0),
                     juce::Justification::bottomLeft, true);
 
@@ -326,8 +350,8 @@ public:
         if (! store.has (hash))
         {
             const double progress = store.getProgress (hash);
-            info << (progress >= 0.0 ? "receiving " + juce::String (juce::roundToInt (progress * 100.0)) + "%"
-                                     : juce::String ("waiting for the file..."));
+            info << (progress >= 0.0 ? TRANS ("receiving") + " " + juce::String (juce::roundToInt (progress * 100.0)) + "%"
+                                     : TRANS ("waiting for the file..."));
         }
         else
         {
@@ -336,16 +360,16 @@ public:
             juce::StringArray where;
 
             if (uses > 0)
-                where.add (juce::String (uses) + (uses == 1 ? " clip" : " clips"));
+                where.add (juce::String (uses) + " " + (uses == 1 ? TRANS ("clip") : TRANS ("clips")));
 
             if (! samplers.isEmpty())
-                where.add ("rack: " + samplers.joinIntoString (", "));
+                where.add (TRANS ("rack:") + " " + samplers.joinIntoString (", "));
 
-            info << (where.isEmpty() ? juce::String ("not used") : where.joinIntoString (", "));
+            info << (where.isEmpty() ? TRANS ("not used") : where.joinIntoString (", "));
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.5f));
-        g.setFont (11.0f);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (10.5f));
         g.drawText (info, r.reduced (2, 0), juce::Justification::topLeft, true);
     }
 
@@ -429,7 +453,7 @@ private:
 
         const int uses = getAssetUseCount (*edit, hash);
         juce::PopupMenu m;
-        m.addItem (1, "Rename...");
+        m.addItem (1, TRANS ("Rename..."));
         m.addSeparator();
         const int samplers = getSamplerChannelsUsing (*edit, hash).size();
         juce::StringArray what;
@@ -440,7 +464,7 @@ private:
         if (samplers > 0)
             what.add (juce::String (samplers) + (samplers == 1 ? " sampler channel" : " sampler channels"));
 
-        m.addItem (2, "Delete from project" + (what.isEmpty() ? juce::String() : " (and its " + what.joinIntoString (", ") + ")"));
+        m.addItem (2, TRANS ("Delete from project") + (what.isEmpty() ? juce::String() : " (" + TRANS ("and its") + " " + what.joinIntoString (", ") + ")"));
 
         m.showMenuAsync (juce::PopupMenu::Options(),
                          [this, hash, safe = juce::Component::SafePointer<AudioList> (this)] (int r)
@@ -471,27 +495,31 @@ class Browser::SessionPanel  : public juce::Component
 public:
     explicit SessionPanel (Browser& b) : owner (b), state (b.state)
     {
-        nameLabel.setText ("Your name", juce::dontSendNotification);
-        nameLabel.setFont (juce::FontOptions (12.0f));
+        nameLabel.setText (TRANS ("Your name"), juce::dontSendNotification);
+        nameLabel.setFont (theme::ui (11.5f));
+        nameLabel.setColour (juce::Label::textColourId, theme::colours::muted);
         addAndMakeVisible (nameLabel);
 
         nameEditor.setText (state.session.getUserName(), false);
-        nameEditor.setTooltip ("How the others see you");
+        nameEditor.setTooltip (TRANS ("How the others see you"));
         nameEditor.onReturnKey = [this] { applyName(); };
         nameEditor.onFocusLost = [this] { applyName(); };
         addAndMakeVisible (nameEditor);
 
         addAndMakeVisible (people);
 
-        chatTitle.setText ("Chat", juce::dontSendNotification);
-        chatTitle.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        chatTitle.setText (TRANS ("Chat").toUpperCase(), juce::dontSendNotification);
+        chatTitle.setFont (theme::ui (10.0f, theme::Weight::bold).withExtraKerningFactor (0.1f));
+        chatTitle.setColour (juce::Label::textColourId, theme::colours::muted);
         addAndMakeVisible (chatTitle);
 
         chatViewport.setViewedComponent (&chatView, false);
         chatViewport.setScrollBarsShown (true, false);
         addAndMakeVisible (chatViewport);
 
-        input.setTextToShowWhenEmpty ("Message...", juce::Colours::grey);
+        input.setTextToShowWhenEmpty (TRANS ("Write a message..."), theme::colours::dim);
+        theme::setStyle (sendButton, "accent");
+        sendButton.setButtonText (TRANS ("Send"));
         input.onReturnKey = [this] { send(); };
         addAndMakeVisible (input);
         sendButton.onClick = [this] { send(); };
@@ -518,19 +546,19 @@ public:
 
     void resized() override
     {
-        auto r = getLocalBounds().reduced (4);
-        auto nameRow = r.removeFromTop (24);
-        nameLabel.setBounds (nameRow.removeFromLeft (70));
+        auto r = getLocalBounds().reduced (8, 4);
+        auto nameRow = r.removeFromTop (28);
+        nameLabel.setBounds (nameRow.removeFromLeft (74));
         nameEditor.setBounds (nameRow);
-        r.removeFromTop (6);
+        r.removeFromTop (8);
 
         const int numPeople = state.session.getPeople().size();
         people.setBounds (r.removeFromTop (juce::jmin (6, numPeople) * PeopleView::rowHeight));
         r.removeFromTop (8);
 
         chatTitle.setBounds (r.removeFromTop (18));
-        auto inputRow = r.removeFromBottom (26);
-        sendButton.setBounds (inputRow.removeFromRight (50));
+        auto inputRow = r.removeFromBottom (28);
+        sendButton.setBounds (inputRow.removeFromRight (60));
         inputRow.removeFromRight (4);
         input.setBounds (inputRow);
         r.removeFromBottom (4);
@@ -554,44 +582,49 @@ private:
             {
                 auto row = r.removeFromTop (rowHeight).reduced (0, 2);
                 g.setColour (rowColour);
-                g.fillRoundedRectangle (row.toFloat(), 3.0f);
+                g.fillRoundedRectangle (row.toFloat(), 6.0f);
                 row.reduce (6, 0);
 
+                // A coloured initial, like the session badge.
+                auto circle = row.removeFromLeft (22).withSizeKeepingCentre (22, 22).toFloat();
                 g.setColour (p.colour);
-                g.fillEllipse (row.removeFromLeft (12).withSizeKeepingCentre (10, 10).toFloat());
-                row.removeFromLeft (6);
+                g.fillEllipse (circle);
+                g.setColour (juce::Colours::white);
+                g.setFont (theme::ui (10.5f, theme::Weight::bold));
+                g.drawText (p.name.substring (0, 1).toUpperCase(), circle, juce::Justification::centred, false);
+                row.removeFromLeft (8);
 
                 auto top = row.removeFromTop (row.getHeight() / 2 + 1);
-                g.setColour (juce::Colours::white);
-                g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-                g.drawText (p.name + (p.isMe ? " (you)" : juce::String()) + (p.isHost ? "  - host" : juce::String()),
+                g.setColour (theme::colours::text);
+                g.setFont (theme::ui (12.5f, theme::Weight::bold));
+                g.drawText (p.name + (p.isMe ? " (" + TRANS ("you") + ")" : juce::String()) + (p.isHost ? juce::String::fromUTF8 (" \xc2\xb7 ") + TRANS ("host") : juce::String()),
                             top, juce::Justification::bottomLeft, true);
 
                 juce::String what;
 
                 if (p.recording)
                 {
-                    g.setColour (juce::Colour (0xffe05050));
-                    what = juce::String::fromUTF8 ("\xe2\x97\x8f recording");
+                    g.setColour (theme::colours::red);
+                    what = juce::String::fromUTF8 ("\xe2\x97\x8f ") + TRANS ("recording");
                 }
                 else
                 {
-                    g.setColour (juce::Colours::white.withAlpha (0.5f));
+                    g.setColour (theme::colours::muted);
                     auto pattern = edit != nullptr ? findPattern (*edit, p.viewing) : juce::ValueTree();
-                    what = pattern.isValid() ? "on " + pattern[ids::name].toString() : juce::String();
+                    what = pattern.isValid() ? TRANS ("on") + " " + pattern[ids::name].toString() : juce::String();
                 }
 
                 // Playback: sharing it, listening along, or in Focus.
                 juce::StringArray tags;
 
-                if (p.sharing)    tags.add ("sharing playback");
-                if (p.listening)  tags.add ("listening along");
-                if (p.focus)      tags.add ("Focus");
+                if (p.sharing)    tags.add (TRANS ("sharing playback"));
+                if (p.listening)  tags.add (TRANS ("listening along"));
+                if (p.focus)      tags.add (TRANS ("Focus"));
 
                 if (! tags.isEmpty())
                     what += (what.isEmpty() ? juce::String() : juce::String::fromUTF8 (" \xc2\xb7 ")) + tags.joinIntoString (", ");
 
-                g.setFont (11.0f);
+                g.setFont (theme::ui (10.5f));
                 g.drawText (what, row, juce::Justification::topLeft, true);
             }
         }
@@ -608,16 +641,16 @@ private:
         {
             juce::AttributedString a;
             a.setWordWrap (juce::AttributedString::byWord);
-            a.append (line.time + "  ", juce::FontOptions (11.0f), juce::Colours::grey);
+            a.append (line.time + "  ", theme::mono (10.5f), theme::colours::dim);
 
             if (line.system)
             {
-                a.append (line.text, juce::FontOptions (12.0f, juce::Font::italic), juce::Colours::lightgrey);
+                a.append (line.text, theme::ui (11.5f).italicised(), theme::colours::muted);
             }
             else
             {
-                a.append (line.name + ": ", juce::FontOptions (13.0f, juce::Font::bold), line.colour);
-                a.append (line.text, juce::FontOptions (13.0f), juce::Colours::white);
+                a.append (line.name + " ", theme::ui (12.0f, theme::Weight::bold), line.colour);
+                a.append (line.text, theme::ui (12.0f), theme::colours::text);
             }
 
             return a;
@@ -658,7 +691,7 @@ private:
     EditorState& state;
     juce::Label nameLabel, chatTitle;
     juce::TextEditor nameEditor, input;
-    juce::TextButton sendButton { "Send" };
+    juce::TextButton sendButton;
     PeopleView people { state };
     ChatView chatView { state };
     juce::Viewport chatViewport;
@@ -694,17 +727,23 @@ Browser::Browser (EditorState& s) : state (s)
     addChildComponent (*audio);
     addChildComponent (*sessionPanel);
 
-    const char* names[] = { "Patterns", "Audio", "Session" };
+    const juce::String names[] = { TRANS ("Patterns"), TRANS ("Audio"), TRANS ("Session") };
 
     for (int i = 0; i < 3; ++i)
     {
         tabButtons[i].setButtonText (names[i]);
         tabButtons[i].setClickingTogglesState (false);
+        theme::setStyle (tabButtons[i], "flat");
+        tabButtons[i].setColour (juce::TextButton::textColourOffId, theme::colours::muted);
+        tabButtons[i].setColour (juce::TextButton::textColourOnId, theme::colours::text);
         tabButtons[i].onClick = [this, i] { showTab (i); };
         addAndMakeVisible (tabButtons[i]);
     }
 
-    collapseButton.setTooltip ("Hide the browser (F8 shows it again)");
+    collapseButton.setTooltip (TRANS ("Hide the browser (F8 shows it again)"));
+    collapseButton.setButtonText ({});
+    theme::setIcon (collapseButton, theme::Icon::chevronLeft);
+    theme::setStyle (collapseButton, "flat");
     collapseButton.onClick = [this] { if (onCollapse) onCollapse(); };
     addAndMakeVisible (collapseButton);
 
@@ -735,17 +774,12 @@ void Browser::updateTabButtons()
     const int unread = state.session.getChat().size() - seenChatLines;
 
     for (int i = 0; i < 3; ++i)
-    {
-        const bool on = i == current;
-        tabButtons[i].setColour (juce::TextButton::buttonColourId, on ? juce::Colour (0xfff0a030).darker (0.2f) : juce::Colour (0xff3a414a));
-        tabButtons[i].setColour (juce::TextButton::textColourOffId, on ? juce::Colours::black : juce::Colours::white);
-    }
+        tabButtons[i].setToggleState (i == current, juce::dontSendNotification);
 
-    tabButtons[sessionTab].setButtonText (current != sessionTab && unread > 0 ? "Session (" + juce::String (unread) + ")"
-                                                                               : juce::String ("Session"));
-
-    if (current != sessionTab && unread > 0)
-        tabButtons[sessionTab].setColour (juce::TextButton::buttonColourId, juce::Colour (0xff4f7fbf));
+    // Unread chat: the Session tab says how many, in the accent colour.
+    const bool showUnread = current != sessionTab && unread > 0;
+    tabButtons[sessionTab].setButtonText (showUnread ? TRANS ("Session") + " (" + juce::String (unread) + ")" : TRANS ("Session"));
+    tabButtons[sessionTab].setColour (juce::TextButton::textColourOffId, showUnread ? theme::colours::accent : theme::colours::muted);
 }
 
 void Browser::refresh()
@@ -778,22 +812,32 @@ void Browser::timerCallback()
 
 void Browser::paint (juce::Graphics& g)
 {
-    g.setColour (panelColour);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    theme::fillPanel (g, getLocalBounds());
+    g.setColour (theme::colours::line);
+    g.fillRect (1, 38, getWidth() - 2, 1);
+}
+
+void Browser::paintOverChildren (juce::Graphics& g)
+{
+    theme::framePanel (g, getLocalBounds());
 }
 
 void Browser::resized()
 {
-    auto r = getLocalBounds().reduced (4);
-    auto tabs = r.removeFromTop (24);
-    collapseButton.setBounds (tabs.removeFromRight (22));
+    auto r = getLocalBounds().reduced (1);
+    auto tabs = r.removeFromTop (38).reduced (6, 6);
+    collapseButton.setBounds (tabs.removeFromRight (24));
     tabs.removeFromRight (4);
     const int w = tabs.getWidth() / 3;
 
     for (int i = 0; i < 3; ++i)
+    {
         tabButtons[i].setBounds (i == 2 ? tabs : tabs.removeFromLeft (w));
+        tabButtons[i].getProperties().set ("small", true);
+    }
 
-    r.removeFromTop (6);
+    r.removeFromTop (2);
+    r.removeFromBottom (6);
 
     for (auto* c : std::initializer_list<juce::Component*> { patterns.get(), audio.get(), sessionPanel.get() })
         c->setBounds (r);

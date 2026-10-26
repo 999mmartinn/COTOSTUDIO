@@ -171,9 +171,5 @@ struct EditorState
         return edit != nullptr ? edit->tempoSequence.toTime (te::BeatPosition::fromBeats (beats)).inSeconds() : 0.0;
     }
 
-    static juce::Colour channelColour (int index)
-    {
-        static const juce::uint32 colours[] = { 0xfff28c28, 0xff5fb8d8, 0xffd8c95f, 0xffd86f8f, 0xff8fd86f, 0xffb88fd8 };
-        return juce::Colour (colours[index % 6]);
-    }
+    static juce::Colour channelColour (int index)      { return theme::channelColour (index); }
 };

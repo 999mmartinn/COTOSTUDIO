@@ -3,7 +3,7 @@
 #include "ProjectFile.h"
 #include "AppData.h"
 
-static const juce::Colour background (0xff1e2227), accent (0xfff28c28);
+static const juce::Colour background = theme::colours::bg, accent = theme::colours::accent;
 
 //==============================================================================
 //==============================================================================
@@ -69,7 +69,7 @@ class MainComponent::MixerWindow  : public juce::DocumentWindow
 {
 public:
     explicit MixerWindow (MainComponent& o)
-        : DocumentWindow ("Mixer  -  COTOSTUDIO", juce::Colour (0xff14111c), DocumentWindow::allButtons), owner (o)
+        : DocumentWindow (TRANS ("Mixer") + "  -  COTOSTUDIO", theme::colours::bg, DocumentWindow::allButtons), owner (o)
     {
         setUsingNativeTitleBar (true);
         setResizable (true, false);
@@ -122,6 +122,8 @@ class MainComponent::MixerPlaceholder  : public juce::Component
 public:
     explicit MixerPlaceholder (MainComponent& o) : owner (o)
     {
+        theme::setStyle (showButton, "accent");
+        theme::setIcon (backButton, theme::Icon::attach);
         backButton.onClick = [this] { owner.setMixerDetached (false); };
         showButton.onClick = [this] { owner.showMixer(); };
         addAndMakeVisible (backButton);
@@ -130,10 +132,13 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1a1724));
-        g.setColour (juce::Colours::white.withAlpha (0.6f));
-        g.setFont (juce::FontOptions (15.0f));
-        g.drawFittedText ("The mixer is in its own window.", getLocalBounds().withTrimmedBottom (getHeight() / 2 - 10),
+        g.fillAll (theme::colours::wellAlt);
+        auto top = getLocalBounds().withTrimmedBottom (getHeight() / 2 - 10);
+        theme::drawIcon (g, theme::Icon::detach, top.removeFromBottom (24).withTrimmedBottom (2).toFloat().withSizeKeepingCentre (22.0f, 22.0f),
+                         theme::colours::accent, 1.8f);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (13.5f, theme::Weight::medium));
+        g.drawFittedText (TRANS ("The mixer is in its own window."), top.withTrimmedBottom (10),
                           juce::Justification::centredBottom, 1);
     }
 
@@ -147,7 +152,78 @@ public:
 
 private:
     MainComponent& owner;
-    juce::TextButton backButton { "Bring it back here" }, showButton { "Show the window" };
+    juce::TextButton backButton { TRANS ("Bring it back here") }, showButton { TRANS ("Show the window") };
+};
+
+//==============================================================================
+/** The logo at the top left (click: About). */
+class MainComponent::Logo  : public juce::Component,
+                             public juce::SettableTooltipClient
+{
+public:
+    explicit Logo (MainComponent& o) : owner (o), image (theme::logoBadge())
+    {
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        setTooltip ("COTOSTUDIO " + juce::JUCEApplication::getInstance()->getApplicationVersion() + "  -  " + TRANS ("About"));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat();
+
+        if (image.isValid())
+        {
+            // The badge, scaled to fit, with rounded corners.
+            const auto fit = juce::RectanglePlacement (juce::RectanglePlacement::centred)
+                                 .appliedTo (image.getBounds().toFloat(), r);
+            juce::Path clip;
+            clip.addRoundedRectangle (fit, 7.0f);
+            g.saveState();
+            g.reduceClipRegion (clip);
+            g.drawImage (image, fit, juce::RectanglePlacement::stretchToFit);
+            g.restoreState();
+        }
+        else
+        {
+            g.setColour (theme::colours::accent);
+            g.setFont (theme::ui (16.0f, theme::Weight::bold));
+            g.drawText ("COTOSTUDIO", getLocalBounds(), juce::Justification::centredLeft, false);
+        }
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (getLocalBounds().contains (e.getPosition()))
+            owner.showAbout();
+    }
+
+private:
+    MainComponent& owner;
+    juce::Image image;
+};
+
+/** The rounded panel around the Piano roll / Mixer / Automation tabs. */
+class MainComponent::Dock  : public juce::Component
+{
+public:
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (theme::colours::wellAlt);
+        g.fillRoundedRectangle (r, 8.0f);
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        g.setColour (theme::colours::line);
+        g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (0.5f), 8.0f, 1.0f);
+    }
+
+    void resized() override
+    {
+        if (auto* tabs = getChildComponent (0))
+            tabs->setBounds (getLocalBounds().reduced (1));
+    }
 };
 
 //==============================================================================
@@ -170,29 +246,64 @@ MainComponent::MainComponent (te::Engine& e)
     soundsVisible = prefs->getBoolValue ("soundsVisible", true);
     recentFiles.setMaxNumberOfItems (8);
     recentFiles.restoreFromString (prefs->getValue ("recentSongs"));
-    portEditor.setText (prefs->getValue ("port", "47800"));
     session.setMetronome (prefs->getBoolValue ("metronome", false));
     session.setCountInBars (prefs->getIntValue ("countInBars", 0));
-    addressEditor.setText (prefs->getValue ("address", "127.0.0.1"));
-    portEditor.setInputRestrictions (5, "0123456789");
+
+    logo = std::make_unique<Logo> (*this);
+    dock = std::make_unique<Dock>();
+    dock->addAndMakeVisible (bottomTabs);
 
     for (auto* c : std::initializer_list<juce::Component*> {
-             &fileButton, &soundsButton, &hostButton, &joinButton, &leaveButton, &portEditor, &addressEditor, &portLabel, &addressLabel, &statusLabel,
-             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoLabel, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
-             &lengthBox, &playingLabel, &undoButton, &redoButton, &scanButton, &audioButton,
-             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &bottomTabs, &logView })
+             logo.get(), &fileButton, &soundsButton, &sessionPill, &lcd, &settingsButton,
+             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
+             &lengthBox, &undoButton, &redoButton,
+             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, dock.get(), &statusBar })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
     logView.setReadOnly (true);
     logView.setScrollbarsShown (true);
-    logView.setFont (juce::FontOptions (13.0f));
-    statusLabel.setFont (juce::FontOptions (15.0f, juce::Font::bold));
-    playingLabel.setColour (juce::Label::textColourId, accent);
+    logView.setFont (theme::mono (12.5f));
+    logView.setColour (juce::TextEditor::backgroundColourId, theme::colours::well);
+
+    // Top bar look: icons, styles, help texts.
+    theme::setIcon (fileButton, theme::Icon::chevronDown);
+    fileButton.getProperties().set ("iconRight", true);
+    fileButton.setButtonText (TRANS ("File"));
+    theme::setIcon (soundsButton, theme::Icon::sounds);
+    soundsButton.setButtonText (TRANS ("Sounds"));
+    theme::setIcon (playButton, theme::Icon::play);
+    theme::setStyle (playButton, "play");
+    playButton.setTooltip (TRANS ("Play / stop (Space). Play starts at the green marker; Stop goes back to it"));
+    theme::setIcon (recordButton, theme::Icon::record);
+    theme::setStyle (recordButton, "record");
+    theme::setIcon (clickButton, theme::Icon::metronome);
+    theme::setIcon (shareButton, theme::Icon::share);
+    theme::setIcon (focusButton, theme::Icon::focus);
+    theme::setIcon (undoButton, theme::Icon::undo);
+    theme::setIcon (redoButton, theme::Icon::redo);
+    theme::setIcon (settingsButton, theme::Icon::gear);
+    theme::setIcon (newPatternButton, theme::Icon::plus);
+    theme::setIcon (patternMenuButton, theme::Icon::menu);
+    theme::setIcon (showBrowserButton, theme::Icon::chevronRight);
+    theme::setStyle (showBrowserButton, "flat");
+    showBrowserButton.setButtonText ({});
+    settingsButton.setTooltip (TRANS ("Settings: sound card, plugins, language, data folder"));
+    settingsButton.onClick = [this] { showSettingsMenu(); };
+    sessionPill.onClick = [this] { showSessionPanel(); };
+    statusBar.onShowLog = [this] { showLog(); };
+    patternBox.setTooltip (TRANS ("The pattern you're editing (piano roll and channel rack)"));
+
+    // The tempo lives in the counter.
+    tempoSlider.setColour (juce::Slider::textBoxTextColourId, theme::colours::lcdText);
+    tempoSlider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+    tempoSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    tempoSlider.setColour (juce::TextButton::textColourOffId, theme::colours::lcdText);
 
     tempoSlider.setRange (40.0, 250.0, 1.0);
-    tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 50, 26);
-    tempoSlider.setTooltip ("Tempo. In a session everyone else has to accept a change (it is part of the song)");
+    tempoSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 46, 22);
+    tempoSlider.setIncDecButtonsMode (juce::Slider::incDecButtonsDraggable_Vertical);
+    tempoSlider.setTooltip (TRANS ("Tempo. In a session everyone else has to accept a change (it is part of the song)"));
     tempoSlider.onValueChange = [this]
     {
         if (! session.tempoNeedsApproval())
@@ -206,10 +317,11 @@ MainComponent::MainComponent (te::Engine& e)
         refreshTempo();
     };
 
-    lengthBox.addItem ("1 bar", 1);
-    lengthBox.addItem ("2 bars", 2);
-    lengthBox.addItem ("4 bars", 4);
-    lengthBox.setTooltip ("Length of the viewed pattern");
+    lengthBox.addItem (TRANS ("1 bar"), 1);
+    lengthBox.addItem (TRANS ("2 bars"), 2);
+    lengthBox.addItem (TRANS ("4 bars"), 4);
+    lengthBox.addItem (TRANS ("8 bars"), 8);
+    lengthBox.setTooltip (TRANS ("Length of the viewed pattern"));
     lengthBox.onChange = [this]
     {
         auto pattern = state.getPattern();
@@ -231,7 +343,7 @@ MainComponent::MainComponent (te::Engine& e)
             selectPattern (patterns[index][song::ids::sid].toString());
     };
 
-    newPatternButton.setTooltip ("New pattern");
+    newPatternButton.setTooltip (TRANS ("New pattern"));
     newPatternButton.onClick = [this]
     {
         if (auto* edit = state.getEdit())
@@ -242,7 +354,7 @@ MainComponent::MainComponent (te::Engine& e)
         }
     };
 
-    patternMenuButton.setTooltip ("Rename / clone / delete pattern");
+    patternMenuButton.setTooltip (TRANS ("Rename / clone / delete pattern"));
     patternMenuButton.onClick = [this] { showPatternMenu(); };
 
     state.onSelectionChanged = [this] { refresh(); };
@@ -252,7 +364,7 @@ MainComponent::MainComponent (te::Engine& e)
     browser.onCollapse = [this] { setBrowserVisible (false); };
     browser.onImportAudio = [this] { playlist.showImportDialog(); };
     browser.onUserNameChanged = [this] (const juce::String& name) { settings()->setValue ("userName", name); };
-    showBrowserButton.setTooltip ("Show the browser (F8)");
+    showBrowserButton.setTooltip (TRANS ("Show the browser (F8)"));
     showBrowserButton.onClick = [this] { setBrowserVisible (true); };
     // Your sounds (far left): folders saved on this PC only; a sound joins the song when dropped in.
     sounds.setFolders (juce::StringArray::fromLines (prefs->getValue ("soundFolders")));
@@ -277,9 +389,7 @@ MainComponent::MainComponent (te::Engine& e)
     sounds.onMidiToNewChannel = [this] (const juce::File& f) { rack.importMidiFile (f); };
 
     soundsButton.setClickingTogglesState (false);
-    soundsButton.setColour (juce::TextButton::buttonOnColourId, accent.darker (0.2f));
-    soundsButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
-    soundsButton.setTooltip ("Your folders of sounds and MIDI (Alt+F8). Only on this PC until you drag a sound into the song");
+    soundsButton.setTooltip (TRANS ("Your folders of sounds and MIDI (Alt+F8). Only on this PC until you drag a sound into the song"));
     soundsButton.onClick = [this] { setSoundsVisible (! soundsVisible); };
 
     session.onPeopleChanged = [this] { browser.refreshPeople(); triggerAsyncUpdate(); };
@@ -312,23 +422,8 @@ MainComponent::MainComponent (te::Engine& e)
         triggerAsyncUpdate();
     };
 
-    fileButton.setTooltip ("New, open and save songs (Ctrl+N / Ctrl+O / Ctrl+S)");
+    fileButton.setTooltip (TRANS ("New, open and save songs (Ctrl+N / Ctrl+O / Ctrl+S)"));
     fileButton.onClick = [this] { showFileMenu(); };
-
-    hostButton.onClick = [this]
-    {
-        settings()->setValue ("port", portEditor.getText());
-        session.startHosting (portEditor.getText().getIntValue());
-    };
-
-    joinButton.onClick = [this]
-    {
-        settings()->setValue ("port", portEditor.getText());
-        settings()->setValue ("address", addressEditor.getText());
-        session.join (addressEditor.getText().trim(), portEditor.getText().getIntValue());
-    };
-
-    leaveButton.onClick = [this] { session.leave(); };
 
     playButton.onClick = [this]
     {
@@ -347,14 +442,10 @@ MainComponent::MainComponent (te::Engine& e)
         refresh();
     };
 
-    recordButton.setButtonText (juce::String::fromUTF8 ("\xe2\x97\x8f Rec"));
-    recordButton.setTooltip ("Record (R): records every armed mixer insert from the song start marker. "
-                             "Press Stop or Space to finish. Right-click: count-in");
+    recordButton.setTooltip (TRANS ("Record (R): records every armed mixer insert from the song start marker. Press Stop or Space to finish. Right-click: count-in"));
 
     clickButton.setClickingTogglesState (false);
-    clickButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff4fb0f0));
-    clickButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
-    clickButton.setTooltip ("Metronome on/off (only you hear it). Right-click: count-in before recording");
+    clickButton.setTooltip (TRANS ("Metronome on/off (only you hear it). Right-click: count-in before recording"));
     clickButton.onClick = [this]
     {
         if (clickButton.wasRightClick())
@@ -380,15 +471,15 @@ MainComponent::MainComponent (te::Engine& e)
         else if (session.getRecorder().getNumArmed() == 0)
             showRecordSetupMenu();
         else if (session.startRecording (state.beatsToSeconds (state.songStartBeat)))
-            appendLog ("Recording... press Stop or Space to finish");
+            appendLog (TRANS ("Recording... press Stop or Space to finish"));
 
         refresh();
     };
 
-    const auto tabColour = juce::Colour (0xff2a2f36);
-    bottomTabs.addTab ("Piano roll  (F7)", tabColour, &pianoRoll, false);
-    bottomTabs.addTab ("Mixer  (F9)", tabColour, &mixer, false);
-    bottomTabs.addTab ("Automation", tabColour, &automationEditor, false);
+    const auto tabColour = theme::colours::wellAlt;
+    bottomTabs.addTab (TRANS ("Piano roll"), tabColour, &pianoRoll, false);
+    bottomTabs.addTab (TRANS ("Mixer"), tabColour, &mixer, false);
+    bottomTabs.addTab (TRANS ("Automation"), tabColour, &automationEditor, false);
 
     state.createAutomation = [this] (const juce::String& pluginID, const juce::String& paramID) { createAutomation (pluginID, paramID); };
     state.onAutomationSelected = [this]
@@ -396,8 +487,9 @@ MainComponent::MainComponent (te::Engine& e)
         bottomTabs.setCurrentTabIndex (2);
         refresh();
     };
-    bottomTabs.setTabBarDepth (26);
+    bottomTabs.setTabBarDepth (32);
     bottomTabs.setOutline (0);
+    bottomTabs.setIndent (0);
 
     // The mixer can have a window of its own (e.g. full screen on a second monitor).
     mixerPlaceholder = std::make_unique<MixerPlaceholder> (*this);
@@ -425,12 +517,16 @@ MainComponent::MainComponent (te::Engine& e)
     for (auto* b : { &patModeButton, &songModeButton })
     {
         b->setClickingTogglesState (false);
-        b->setColour (juce::TextButton::buttonOnColourId, accent.darker (0.2f));
-        b->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+        theme::setStyle (*b, "toggle");
     }
 
-    patModeButton.setTooltip ("Pattern mode: Play loops the pattern you are editing");
-    songModeButton.setTooltip ("Song mode: Play plays the playlist");
+    patModeButton.setButtonText (TRANS ("PAT"));
+    songModeButton.setButtonText (TRANS ("SONG"));
+    patModeButton.setConnectedEdges (juce::Button::ConnectedOnRight);
+    songModeButton.setConnectedEdges (juce::Button::ConnectedOnLeft);
+
+    patModeButton.setTooltip (TRANS ("Pattern mode: Play loops the pattern you are editing"));
+    songModeButton.setTooltip (TRANS ("Song mode: Play plays the playlist"));
     patModeButton.onClick = [this] { session.setSongMode (false); refresh(); };
     songModeButton.onClick = [this] { session.setSongMode (true); refresh(); };
 
@@ -457,17 +553,14 @@ MainComponent::MainComponent (te::Engine& e)
         refresh();
     };
 
-    focusButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xff8a6fd8));
-    focusButton.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-    focusButton.setTooltip ("Focus: when someone shares their playback, you keep working on your own and aren't pulled in");
+    focusButton.setButtonText (TRANS ("Focus"));
+    focusButton.setTooltip (TRANS ("Focus: when someone shares their playback, you keep working on your own and aren't pulled in"));
     focusButton.onClick = [this] { session.setFocus (! session.isFocus()); refresh(); };
 
     undoButton.onClick = [this] { undo (false); };
     redoButton.onClick = [this] { undo (true); };
-    undoButton.setTooltip ("Undo your last change (Ctrl+Z)");
-    redoButton.setTooltip ("Redo (Ctrl+Y)");
-    scanButton.onClick = [this] { showPluginScanner(); };
-    audioButton.onClick = [this] { showAudioSettings(); };
+    undoButton.setTooltip (TRANS ("Undo your last change (Ctrl+Z)"));
+    redoButton.setTooltip (TRANS ("Redo (Ctrl+Y)"));
 
     setWantsKeyboardFocus (true);
 
@@ -539,9 +632,9 @@ MainComponent::MainComponent (te::Engine& e)
         session.setSongMode (true);
     }
 
-    appendLog ("SyncTest " + juce::JUCEApplication::getInstance()->getApplicationVersion()
-                + ". First time: press 'Scan plugins...' so your VST3 plugins can be found.");
-    setSize (1280, 900);
+    appendLog ("COTOSTUDIO " + juce::JUCEApplication::getInstance()->getApplicationVersion() + " - "
+                + TRANS ("first time? Settings (gear, top right) > Find my plugins, so your VST3 plugins can be used"));
+    setSize (1600, 940);
     startTimerHz (5);
 }
 
@@ -550,6 +643,7 @@ MainComponent::~MainComponent()
     stopTimer();
     saveSoundsState();
     mixerWindow.reset();
+    logWindow.reset();   // shows logView, which goes first otherwise
     settings()->setValue ("previewVolume", (double) previewer.getGain());
     session.clearCallbacks();   // the session goes after the window's parts: it must not call into them
     unwatchEdit();
@@ -559,6 +653,7 @@ void MainComponent::appendLog (const juce::String& s)
 {
     logView.moveCaretToEnd();
     logView.insertTextAtCaret (juce::Time::getCurrentTime().toString (false, true, true, true) + "  " + s + "\n");
+    statusBar.setMessage (s);
 }
 
 void MainComponent::watchEdit()
@@ -610,12 +705,11 @@ void MainComponent::refreshPatternControls()
 
     const bool playing = edit->getTransport().isPlaying();
     auto playingPattern = song::findPattern (*edit, session.getPlayingPattern());
-    const auto what = session.isSongMode() ? juce::String ("Song") : playingPattern[song::ids::name].toString();
+    const auto what = session.isSongMode() ? TRANS ("Song") : playingPattern[song::ids::name].toString();
     const auto whose = session.isFollowingShare() ? session.getShareOwnerName() + ": " : juce::String();
-    playingLabel.setText (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + whose + what
-                                     + (session.isSharing() ? "  (shared)" : "")
-                                  : juce::String(),
-                          juce::dontSendNotification);
+    statusBar.setPlaying (playing ? juce::String (juce::CharPointer_UTF8 ("\xe2\x96\xb6 ")) + whose + what
+                                      + (session.isSharing() ? "  (" + TRANS ("shared") + ")" : juce::String())
+                                  : juce::String());
 
     patModeButton.setToggleState (! session.isSongMode(), juce::dontSendNotification);
     songModeButton.setToggleState (session.isSongMode(), juce::dontSendNotification);
@@ -626,24 +720,15 @@ void MainComponent::refresh()
     using Mode = collab::Session::Mode;
     auto mode = session.getMode();
 
-    statusLabel.setText (session.getStatusText(), juce::dontSendNotification);
-    statusLabel.setColour (juce::Label::textColourId,
-                           mode == Mode::offline ? juce::Colours::lightgrey
-                                                 : (session.isInSync() ? juce::Colours::lightgreen : juce::Colours::orange));
-
-    hostButton.setEnabled (mode == Mode::offline);
-    joinButton.setEnabled (mode == Mode::offline);
-    leaveButton.setEnabled (mode != Mode::offline);
-    portEditor.setEnabled (mode == Mode::offline);
-    addressEditor.setEnabled (mode == Mode::offline);
+    sessionPill.repaint();
+    lcd.refresh();
 
     if (auto* edit = session.getEdit())
     {
-        playButton.setButtonText (edit->getTransport().isPlaying() ? "Stop" : "Play");
+        theme::setIcon (playButton, edit->getTransport().isPlaying() ? theme::Icon::stop : theme::Icon::play);
 
         const bool recording = session.isRecording();
-        recordButton.setColour (juce::TextButton::buttonColourId, recording ? juce::Colour (0xffd03a3a) : juce::Colour (0xff3a414a));
-        recordButton.setColour (juce::TextButton::textColourOffId, recording ? juce::Colours::white : juce::Colour (0xffe06060));
+        recordButton.setToggleState (recording, juce::dontSendNotification);   // red while recording
 
         refreshTempo();
 
@@ -655,41 +740,40 @@ void MainComponent::refresh()
     {
         const bool inSession = mode == Mode::hosting || mode == Mode::joined;
         const auto owner = session.getShareOwnerName().substring (0, 14);
-        juce::Colour on = accent.darker (0.2f);
+        juce::Colour on = accent;
 
         if (session.isSharing())
         {
-            shareButton.setButtonText ("Sharing");
-            shareButton.setTooltip ("Everyone following hears your playback, in sync. Only you control it. Click to stop sharing");
+            shareButton.setButtonText (TRANS ("Sharing"));
+            shareButton.setTooltip (TRANS ("Everyone following hears your playback, in sync. Only you control it. Click to stop sharing"));
         }
         else if (session.isFollowingShare())
         {
             on = session.getShareOwnerColour();
-            shareButton.setButtonText ("With " + owner);
-            shareButton.setTooltip (session.getShareOwnerName() + " controls the playback. Click to leave "
-                                    "(you go back to where you were; the others keep listening)");
+            shareButton.setButtonText (TRANS ("With") + " " + owner);
+            shareButton.setTooltip (TRANS ("{NAME} controls the playback. Click to leave (you go back to where you were; the others keep listening)")
+                                      .replace ("{NAME}", session.getShareOwnerName()));
         }
         else if (session.isShareRunning())
         {
-            shareButton.setButtonText ("Join " + owner);
-            shareButton.setTooltip (session.getShareOwnerName() + " is sharing their playback. Click to listen along");
+            shareButton.setButtonText (TRANS ("Join") + " " + owner);
+            shareButton.setTooltip (TRANS ("{NAME} is sharing their playback. Click to listen along").replace ("{NAME}", session.getShareOwnerName()));
         }
         else
         {
-            shareButton.setButtonText ("Share");
-            shareButton.setTooltip (inSession ? "Share your playback: everyone (except people in Focus) hears what you play, "
-                                                "in sync, and only you control it. Click again to stop"
-                                              : "Share your playback with the others (in a session)");
+            shareButton.setButtonText (TRANS ("Share"));
+            shareButton.setTooltip (inSession ? TRANS ("Share your playback: everyone (except people in Focus) hears what you play, in sync, and only you control it. Click again to stop")
+                                              : TRANS ("Share your playback with the others (in a session)"));
         }
 
         shareButton.setColour (juce::TextButton::buttonOnColourId, on);
-        shareButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+        shareButton.setColour (juce::TextButton::textColourOnId, theme::colours::accentText);
         shareButton.setToggleState (session.isSharing() || session.isFollowingShare(), juce::dontSendNotification);
         shareButton.setEnabled (inSession);
         focusButton.setToggleState (session.isFocus(), juce::dontSendNotification);
         clickButton.setToggleState (session.isMetronomeOn(), juce::dontSendNotification);
-        clickButton.setButtonText (session.getCountInBars() > 0 ? "Click +" + juce::String (session.getCountInBars())
-                                                                : juce::String ("Click"));
+        clickButton.setButtonText (session.getCountInBars() > 0 ? TRANS ("Click") + " +" + juce::String (session.getCountInBars())
+                                                                : TRANS ("Click"));
 
         // Following someone's share: only they control playback.
         const bool control = session.canControlPlayback();
@@ -739,8 +823,8 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
          || key == juce::KeyPress ('z', cmd | juce::ModifierKeys::shiftModifier, 0)) { undo (true); return true; }
     if ((key == juce::KeyPress::spaceKey || key == juce::KeyPress ('r')) && ! session.canControlPlayback())
     {
-        appendLog (session.getShareOwnerName() + " controls the playback right now (click 'With "
-                    + session.getShareOwnerName() + "' to leave and play on your own)");
+        appendLog (TRANS ("{NAME} controls the playback right now (click 'With {NAME}' to leave and play on your own)")
+                     .replace ("{NAME}", session.getShareOwnerName()));
         return true;
     }
 
@@ -763,10 +847,10 @@ void MainComponent::showPatternMenu()
         return;
 
     juce::PopupMenu m;
-    m.addItem (1, "Rename...");
-    m.addItem (2, "Clone");
-    m.addItem (4, "Split by channel", song::getPatternChannels (*edit, pattern).size() >= 2);
-    m.addItem (3, "Delete", song::getPatterns (*edit).size() > 1);
+    m.addItem (1, TRANS ("Rename..."));
+    m.addItem (2, TRANS ("Clone"));
+    m.addItem (4, TRANS ("Split by channel"), song::getPatternChannels (*edit, pattern).size() >= 2);
+    m.addItem (3, TRANS ("Delete"), song::getPatterns (*edit).size() > 1);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (patternMenuButton), [this, pattern] (int r)
     {
@@ -777,10 +861,10 @@ void MainComponent::showPatternMenu()
 
         if (r == 1)
         {
-            auto* w = new juce::AlertWindow ("Rename pattern", {}, juce::MessageBoxIconType::NoIcon);
+            auto* w = new juce::AlertWindow (TRANS ("Rename pattern"), {}, juce::MessageBoxIconType::NoIcon);
             w->addTextEditor ("name", pattern[song::ids::name].toString());
-            w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+            w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
             w->enterModalState (true, juce::ModalCallbackFunction::create ([this, pattern, w] (int res) mutable
             {
                 if (res == 1 && state.getEdit() != nullptr && pattern.getParent().isValid())
@@ -845,15 +929,15 @@ void MainComponent::setMixerDetached (bool detached)
     {
         // The Mixer tab keeps its place (with a note); the mixer moves to its window.
         bottomTabs.removeTab (1);
-        bottomTabs.addTab ("Mixer  (F9)", colour, mixerPlaceholder.get(), false, 1);
+        bottomTabs.addTab (TRANS ("Mixer"), colour, mixerPlaceholder.get(), false, 1);
         mixerWindow = std::make_unique<MixerWindow> (*this);
-        appendLog ("The mixer has its own window now: move it to your other screen (F9 brings it to the front)");
+        appendLog (TRANS ("The mixer has its own window now: move it to your other screen (F9 brings it to the front)"));
     }
     else
     {
         mixerWindow.reset();
         bottomTabs.removeTab (1);
-        bottomTabs.addTab ("Mixer  (F9)", colour, &mixer, false, 1);
+        bottomTabs.addTab (TRANS ("Mixer"), colour, &mixer, false, 1);
         bottomTabs.setCurrentTabIndex (1);
     }
 
@@ -937,12 +1021,12 @@ void MainComponent::showPatternOffer (const juce::String& sid, const juce::Strin
     if (patternOffer != nullptr)
         patternOffer->exitModalState (0);   // an older offer (they switched pattern again)
 
-    auto* w = new juce::AlertWindow ("Go to the shared pattern?",
-                                     owner + " is playing \"" + pattern[song::ids::name].toString() + "\".\n"
-                                     "Go to that pattern? (If you stay, you keep working on yours and still hear theirs.)",
+    auto* w = new juce::AlertWindow (TRANS ("Go to the shared pattern?"),
+                                     TRANS ("{NAME} is playing \"{PATTERN}\".\nGo to that pattern? (If you stay, you keep working on yours and still hear theirs.)")
+                                       .replace ("{NAME}", owner).replace ("{PATTERN}", pattern[song::ids::name].toString()),
                                      juce::MessageBoxIconType::QuestionIcon);
-    w->addButton ("Go there", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    w->addButton ("Stay here", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->addButton (TRANS ("Go there"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Stay here"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
     patternOffer = w;
 
     w->enterModalState (true, juce::ModalCallbackFunction::create ([this, sid] (int result)
@@ -957,12 +1041,12 @@ void MainComponent::showTempoQuestion (const collab::Session::TempoQuestion& q)
 {
     auto bpm = [] (double v) { return std::abs (v - std::round (v)) < 0.005 ? juce::String (juce::roundToInt (v)) : juce::String (v, 2); };
 
-    auto* w = new juce::AlertWindow ("Change the tempo?",
-                                     q.fromName + " wants to change the tempo from " + bpm (q.oldBpm) + " to " + bpm (q.bpm)
-                                       + " BPM.\nEveryone has to agree (30 seconds to answer).",
+    auto* w = new juce::AlertWindow (TRANS ("Change the tempo?"),
+                                     TRANS ("{NAME} wants to change the tempo from {OLD} to {NEW} BPM.\nEveryone has to agree (30 seconds to answer).")
+                                       .replace ("{NAME}", q.fromName).replace ("{OLD}", bpm (q.oldBpm)).replace ("{NEW}", bpm (q.bpm)),
                                      juce::MessageBoxIconType::QuestionIcon);
-    w->addButton ("Accept", 1);
-    w->addButton ("Decline", 0);
+    w->addButton (TRANS ("Accept"), 1);
+    w->addButton (TRANS ("Decline"), 0);
     tempoQuestions[q.id] = w;
 
     w->enterModalState (true, juce::ModalCallbackFunction::create ([this, id = q.id] (int result)
@@ -1007,10 +1091,10 @@ void MainComponent::refreshTempo()
         tempoSlider.setValue (pending != 0.0 ? pending : tempo->getBpm(), juce::dontSendNotification);
 
     // Orange: a tempo you asked for that isn't in the song yet.
-    tempoSlider.setColour (juce::Slider::textBoxTextColourId, waiting ? juce::Colour (0xffffa040) : juce::Colours::white);
-    tempoSlider.setTooltip (pending != 0.0 ? "Waiting for everyone to accept " + juce::String (pending, 0) + " BPM "
-                                               "(the song is still at " + juce::String (tempo->getBpm(), 0) + ")"
-                                           : "Tempo. In a session everyone else has to accept a change (it is part of the song)");
+    tempoSlider.setColour (juce::Slider::textBoxTextColourId, waiting ? theme::colours::amber : theme::colours::lcdText);
+    tempoSlider.setTooltip (pending != 0.0 ? TRANS ("Waiting for everyone to accept {NEW} BPM (the song is still at {OLD})")
+                                                 .replace ("{NEW}", juce::String (pending, 0)).replace ("{OLD}", juce::String (tempo->getBpm(), 0))
+                                           : TRANS ("Tempo. In a session everyone else has to accept a change (it is part of the song)"));
 }
 
 void MainComponent::createAutomation (const juce::String& pluginID, const juce::String& paramID)
@@ -1033,8 +1117,8 @@ void MainComponent::createAutomation (const juce::String& pluginID, const juce::
 
     state.selectedAutomation = clip[song::ids::sid].toString();
     bottomTabs.setCurrentTabIndex (2);
-    appendLog ("Automation clip for " + song::describeParameter (*edit, pluginID, paramID)
-                + ": shape it in the Automation tab. It plays in SONG mode, for everyone");
+    appendLog (TRANS ("Automation clip for {KNOB}: shape it in the Automation tab. It plays in SONG mode, for everyone")
+                 .replace ("{KNOB}", song::describeParameter (*edit, pluginID, paramID)));
     refresh();
 }
 
@@ -1042,12 +1126,12 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
 {
     juce::PopupMenu m;
     const int bars = session.getCountInBars();
-    m.addSectionHeader ("Count-in before recording (metronome)");
-    m.addItem (1, "None", true, bars == 0);
-    m.addItem (2, "1 bar", true, bars == 1);
-    m.addItem (3, "2 bars", true, bars == 2);
+    m.addSectionHeader (TRANS ("Count-in before recording (metronome)"));
+    m.addItem (1, TRANS ("None"), true, bars == 0);
+    m.addItem (2, TRANS ("1 bar"), true, bars == 1);
+    m.addItem (3, TRANS ("2 bars"), true, bars == 2);
     m.addSeparator();
-    m.addItem (4, "Metronome while playing", true, session.isMetronomeOn());
+    m.addItem (4, TRANS ("Metronome while playing"), true, session.isMetronomeOn());
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [this] (int r)
     {
@@ -1055,8 +1139,8 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
         {
             session.setCountInBars (r - 1);
             settings()->setValue ("countInBars", r - 1);
-            appendLog (r == 1 ? juce::String ("Count-in off: recording starts right away")
-                              : "Count-in: " + juce::String (r - 1) + " bar(s) of metronome before the take (it still starts at the marker)");
+            appendLog (r == 1 ? TRANS ("Count-in off: recording starts right away")
+                              : TRANS ("Count-in: {N} bar(s) of metronome before the take (it still starts at the marker)").replace ("{N}", juce::String (r - 1)));
         }
         else if (r == 4)
         {
@@ -1085,13 +1169,12 @@ void MainComponent::showExportDialog()
     if (edit == nullptr || exporter.isRunning())
         return;
 
-    auto* w = new juce::AlertWindow ("Export audio",
-                                     "Renders on this PC with your plugins and audio files. "
-                                     "Changes made meanwhile (by anyone) don't get into it.",
+    auto* w = new juce::AlertWindow (TRANS ("Export audio"),
+                                     TRANS ("Renders on this PC with your plugins and audio files. Changes made meanwhile (by anyone) don't get into it."),
                                      juce::MessageBoxIconType::NoIcon);
 
     const auto patternName = state.getPattern()[song::ids::name].toString();
-    w->addComboBox ("what", { "The whole song (playlist)", "Pattern \"" + patternName + "\" (as a seamless loop)" }, "What");
+    w->addComboBox ("what", { TRANS ("The whole song (playlist)"), TRANS ("Pattern \"{NAME}\" (as a seamless loop)").replace ("{NAME}", patternName) }, TRANS ("What"));
 
     juce::StringArray formats;
     juce::Array<Exporter::Format> formatValues;
@@ -1108,8 +1191,8 @@ void MainComponent::showExportDialog()
         formatValues.add (f);
     }
 
-    w->addComboBox ("format", formats, "Format");
-    w->addComboBox ("stems", { "Just the mix", "The mix + one file per mixer insert (stems)" }, "Files");
+    w->addComboBox ("format", formats, TRANS ("Format"));
+    w->addComboBox ("stems", { TRANS ("Just the mix"), TRANS ("The mix + one file per mixer insert (stems)") }, TRANS ("Files"));
 
     auto* prefs = settings();
     w->getComboBoxComponent ("what")->setSelectedItemIndex (session.isSongMode() ? 0 : 1, juce::dontSendNotification);
@@ -1117,8 +1200,8 @@ void MainComponent::showExportDialog()
                                                               juce::dontSendNotification);
     w->getComboBoxComponent ("stems")->setSelectedItemIndex (prefs->getBoolValue ("exportStems", false) ? 1 : 0, juce::dontSendNotification);
 
-    w->addButton ("Export...", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->addButton (TRANS ("Export..."), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
     const auto patternSid = state.getPattern()[song::ids::sid].toString();
 
@@ -1143,7 +1226,7 @@ void MainComponent::showExportDialog()
         const auto base = juce::File::createLegalFileName (opts.wholeSong ? title : title + " - " + patternName);
         const auto ext = Exporter::extensionFor (opts.format);
 
-        fileChooser = std::make_unique<juce::FileChooser> ("Export to", exportsFolder().getChildFile (base + ext), "*" + ext);
+        fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Export to"), exportsFolder().getChildFile (base + ext), "*" + ext);
         fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                     | juce::FileBrowserComponent::warnAboutOverwriting,
                                   [this, opts] (const juce::FileChooser& fc) mutable
@@ -1168,16 +1251,16 @@ void MainComponent::startExport (const Exporter::Options& opts)
 
     if (error.isNotEmpty())
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export", error);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Export"), error);
         return;
     }
 
-    appendLog ("Exporting to " + opts.destination.getFileName() + "...");
+    appendLog (TRANS ("Exporting to {FILE}...").replace ("{FILE}", opts.destination.getFileName()));
     exportProgress = 0.0;
 
-    auto* w = new juce::AlertWindow ("Exporting...", opts.destination.getFileName(), juce::MessageBoxIconType::NoIcon);
+    auto* w = new juce::AlertWindow (TRANS ("Exporting..."), opts.destination.getFileName(), juce::MessageBoxIconType::NoIcon);
     w->addProgressBarComponent (exportProgress);
-    w->addButton ("Cancel", 0);
+    w->addButton (TRANS ("Cancel"), 0);
     exportWindow = w;
 
     w->enterModalState (true, juce::ModalCallbackFunction::create ([this] (int)
@@ -1198,14 +1281,14 @@ void MainComponent::exportFinished (const Exporter::Result& r)
 
     if (r.cancelled)
     {
-        appendLog ("Export cancelled");
+        appendLog (TRANS ("Export cancelled"));
         return;
     }
 
     if (r.error.isNotEmpty())
     {
-        appendLog ("Export failed: " + r.error);
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Export failed", r.error);
+        appendLog (TRANS ("Export failed") + ": " + r.error);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Export failed"), r.error);
         return;
     }
 
@@ -1216,22 +1299,23 @@ void MainComponent::exportFinished (const Exporter::Result& r)
         bytes += f.getSize();
 
     const auto main = r.files.isEmpty() ? juce::File() : r.files.getFirst();
-    text << "Saved " << main.getFileName() << " (" << juce::File::descriptionOfSizeInBytes (main.getSize()) << ")";
+    text << TRANS ("Saved") << " " << main.getFileName() << " (" << juce::File::descriptionOfSizeInBytes (main.getSize()) << ")";
 
     if (r.files.size() > 1)
-        text << "\n+ " << (r.files.size() - 1) << " stems in \"" << main.getFileNameWithoutExtension() << " - stems\"";
+        text << "\n+ " << TRANS ("{N} stems in {FOLDER}").replace ("{N}", juce::String (r.files.size() - 1))
+                                                  .replace ("{FOLDER}", "\"" + main.getFileNameWithoutExtension() + " - stems\"");
 
     if (r.missingAudio > 0)
-        text << "\n\nNote: " << r.missingAudio << " audio file(s) hadn't arrived on this PC yet, so they're silent in it.";
+        text << "\n\n" << TRANS ("Note: {N} audio file(s) hadn't arrived on this PC yet, so they're silent in it.").replace ("{N}", juce::String (r.missingAudio));
 
     if (r.missingPlugins > 0)
-        text << "\n\nNote: " << r.missingPlugins << " plugin(s) aren't installed on this PC, so they're silent / bypassed in it.";
+        text << "\n\n" << TRANS ("Note: {N} plugin(s) aren't installed on this PC, so they're silent / bypassed in it.").replace ("{N}", juce::String (r.missingPlugins));
 
-    appendLog ("Exported " + main.getFullPathName() + " (" + juce::File::descriptionOfSizeInBytes (bytes) + " in total)");
+    appendLog (TRANS ("Exported") + " " + main.getFullPathName() + " (" + juce::File::descriptionOfSizeInBytes (bytes) + ")");
 
-    auto* w = new juce::AlertWindow ("Export finished", text, juce::MessageBoxIconType::InfoIcon);
-    w->addButton ("Show in folder", 1);
-    w->addButton ("OK", 0, juce::KeyPress (juce::KeyPress::returnKey));
+    auto* w = new juce::AlertWindow (TRANS ("Export finished"), text, juce::MessageBoxIconType::InfoIcon);
+    w->addButton (TRANS ("Show in folder"), 1);
+    w->addButton (TRANS ("OK"), 0, juce::KeyPress (juce::KeyPress::returnKey));
     w->enterModalState (true, juce::ModalCallbackFunction::create ([main] (int button)
     {
         if (button == 1 && main.existsAsFile())
@@ -1245,16 +1329,16 @@ void MainComponent::showRecordSetupMenu()
     auto inputs = session.getRecorder().getInputs();
 
     juce::PopupMenu m;
-    m.addSectionHeader ("Nothing is armed. Record from:");
+    m.addSectionHeader (TRANS ("Nothing is armed. Record from:"));
 
     for (int i = 0; i < inputs.size(); ++i)
         m.addItem (100 + i, inputs[i].name);
 
     if (inputs.isEmpty())
-        m.addItem (-1, "(no inputs found)", false);
+        m.addItem (-1, TRANS ("(no inputs found)"), false);
 
     m.addSeparator();
-    m.addItem (1, "Audio settings...");
+    m.addItem (1, TRANS ("Audio settings..."));
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (recordButton), [this, inputs] (int r)
     {
@@ -1291,8 +1375,8 @@ void MainComponent::showRecordSetupMenu()
             session.getRecorder().setInputFor (id, inputs[r - 100].id);
             state.selectedInsert = id;
             showMixer();
-            appendLog ("Insert \"" + name + "\" records from " + inputs[r - 100].name
-                        + " (you hear it through its effects). Add autotune/EQ to it if you like, then press Rec.");
+            appendLog (TRANS ("Insert \"{NAME}\" records from {INPUT} (you hear it through its effects). Add autotune/EQ to it if you like, then press Rec.")
+                         .replace ("{NAME}", name).replace ("{INPUT}", inputs[r - 100].name));
         }
 
         refresh();
@@ -1331,9 +1415,9 @@ void MainComponent::updateTitle()
     auto title = session.getSongTitle() + (dirty ? " *" : "");
 
     if (session.getMode() == collab::Session::Mode::joined)
-        title << "  (the host's song)";
+        title << "  (" << TRANS ("the host's song") << ")";
 
-    title << "  -  SyncTest " << juce::JUCEApplication::getInstance()->getApplicationVersion();
+    title << "  -  COTOSTUDIO";
 
     if (window->getName() != title)
         window->setName (title);
@@ -1353,33 +1437,33 @@ void MainComponent::showFileMenu()
         return i;
     };
 
-    m.addItem (item (1, "New song", canReplace, "Ctrl+N"));
-    m.addItem (item (2, "Open...", canReplace, "Ctrl+O"));
+    m.addItem (item (1, TRANS ("New song"), canReplace, "Ctrl+N"));
+    m.addItem (item (2, TRANS ("Open..."), canReplace, "Ctrl+O"));
 
     recentFiles.createPopupMenuItems (recent, 100, false, true);
 
     if (recent.getNumItems() == 0)
-        recent.addItem (-1, "(none yet)", false);
+        recent.addItem (-1, TRANS ("(none yet)"), false);
 
-    m.addSubMenu ("Open recent", recent, canReplace);
+    m.addSubMenu (TRANS ("Open recent"), recent, canReplace);
     m.addSeparator();
-    m.addItem (item (3, "Save", true, "Ctrl+S"));
-    m.addItem (item (4, "Save as...", true, "Ctrl+Shift+S"));
+    m.addItem (item (3, TRANS ("Save"), true, "Ctrl+S"));
+    m.addItem (item (4, TRANS ("Save as..."), true, "Ctrl+Shift+S"));
     m.addSeparator();
-    m.addItem (item (6, "Export audio (WAV, FLAC, MP3)...", ! exporter.isRunning(), "Ctrl+R"));
+    m.addItem (item (6, TRANS ("Export audio (WAV, FLAC, MP3)..."), ! exporter.isRunning(), "Ctrl+R"));
     m.addSeparator();
-    m.addItem (5, "Open an automatic backup...", canReplace);
-    m.addItem (7, currentFile != juce::File() ? "Show this project's folder" : "Show the Projects folder");
+    m.addItem (5, TRANS ("Open an automatic backup..."), canReplace);
+    m.addItem (7, currentFile != juce::File() ? TRANS ("Show this project's folder") : TRANS ("Show the Projects folder"));
 
     juce::PopupMenu data;
-    data.addItem (8, "Open " + appdata::getRoot().getFullPathName());
-    data.addItem (9, "Use another data folder...");
-    m.addSubMenu ("Data folder", data);
+    data.addItem (8, TRANS ("Open") + " " + appdata::getRoot().getFullPathName());
+    data.addItem (9, TRANS ("Use another data folder..."));
+    m.addSubMenu (TRANS ("Data folder"), data);
 
     if (! canReplace)
     {
         m.addSeparator();
-        m.addItem (-1, "(only the host can open or start songs during a session)", false);
+        m.addItem (-1, TRANS ("(only the host can open or start songs during a session)"), false);
     }
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (fileButton), [this] (int r)
@@ -1397,7 +1481,7 @@ void MainComponent::showFileMenu()
             askToSaveChanges ([this]
             {
                 autosaveFolder().createDirectory();
-                fileChooser = std::make_unique<juce::FileChooser> ("Open an automatic backup", autosaveFolder(), appdata::songWildcards);
+                fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Open an automatic backup"), autosaveFolder(), appdata::songWildcards);
                 fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                           [this] (const juce::FileChooser& fc)
                 {
@@ -1416,7 +1500,7 @@ void MainComponent::showFileMenu()
 
 void MainComponent::chooseDataFolder()
 {
-    fileChooser = std::make_unique<juce::FileChooser> ("Where COTOSTUDIO keeps everything (projects, backups, exports, settings)",
+    fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Where COTOSTUDIO keeps everything (projects, backups, exports, settings)"),
                                                        appdata::getRoot().getParentDirectory());
     fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
                               [this] (const juce::FileChooser& fc)
@@ -1427,10 +1511,9 @@ void MainComponent::chooseDataFolder()
             return;
 
         appdata::chooseRoot (folder);
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Data folder",
-            "From the next start COTOSTUDIO keeps everything in\n" + folder.getFullPathName()
-             + "\n\nYour current files stay in " + appdata::getRoot().getFullPathName()
-             + " - move the Projects folder over yourself if you want them there too.");
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, TRANS ("Data folder"),
+            TRANS ("From the next start COTOSTUDIO keeps everything in\n{NEW}\n\nYour current files stay in {OLD} - move the Projects folder over yourself if you want them there too.")
+                .replace ("{NEW}", folder.getFullPathName()).replace ("{OLD}", appdata::getRoot().getFullPathName()));
     });
 }
 
@@ -1442,9 +1525,9 @@ void MainComponent::askToSaveChanges (std::function<void()> proceed)
         return;
     }
 
-    auto options = juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, "Save changes?",
-                                                                    "Save the changes to \"" + session.getSongTitle() + "\" first?",
-                                                                    "Save", "Don't save", "Cancel", this);
+    auto options = juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, TRANS ("Save changes?"),
+                                                                    TRANS ("Save the changes to \"{NAME}\" first?").replace ("{NAME}", session.getSongTitle()),
+                                                                    TRANS ("Save"), TRANS ("Don't save"), TRANS ("Cancel"), this);
     juce::AlertWindow::showAsync (options, [safe = juce::Component::SafePointer<MainComponent> (this), proceed] (int result)
     {
         if (safe == nullptr)
@@ -1461,7 +1544,7 @@ void MainComponent::newSong()
 {
     if (! session.canReplaceSong())
     {
-        appendLog ("Only the host can start a new song during a session");
+        appendLog (TRANS ("Only the host can start a new song during a session"));
         return;
     }
 
@@ -1479,7 +1562,7 @@ void MainComponent::newSong()
         savedHash = lastAutosaveHash = currentHash();
         dirty = false;
         state.viewedPattern = state.selectedChannel = state.placeAudioChannel = state.selectedInsert = {};
-        appendLog ("New song");
+        appendLog (TRANS ("New song"));
         refresh();
     });
 }
@@ -1488,14 +1571,14 @@ void MainComponent::openSong()
 {
     if (! session.canReplaceSong())
     {
-        appendLog ("Only the host can open a song during a session (you can still save your copy)");
+        appendLog (TRANS ("Only the host can open a song during a session (you can still save your copy)"));
         return;
     }
 
     askToSaveChanges ([this]
     {
         songsFolder().createDirectory();
-        fileChooser = std::make_unique<juce::FileChooser> ("Open a song", currentFile.existsAsFile() ? currentFile : songsFolder(),
+        fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Open a song"), currentFile.existsAsFile() ? currentFile : songsFolder(),
                                                            appdata::songWildcards);
         fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this] (const juce::FileChooser& fc)
@@ -1510,11 +1593,11 @@ void MainComponent::openSongFile (const juce::File& file)
 {
     if (session.isBusyWithFile())
     {
-        appendLog ("Still busy saving or opening the last song...");
+        appendLog (TRANS ("Still busy saving or opening the last song..."));
         return;
     }
 
-    appendLog ("Opening " + file.getFileName() + "...");
+    appendLog (TRANS ("Opening {FILE}...").replace ("{FILE}", file.getFileName()));
     expectingOwnSong = true;
 
     session.openProject (file, [safe = juce::Component::SafePointer<MainComponent> (this), file] (juce::String error)
@@ -1527,8 +1610,8 @@ void MainComponent::openSongFile (const juce::File& file)
 
         if (error.isNotEmpty())
         {
-            self.appendLog ("Could not open " + file.getFileName() + ": " + error);
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not open the song", error);
+            self.appendLog (TRANS ("Could not open {FILE}").replace ("{FILE}", file.getFileName()) + ": " + error);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Could not open the song"), error);
             return;
         }
 
@@ -1551,7 +1634,7 @@ void MainComponent::saveSong (bool saveAs, std::function<void (bool)> then)
 {
     if (session.isBusyWithFile())
     {
-        appendLog ("Still busy saving or opening the last song...");
+        appendLog (TRANS ("Still busy saving or opening the last song..."));
 
         if (then)
             then (false);
@@ -1569,11 +1652,11 @@ void MainComponent::saveSong (bool saveAs, std::function<void (bool)> then)
     }
 
     // Save as: a name, and the song gets its own folder in Projects.
-    auto* w = new juce::AlertWindow ("Save the song", "Name of the project (it gets its own folder in "
-                                        + songsFolder().getFullPathName() + ")", juce::MessageBoxIconType::NoIcon);
+    auto* w = new juce::AlertWindow (TRANS ("Save the song"), TRANS ("Name of the project (it gets its own folder in {FOLDER})")
+                                                                .replace ("{FOLDER}", songsFolder().getFullPathName()), juce::MessageBoxIconType::NoIcon);
     w->addTextEditor ("name", session.getSongTitle());
-    w->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
-    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->addButton (TRANS ("Save"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
     w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<MainComponent> (this), w, then] (int r)
     {
         if (safe == nullptr)
@@ -1619,7 +1702,7 @@ void MainComponent::writeSong (const juce::File& file, std::function<void (bool)
     if (auto* edit = state.getEdit(); edit != nullptr && song::getTitle (*edit) != title)
         song::setTitle (*edit, title);
 
-    appendLog ("Saving \"" + title + "\"...");
+    appendLog (TRANS ("Saving \"{NAME}\"...").replace ("{NAME}", title));
 
     session.saveProject (file, true, [safe = juce::Component::SafePointer<MainComponent> (this), file, title, then]
                                      (project::SaveResult result)
@@ -1631,8 +1714,8 @@ void MainComponent::writeSong (const juce::File& file, std::function<void (bool)
 
         if (! result.ok())
         {
-            self.appendLog ("Could not save: " + result.error);
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Could not save the song", result.error);
+            self.appendLog (TRANS ("Could not save") + ": " + result.error);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Could not save the song"), result.error);
 
             if (then)
                 then (false);
@@ -1647,13 +1730,13 @@ void MainComponent::writeSong (const juce::File& file, std::function<void (bool)
         self.settings()->setValue ("recentSongs", self.recentFiles.toString());
         self.updateTitle();
 
-        self.appendLog ("Saved \"" + title + "\" in " + file.getParentDirectory().getFullPathName()
-                         + (result.audioIncluded > 0 ? " (" + juce::String (result.audioIncluded) + " audio files in Audio / Takes"
-                                                         + (result.audioWritten > 0 ? ", " + juce::String (result.audioWritten) + " new)" : juce::String (")"))
+        self.appendLog (TRANS ("Saved \"{NAME}\" in {FOLDER}").replace ("{NAME}", title).replace ("{FOLDER}", file.getParentDirectory().getFullPathName())
+                         + (result.audioIncluded > 0 ? " (" + TRANS ("{N} audio files in Audio / Takes").replace ("{N}", juce::String (result.audioIncluded))
+                                                         + (result.audioWritten > 0 ? ", " + TRANS ("{N} new").replace ("{N}", juce::String (result.audioWritten)) + ")" : juce::String (")"))
                                                      : juce::String()));
 
         if (result.audioMissing > 0)
-            self.appendLog (juce::String (result.audioMissing) + " audio file(s) hadn't arrived on this PC yet and aren't in it");
+            self.appendLog (TRANS ("{N} audio file(s) hadn't arrived on this PC yet and aren't in it").replace ("{N}", juce::String (result.audioMissing)));
 
         if (then)
             then (true);
@@ -1686,7 +1769,7 @@ void MainComponent::autosave()
 
         if (! result.ok())
         {
-            safe->appendLog ("Automatic backup failed: " + result.error);
+            safe->appendLog (TRANS ("Automatic backup failed") + ": " + result.error);
             return;
         }
 
@@ -1718,8 +1801,8 @@ void MainComponent::showPluginScanner()
 
     juce::DialogWindow::LaunchOptions o;
     o.content.setOwned (scanner);
-    o.dialogTitle = "Plugins - use Options > Scan for new or updated VST3 plug-ins";
-    o.dialogBackgroundColour = background;
+    o.dialogTitle = TRANS ("Plugins - use Options > Scan for new or updated VST3 plug-ins");
+    o.dialogBackgroundColour = theme::colours::panel;
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar = true;
     o.resizable = true;
@@ -1734,89 +1817,290 @@ void MainComponent::showAudioSettings()
 
     juce::DialogWindow::LaunchOptions o;
     o.content.setOwned (selector);
-    o.dialogTitle = "Audio settings";
-    o.dialogBackgroundColour = background;
+    o.dialogTitle = TRANS ("Audio settings");
+    o.dialogBackgroundColour = theme::colours::panel;
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar = true;
     o.launchAsync();
 }
 
+void MainComponent::showSessionPanel()
+{
+    SessionPanel::Callbacks callbacks;
+    callbacks.host = [this] (int port) { session.startHosting (port); refresh(); };
+    callbacks.join = [this] (const juce::String& address, int port) { session.join (address, port); refresh(); };
+    callbacks.leave = [this] { session.leave(); refresh(); };
+
+    auto panel = std::make_unique<SessionPanel> (session, *settings(), std::move (callbacks));
+    juce::CallOutBox::launchAsynchronously (std::move (panel), sessionPill.getScreenBounds(), nullptr);
+}
+
+void MainComponent::showSettingsMenu()
+{
+    juce::PopupMenu m, language;
+    const auto current = settings()->getValue ("language", "en");
+
+    m.addSectionHeader (TRANS ("Settings"));
+    m.addItem (1, TRANS ("Sound card and MIDI..."));
+    m.addItem (2, TRANS ("Find my plugins (VST3)..."));
+    m.addSeparator();
+
+    language.addItem (10, juce::String ("English"), true, current != "es");
+    language.addItem (11, juce::String::fromUTF8 ("Espa\xc3\xb1ol"), true, current == "es");
+    m.addSubMenu (TRANS ("Language"), language);
+
+    juce::PopupMenu data;
+    data.addItem (20, TRANS ("Open") + " " + appdata::getRoot().getFullPathName());
+    data.addItem (21, TRANS ("Use another data folder..."));
+    m.addSubMenu (TRANS ("Data folder"), data);
+
+    m.addSeparator();
+    m.addItem (3, TRANS ("Show every message"));
+    m.addItem (4, TRANS ("About COTOSTUDIO"));
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (settingsButton), [this, current] (int r)
+    {
+        if (r == 1)        showAudioSettings();
+        else if (r == 2)   showPluginScanner();
+        else if (r == 3)   showLog();
+        else if (r == 4)   showAbout();
+        else if (r == 20)  appdata::getRoot().startAsProcess();
+        else if (r == 21)  chooseDataFolder();
+        else if (r == 10 || r == 11)
+        {
+            const juce::String code = r == 11 ? "es" : "en";
+
+            if (code == current)
+                return;
+
+            settings()->setValue ("language", code);
+            settings()->saveIfNeeded();
+
+            // Both languages, so whoever reads it understands.
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
+                code == "es" ? juce::String::fromUTF8 ("Espa\xc3\xb1ol") : juce::String ("English"),
+                code == "es" ? juce::String::fromUTF8 ("COTOSTUDIO estar\xc3\xa1 en espa\xc3\xb1ol la pr\xc3\xb3xima vez que lo abras.\n"
+                                                       "(COTOSTUDIO will be in Spanish the next time you open it.)")
+                             : juce::String::fromUTF8 ("COTOSTUDIO will be in English the next time you open it.\n"
+                                                       "(COTOSTUDIO estar\xc3\xa1 en ingl\xc3\xa9s la pr\xc3\xb3xima vez que lo abras.)"));
+        }
+    });
+}
+
+void MainComponent::showAbout()
+{
+    struct About  : public juce::Component
+    {
+        About()
+        {
+            image = theme::logoFull();
+            setSize (420, 330);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            using namespace theme::colours;
+            g.fillAll (panel);
+            auto r = getLocalBounds().reduced (20);
+
+            if (image.isValid())
+                g.drawImage (image, r.removeFromTop (150).toFloat(), juce::RectanglePlacement::centred);
+
+            r.removeFromTop (12);
+            g.setColour (text);
+            g.setFont (theme::ui (18.0f, theme::Weight::bold));
+            g.drawText ("COTOSTUDIO " + juce::JUCEApplication::getInstance()->getApplicationVersion(),
+                        r.removeFromTop (26), juce::Justification::centred, false);
+
+            g.setColour (muted);
+            g.setFont (theme::ui (12.5f));
+            g.drawFittedText (TRANS ("Make music together, in sync, over Tailscale.") + "\n"
+                              + TRANS ("Free software (GNU AGPLv3). Built on Tracktion Engine and JUCE.") + "\n"
+                              + TRANS ("Fonts: Inter and JetBrains Mono (SIL Open Font License).") + "\n"
+                              + "ASIO is a trademark and software of Steinberg Media Technologies GmbH.",
+                              r, juce::Justification::centredTop, 6);
+        }
+
+        juce::Image image;
+    };
+
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (new About());
+    o.dialogTitle = TRANS ("About COTOSTUDIO");
+    o.dialogBackgroundColour = theme::colours::panel;
+    o.escapeKeyTriggersCloseButton = true;
+    o.useNativeTitleBar = true;
+    o.resizable = false;
+    o.launchAsync();
+}
+
+void MainComponent::showLog()
+{
+    if (logWindow == nullptr)
+    {
+        struct LogWindow  : public juce::DocumentWindow
+        {
+            LogWindow() : DocumentWindow (TRANS ("Messages") + "  -  COTOSTUDIO", theme::colours::panel, DocumentWindow::closeButton) {}
+            void closeButtonPressed() override   { setVisible (false); }
+        };
+
+        logWindow = std::make_unique<LogWindow>();
+        logWindow->setUsingNativeTitleBar (true);
+        logWindow->setResizable (true, false);
+        logWindow->setContentNonOwned (&logView, false);
+        logWindow->centreAroundComponent (this, 760, 420);
+    }
+
+    logView.moveCaretToEnd();
+    logWindow->setVisible (true);
+    logWindow->toFront (true);
+}
+
 //==============================================================================
 void MainComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (background);
+    g.fillAll (theme::colours::bg);
+
+    // The top bar
+    g.setColour (theme::colours::panel);
+    g.fillRect (getLocalBounds().removeFromTop (topBarHeight));
+    g.setColour (theme::colours::line);
+    g.fillRect (0, topBarHeight - 1, getWidth(), 1);
+
+    // Separators between groups in the top bar
+    g.setColour (theme::colours::line);
+
+    for (auto x : topBarSeparators)
+        g.fillRect (x, 14, 1, topBarHeight - 28);
 }
 
 void MainComponent::resized()
 {
-    auto r = getLocalBounds().reduced (10);
+    auto r = getLocalBounds();
+    statusBar.setBounds (r.removeFromBottom (StatusBar::height));
 
-    auto top = r.removeFromTop (28);
-    fileButton.setBounds (top.removeFromLeft (54));
-    top.removeFromLeft (6);
-    soundsButton.setBounds (top.removeFromLeft (66));
+    // Top bar. Narrow windows drop words first, then whole items, so it always fits:
+    // level 0 is everything; each level up is more compact.
+    auto fullBar = r.removeFromTop (topBarHeight).reduced (10, 0);
+    const int h = 30;
+
+    struct Widths
+    {
+        int logo, sounds, song, click, lcd, pattern, length, session, focus, share;
+        bool undoRedo, separators;
+    };
+
+    auto widthsFor = [] (int level) -> Widths
+    {
+        switch (level)
+        {
+            case 0:  return { 112, 98, 72, 80, LcdDisplay::preferredWidth, 150, 84, SessionPill::preferredWidth, 84, 122, true, true };
+            case 1:  return { 112, 36, 62, 66, LcdDisplay::preferredWidth, 124, 84, 196, 36, 108, true, true };
+            case 2:  return { 0,   36, 62, 66, LcdDisplay::preferredWidth, 116, 80, 150, 36, 104, true, true };
+            case 3:  return { 0,   36, 62, 36, LcdDisplay::compactWidth,   110, 74, 150, 36, 100, true, true };
+            default: return { 0,   36, 62, 36, LcdDisplay::compactWidth,   104, 70, 64,  36, 96,  false, false };
+        }
+    };
+
+    auto needed = [] (const Widths& x)
+    {
+        return (x.logo > 0 ? x.logo + 10 : 0) + 74 + 6 + x.sounds + 6 + (x.separators ? 10 : 0)
+               + 50 + x.song + 10 + 48 + 4 + 36 + 4 + x.click + 10 + x.lcd + 10
+               + x.pattern + 4 + 30 + 4 + 30 + 4 + x.length + 8
+               + 32 + 4 + (x.undoRedo ? 32 + 4 + 32 + 10 : 0) + (x.separators ? 10 : 0)
+               + x.session + 10 + x.focus + 6 + x.share + 6;
+    };
+
+    int level = 0;
+
+    while (level < 4 && needed (widthsFor (level)) > fullBar.getWidth())
+        ++level;
+
+    const auto x = widthsFor (level);
+    auto bar = fullBar;
+    topBarSeparators.clearQuick();
+
+    auto place = [&bar, h] (juce::Component& c, int width, int gapAfter = 6)
+    {
+        c.setBounds (bar.removeFromLeft (width).withSizeKeepingCentre (width, h));
+        bar.removeFromLeft (gapAfter);
+    };
+
+    auto placeRight = [&bar, h] (juce::Component& c, int width, int gapBefore = 6)
+    {
+        c.setBounds (bar.removeFromRight (width).withSizeKeepingCentre (width, h));
+        bar.removeFromRight (gapBefore);
+    };
+
+    auto separator = [this, &bar, &x] (bool left)
+    {
+        if (! x.separators)
+            return;
+
+        topBarSeparators.add (left ? bar.getX() + 4 : bar.getRight() - 5);
+
+        if (left) bar.removeFromLeft (10);
+        else      bar.removeFromRight (10);
+    };
+
+    logo->setVisible (x.logo > 0);
+
+    if (x.logo > 0)
+    {
+        logo->setBounds (bar.removeFromLeft (x.logo).withSizeKeepingCentre (x.logo, 46));
+        bar.removeFromLeft (10);
+    }
+
+    place (fileButton, 74);
+    soundsButton.setButtonText (x.sounds < 60 ? juce::String() : TRANS ("Sounds"));
+    place (soundsButton, x.sounds);
     soundsButton.setToggleState (soundsVisible, juce::dontSendNotification);
-    top.removeFromLeft (8);
-    hostButton.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (8);
-    portLabel.setBounds (top.removeFromLeft (36));
-    portEditor.setBounds (top.removeFromLeft (64));
-    top.removeFromLeft (12);
-    addressLabel.setBounds (top.removeFromLeft (92));
-    addressEditor.setBounds (top.removeFromLeft (150));
-    top.removeFromLeft (8);
-    joinButton.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (8);
-    leaveButton.setBounds (top.removeFromLeft (70));
-    top.removeFromLeft (16);
-    playingLabel.setBounds (top.removeFromRight (juce::jmin (260, top.getWidth() / 2)));   // what's playing
-    statusLabel.setBounds (top);
+    separator (true);
 
-    r.removeFromTop (8);
-    auto bar = r.removeFromTop (28);
-    // Right-hand buttons first so they always fit; the "now playing" label gets what is left.
-    audioButton.setBounds (bar.removeFromRight (124));
-    bar.removeFromRight (6);
-    scanButton.setBounds (bar.removeFromRight (116));
-    bar.removeFromRight (12);
-    redoButton.setBounds (bar.removeFromRight (56));
-    bar.removeFromRight (4);
-    undoButton.setBounds (bar.removeFromRight (56));
-    bar.removeFromRight (8);
+    place (patModeButton, 50, 0);
+    place (songModeButton, x.song, 10);
+    place (playButton, 48, 4);
+    place (recordButton, 36, 4);
+    clickButton.getProperties().set ("iconOnly", x.click < 60);
+    place (clickButton, x.click, 10);
 
-    patModeButton.setBounds (bar.removeFromLeft (48));
-    songModeButton.setBounds (bar.removeFromLeft (56));
-    bar.removeFromLeft (4);
-    shareButton.setBounds (bar.removeFromLeft (92));
-    focusButton.setBounds (bar.removeFromLeft (58));
-    bar.removeFromLeft (6);
-    playButton.setBounds (bar.removeFromLeft (64));
-    bar.removeFromLeft (4);
-    recordButton.setBounds (bar.removeFromLeft (60));
-    bar.removeFromLeft (4);
-    clickButton.setBounds (bar.removeFromLeft (58));
-    bar.removeFromLeft (8);
-    tempoLabel.setBounds (bar.removeFromLeft (34));
-    tempoSlider.setBounds (bar.removeFromLeft (100));
-    bar.removeFromLeft (8);
-    patternBox.setBounds (bar.removeFromLeft (120));
-    bar.removeFromLeft (4);
-    newPatternButton.setBounds (bar.removeFromLeft (28));
-    bar.removeFromLeft (4);
-    patternMenuButton.setBounds (bar.removeFromLeft (32));
-    bar.removeFromLeft (6);
-    lengthBox.setBounds (bar.removeFromLeft (72));
+    lcd.setCompact (x.lcd < LcdDisplay::preferredWidth);
+    lcd.setBounds (bar.removeFromLeft (x.lcd).withSizeKeepingCentre (x.lcd, 44));
+    tempoSlider.setBounds (lcd.getTempoArea() + lcd.getPosition());
+    bar.removeFromLeft (10);
 
-    r.removeFromTop (8);
-    logView.setBounds (r.removeFromBottom (70));
-    r.removeFromBottom (8);
+    place (patternBox, x.pattern, 4);
+    place (newPatternButton, 30, 4);
+    place (patternMenuButton, 30, 4);
+    place (lengthBox, x.length, 8);
+
+    // From the right: settings, undo/redo, session, focus, share.
+    placeRight (settingsButton, 32, 4);
+    undoButton.setVisible (x.undoRedo);
+    redoButton.setVisible (x.undoRedo);
+
+    if (x.undoRedo)
+    {
+        placeRight (redoButton, 32, 4);
+        placeRight (undoButton, 32, 10);
+    }
+
+    separator (false);
+    sessionPill.setBounds (bar.removeFromRight (x.session).withSizeKeepingCentre (x.session, 38));
+    bar.removeFromRight (10);
+    focusButton.setButtonText (x.focus < 60 ? juce::String() : TRANS ("Focus"));
+    placeRight (focusButton, x.focus, 6);
+    placeRight (shareButton, x.share, 6);
+
+    // Body
+    r.reduce (8, 8);
 
     sounds.setVisible (soundsVisible);
 
     if (soundsVisible)
     {
         sounds.setBounds (r.removeFromLeft (SoundBrowser::defaultWidth));
-        r.removeFromLeft (6);
+        r.removeFromLeft (8);
     }
 
     browser.setVisible (browserVisible);
@@ -1825,10 +2109,12 @@ void MainComponent::resized()
     if (browserVisible)
         browser.setBounds (r.removeFromLeft (Browser::defaultWidth));
     else
-        showBrowserButton.setBounds (r.removeFromLeft (18));
+        showBrowserButton.setBounds (r.removeFromLeft (20));
 
-    r.removeFromLeft (6);
+    r.removeFromLeft (8);
 
-    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, &bottomTabs };
+    bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
+    juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, dock.get() };
     panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
+    bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
 }

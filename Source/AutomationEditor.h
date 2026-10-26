@@ -28,7 +28,7 @@ public:
 private:
     EditorState& state;
     juce::Label title, hint;
-    juce::TextButton deleteButton { "Delete clip" };
+    juce::TextButton deleteButton;
     juce::ValueTree dragPoint;
     juce::Point<float> hover { -1.0f, -1.0f };
 

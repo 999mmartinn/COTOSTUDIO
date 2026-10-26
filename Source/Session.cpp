@@ -272,16 +272,16 @@ juce::String Session::getStatusText() const
 {
     switch (mode)
     {
-        case Mode::offline:     return "Offline";
+        case Mode::offline:     return TRANS ("Offline");
         case Mode::hosting:
         {
             const auto tailscale = findTailscaleAddress();
-            return "Hosting - " + juce::String (getNumConnectedPeers()) + " peer(s) connected"
-                     + (tailscale.isNotEmpty() ? " - friends join with " + tailscale : juce::String());
+            return TRANS ("Hosting - {N} peer(s) connected").replace ("{N}", juce::String (getNumConnectedPeers()))
+                     + (tailscale.isNotEmpty() ? " - " + TRANS ("friends join with") + " " + tailscale : juce::String());
         }
-        case Mode::connecting:  return "Connecting...";
-        case Mode::joined:      return juce::String ("Joined as peer ") + juce::String (peerIndex)
-                                       + (lastHashMatched ? " - in sync" : " - checking sync...");
+        case Mode::connecting:  return TRANS ("Connecting...");
+        case Mode::joined:      return TRANS ("Joined as peer") + " " + juce::String (peerIndex)
+                                       + " - " + (lastHashMatched ? TRANS ("in sync") : TRANS ("checking sync..."));
     }
 
     return {};

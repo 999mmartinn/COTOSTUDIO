@@ -5,6 +5,8 @@
 #include "SamplerPlugin.h"
 #include "AppData.h"
 #include "Recorder.h"
+#include "Theme.h"
+#include "BinaryData.h"
 
 /** Engine settings: raw recordings go to this copy's own folder (see Recorder). */
 struct AppEngineBehaviour  : public te::EngineBehaviour
@@ -74,15 +76,15 @@ private:
 
         void paint (juce::Graphics& g) override
         {
-            g.fillAll (juce::Colour (0xff1f1b2a));
-            g.setColour (juce::Colour (0xffeeeaf8));
-            g.setFont (juce::FontOptions (15.0f));
+            g.fillAll (theme::colours::panel);
+            g.setColour (theme::colours::text);
+            g.setFont (theme::ui (14.0f, theme::Weight::medium));
             g.drawFittedText (text, getLocalBounds().reduced (20).removeFromTop (60), juce::Justification::centredLeft, 3);
 
             auto bar = getLocalBounds().reduced (20).removeFromBottom (14).toFloat();
-            g.setColour (juce::Colour (0xff2b2639));
+            g.setColour (theme::colours::stepOff);
             g.fillRoundedRectangle (bar, 7.0f);
-            g.setColour (juce::Colour (0xffb39bff));
+            g.setColour (theme::colours::accent);
             g.fillRoundedRectangle (bar.withWidth (bar.getWidth() * (float) shownProgress), 7.0f);
         }
     };
@@ -128,6 +130,12 @@ public:
             if (a.startsWith ("--data-folder="))   // (for testing: a separate data folder)
                 appdata::setRootForThisRun (juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted()));
 
+        // The look (Nocturno) for every window, and the language you chose (English unless you picked Spanish).
+        juce::LookAndFeel::setDefaultLookAndFeel (&theme::look());
+
+        if (! args.contains ("--selftest"))
+            applyLanguage (args);
+
         if (args.contains ("--selftest"))
         {
             // The self-test never touches your data folder.
@@ -154,7 +162,7 @@ public:
                     start();
 
                     if (! r.problems.isEmpty())
-                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Some files stayed where they were",
+                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Some files stayed where they were"),
                                                                 r.problems.joinIntoString ("\n").substring (0, 2000));
                 });
             });
@@ -170,6 +178,8 @@ public:
         selfTest.reset();
         mainWindow.reset();
         engine.reset();
+        juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        juce::LocalisedStrings::setCurrentMappings (nullptr);
     }
 
     void systemRequestedQuit() override
@@ -196,15 +206,68 @@ private:
             : DocumentWindow (appdata::appName, juce::Colour (0xff14111c), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new MainComponent (e), true);
+            auto* content = new MainComponent (e);
+            setContentOwned (content, true);
             setResizable (true, true);
-            setResizeLimits (1000, 640, 8000, 5000);
-            centreWithSize (getWidth(), getHeight());
+            setResizeLimits (1240, 700, 8000, 5000);
+            settings = &content->getSettings();
+
+            // Where you left it; the first time, filling the screen.
+            const auto saved = settings->getValue ("mainWindow");
+
+            if (saved.isEmpty() || ! restoreWindowStateFromString (saved))
+            {
+                centreWithSize (getWidth(), getHeight());
+                setFullScreen (true);   // (on Windows: maximised)
+            }
+
             setVisible (true);
+            ready = true;
         }
 
-        void closeButtonPressed() override                 { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+        void closeButtonPressed() override                 { remember(); juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
+        void moved() override                              { DocumentWindow::moved(); remember(); }
+        void resized() override                            { DocumentWindow::resized(); remember(); }
+
+    private:
+        juce::PropertiesFile* settings = nullptr;
+        bool ready = false;
+
+        void remember()
+        {
+            if (ready && settings != nullptr && ! isMinimised())
+                settings->setValue ("mainWindow", getWindowStateAsString());
+        }
     };
+
+    std::unique_ptr<juce::LocalisedStrings> translation;
+
+    /** Spanish if you picked it in Settings > Language (or --lang=es), otherwise English. */
+    void applyLanguage (const juce::StringArray& args)
+    {
+        juce::PropertiesFile::Options opts;
+        opts.applicationName = appdata::appName;
+        juce::PropertiesFile prefs (appdata::settingsFolder().getChildFile ("COTOSTUDIO.settings"), opts);
+        auto code = prefs.getValue ("language", "en");
+
+        for (auto& a : args)
+            if (a.startsWith ("--lang="))
+                code = a.fromFirstOccurrenceOf ("=", false, false).trim();
+
+        if (code != "es")
+            return;
+
+        int size = 0;
+
+        for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+            if (juce::String (BinaryData::originalFilenames[i]) == "es.txt")
+                if (auto* data = BinaryData::getNamedResource (BinaryData::namedResourceList[i], size))
+                {
+                    // ignoreCase = false: "Mixer" and "mixer" can differ.
+                    juce::LocalisedStrings::setCurrentMappings (new juce::LocalisedStrings (juce::String::fromUTF8 (data, size), false));
+                    break;
+                }
+    }
 
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<MainWindow> mainWindow;

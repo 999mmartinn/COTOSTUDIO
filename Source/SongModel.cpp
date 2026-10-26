@@ -78,7 +78,7 @@ void setTitle (te::Edit& edit, const juce::String& title)
 
 juce::ValueTree addPattern (te::Edit& edit, const juce::String& name, int bars)
 {
-    static const juce::uint32 colours[] = { 0xff5fb85f, 0xff5f9fd8, 0xffd8a05f, 0xffc66fd0, 0xffd86f6f, 0xff6fd0c6 };
+    static const juce::uint32 colours[] = { 0xff9b7bf0, 0xff3fa2db, 0xfff08a3c, 0xffe0559a, 0xff38b37c, 0xffe8b530 };   // the Nocturno palette
 
     juce::ValueTree p (ids::PATTERN);
     p.setProperty (ids::sid, newSyncID(), nullptr);

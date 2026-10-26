@@ -41,7 +41,7 @@ public:
     void fileDragExit (const juce::StringArray&) override;
     void filesDropped (const juce::StringArray&, int x, int y) override;
 
-    static constexpr int rowHeight = 34, stepsX = 230;
+    static constexpr int rowHeight = 34, stepsX = 236, bottomHeight = 38;
 
 private:
     class Row;
@@ -51,7 +51,7 @@ private:
     juce::OwnedArray<Row> rows;
     juce::Component content;
     juce::Viewport viewport;
-    juce::TextButton addButton { "+ Channel" };
+    juce::TextButton addButton { TRANS ("Channel") };
     juce::ComboBox filterBox;
     juce::StringArray rowIDs;
     juce::Array<int> rowColourIndexes;

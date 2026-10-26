@@ -2,17 +2,20 @@
 
 using namespace song;
 
-static const juce::Colour autoColour (0xff45c4b0);
+static const juce::Colour autoColour = theme::colours::teal;
 
 AutomationEditor::AutomationEditor (EditorState& s) : state (s)
 {
-    title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    hint.setFont (juce::FontOptions (12.0f));
-    hint.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
-    hint.setText ("Click: add a point (Alt: off the grid).  Drag: move.  Right-click a point: delete.  Plays in SONG mode.",
+    title.setFont (theme::ui (12.5f, theme::Weight::bold));
+    title.setColour (juce::Label::textColourId, theme::colours::text);
+    hint.setFont (theme::ui (11.0f));
+    hint.setColour (juce::Label::textColourId, theme::colours::muted);
+    hint.setText (TRANS ("Click: add a point (Alt: off the grid).  Drag: move.  Right-click a point: delete.  Plays in SONG mode."),
                   juce::dontSendNotification);
 
-    deleteButton.setTooltip ("Delete this automation clip (Ctrl+Z brings it back)");
+    deleteButton.setTooltip (TRANS ("Delete this automation clip (Ctrl+Z brings it back)"));
+    deleteButton.setButtonText (TRANS ("Delete clip"));
+    theme::setIcon (deleteButton, theme::Icon::close);
     deleteButton.onClick = [this]
     {
         auto clip = getClip();
@@ -111,9 +114,9 @@ void AutomationEditor::refresh()
     auto clip = getClip();
 
     if (edit != nullptr && clip.isValid())
-        title.setText ("Automation: " + describeAutomationTarget (*edit, clip), juce::dontSendNotification);
+        title.setText (TRANS ("Automation:") + " " + describeAutomationTarget (*edit, clip), juce::dontSendNotification);
     else
-        title.setText ("Automation", juce::dontSendNotification);
+        title.setText (TRANS ("Automation"), juce::dontSendNotification);
 
     deleteButton.setVisible (clip.isValid());
     hint.setVisible (clip.isValid());
@@ -129,9 +132,9 @@ void AutomationEditor::timerCallback()
 
 void AutomationEditor::resized()
 {
-    auto r = getLocalBounds().reduced (8, 4);
-    auto top = r.removeFromTop (26);
-    deleteButton.setBounds (top.removeFromRight (100));
+    auto r = getLocalBounds().reduced (10, 3);
+    auto top = r.removeFromTop (28);
+    deleteButton.setBounds (top.removeFromRight (112));
     top.removeFromRight (8);
     title.setBounds (top.removeFromLeft (juce::jmin (380, top.getWidth() / 2)));
     hint.setBounds (top);
@@ -139,37 +142,39 @@ void AutomationEditor::resized()
 
 void AutomationEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff23272d));
+    g.fillAll (theme::colours::wellAlt);
     auto* edit = state.getEdit();
     auto clip = getClip();
 
     if (edit == nullptr || ! clip.isValid())
     {
-        g.setColour (juce::Colours::white.withAlpha (0.55f));
-        g.setFont (14.0f);
-        g.drawFittedText ("No automation clip selected.\n\nRight-click a volume or pan knob (channel rack or mixer) and choose "
-                          "\"Create automation clip\", or use \"Automate...\" in the playlist for any knob,\n"
-                          "including your plugins'. Then click the clip in the playlist to edit it here.",
-                          getLocalBounds().reduced (30), juce::Justification::centred, 6);
+        auto area = getLocalBounds().reduced (30);
+        theme::drawIcon (g, theme::Icon::automation, area.removeFromTop (area.getHeight() / 2).removeFromBottom (28).toFloat().withSizeKeepingCentre (28.0f, 28.0f),
+                         theme::colours::teal, 2.0f);
+        area.removeFromTop (12);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (12.5f));
+        g.drawFittedText (TRANS ("No automation clip selected.") + "\n" + TRANS ("Right-click a volume or pan knob (channel rack or mixer) and choose \"Create automation clip\", or use \"Automate...\" in the playlist for any knob, including your plugins'. Then click the clip in the playlist to edit it here."),
+                          area.withHeight (80), juce::Justification::centredTop, 5);
         return;
     }
 
     auto r = graphArea();
-    g.setColour (juce::Colour (0xff2a3038));
-    g.fillRect (r);
+    g.setColour (theme::colours::lane1);
+    g.fillRoundedRectangle (r.expanded (1.0f), 4.0f);
 
     // Grid: beats and bars, plus 25 / 50 / 75 %.
     const double len = clipLength();
 
     for (int b = 0; b <= (int) std::ceil (len); ++b)
     {
-        g.setColour (b % 4 == 0 ? juce::Colour (0xff4f5864) : juce::Colour (0xff353c45));
+        g.setColour (b % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
         g.drawVerticalLine ((int) xForBeat (b), r.getY(), r.getBottom());
 
         if (b % 4 == 0 && b < len)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.45f));
-            g.setFont (10.0f);
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::mono (10.0f));
             g.drawText (juce::String ((int) ((double) clip[ids::start] + b) / 4 + 1), (int) xForBeat (b) + 3, (int) r.getY() + 1, 40, 12,
                         juce::Justification::centredLeft);
         }
@@ -177,7 +182,7 @@ void AutomationEditor::paint (juce::Graphics& g)
 
     for (float v : { 0.25f, 0.5f, 0.75f })
     {
-        g.setColour (juce::Colour (0xff353c45));
+        g.setColour (theme::colours::grid);
         g.drawHorizontalLine ((int) yForValue (v), r.getX(), r.getRight());
     }
 
@@ -207,9 +212,9 @@ void AutomationEditor::paint (juce::Graphics& g)
             continue;   // beyond the clip's end (it was shortened): kept, not played
 
         const juce::Point<float> c (xForBeat (p[ids::b]), yForValue (p[ids::v]));
-        g.setColour (p == dragPoint ? juce::Colours::white : autoColour.brighter (0.4f));
+        g.setColour (p == dragPoint ? theme::colours::text : autoColour.brighter (0.4f));
         g.fillEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (c));
-        g.setColour (juce::Colours::black.withAlpha (0.6f));
+        g.setColour (theme::colours::bg.withAlpha (0.7f));
         g.drawEllipse (juce::Rectangle<float> (10.0f, 10.0f).withCentre (c), 1.0f);
     }
 
@@ -218,8 +223,8 @@ void AutomationEditor::paint (juce::Graphics& g)
 
     if (state.getSongPlayheadBeat() >= 0.0 && playBeat >= 0.0 && playBeat <= len)
     {
-        g.setColour (juce::Colours::white.withAlpha (0.85f));
-        g.drawVerticalLine ((int) xForBeat (playBeat), r.getY(), r.getBottom());
+        g.setColour (theme::colours::text);
+        g.fillRect (juce::Rectangle<float> (xForBeat (playBeat) - 1.0f, r.getY(), 2.0f, r.getHeight()));
     }
 
     // Value under the mouse (or of the point being dragged).
@@ -230,10 +235,10 @@ void AutomationEditor::paint (juce::Graphics& g)
         auto at = dragPoint.isValid() ? juce::Point<float> (xForBeat (dragPoint[ids::b]), yForValue (v)) : hover;
         juce::Rectangle<float> box (at.x + 10.0f, at.y - 22.0f, 110.0f, 18.0f);
         box = box.constrainedWithin (r);
-        g.setColour (juce::Colours::black.withAlpha (0.7f));
-        g.fillRoundedRectangle (box, 3.0f);
-        g.setColour (juce::Colours::white);
-        g.setFont (12.0f);
+        g.setColour (theme::colours::raised);
+        g.fillRoundedRectangle (box, 5.0f);
+        g.setColour (theme::colours::text);
+        g.setFont (theme::mono (11.0f));
         g.drawText (text, box.reduced (5.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, true);
     }
 }

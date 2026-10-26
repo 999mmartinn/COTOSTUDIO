@@ -6,7 +6,7 @@ using namespace song;
 static juce::Colour patternColour (const juce::ValueTree& pattern)
 {
     auto c = pattern[ids::colour].toString();
-    return c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colour (0xff5fb85f);
+    return c.isNotEmpty() ? juce::Colour::fromString (c) : theme::colours::mint;
 }
 
 //==============================================================================
@@ -218,7 +218,7 @@ public:
     void paint (juce::Graphics& g) override
     {
         auto* edit = state.getEdit();
-        g.fillAll (juce::Colour (0xff23272d));
+        g.fillAll (theme::colours::lane2);
 
         if (edit == nullptr)
             return;
@@ -227,7 +227,7 @@ public:
 
         for (int lane = 0; lane < numLanes; ++lane)
         {
-            g.setColour (lane % 2 == 0 ? juce::Colour (0xff2a3038) : juce::Colour (0xff262b32));
+            g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
         }
 
@@ -237,12 +237,12 @@ public:
 
         for (int b = firstBeat; b <= lastBeat; ++b)
         {
-            g.setColour (b % 4 == 0 ? juce::Colour (0xff4f5864) : juce::Colour (0xff323942));
+            g.setColour (b % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
             g.drawVerticalLine ((int) xForBeat (b), 0.0f, (float) getHeight());
         }
 
         // Song end
-        g.setColour (juce::Colours::white.withAlpha (0.25f));
+        g.setColour (theme::colours::muted.withAlpha (0.5f));
         g.drawVerticalLine ((int) xForBeat (getSongLengthBeats (*edit)), 0.0f, (float) getHeight());
 
         // Clips
@@ -269,11 +269,14 @@ public:
 
             auto pattern = findPattern (*edit, clip[ids::pattern].toString());
 
-            const auto colour = pattern.isValid() ? patternColour (pattern) : juce::Colours::grey;
-            g.setColour (colour.withAlpha (0.35f));
-            g.fillRoundedRectangle (r, 3.0f);
-            g.setColour (colour);
-            g.drawRoundedRectangle (r, 3.0f, pattern[ids::sid].toString() == viewedSid ? 2.0f : 1.0f);
+            const auto colour = pattern.isValid() ? patternColour (pattern) : theme::colours::dim;
+            g.setColour (colour.withAlpha (0.30f));
+            g.fillRoundedRectangle (r, 5.0f);
+            g.setColour (colour.withAlpha (0.85f));
+            g.fillRoundedRectangle (r.withHeight (juce::jmin (r.getHeight(), 14.0f)), 5.0f);   // the name strip
+            g.fillRect (r.withHeight (juce::jmin (r.getHeight(), 14.0f)).withTrimmedTop (7.0f));
+            g.setColour (pattern[ids::sid].toString() == viewedSid ? theme::colours::text : colour);
+            g.drawRoundedRectangle (r, 5.0f, pattern[ids::sid].toString() == viewedSid ? 1.6f : 1.0f);
 
             if (! pattern.isValid())
                 continue;
@@ -288,9 +291,9 @@ public:
 
             if (! rows.isEmpty())
             {
-                const float top = r.getY() + 13.0f, h = r.getHeight() - 15.0f;
+                const float top = r.getY() + 16.0f, h = r.getHeight() - 18.0f;
                 const float rowH = h / (float) rows.size();
-                g.setColour (colour.brighter (0.5f));
+                g.setColour (colour.brighter (0.6f));
 
                 for (auto n : pattern)
                 {
@@ -308,9 +311,9 @@ public:
                 }
             }
 
-            g.setColour (juce::Colours::white);
-            g.setFont (11.0f);
-            g.drawText (pattern[ids::name].toString(), r.reduced (4.0f, 1.0f).withHeight (12.0f).toNearestInt(),
+            g.setColour (theme::colours::accentText);
+            g.setFont (theme::ui (10.5f, theme::Weight::bold));
+            g.drawText (pattern[ids::name].toString(), r.reduced (5.0f, 0.0f).withHeight (14.0f).toNearestInt(),
                         juce::Justification::centredLeft, true);
         }
 
@@ -324,34 +327,34 @@ public:
                 const juce::Rectangle<float> r (xForBeat (dropPreview.beat), (float) (dropPreview.lane * laneHeight) + 1.5f,
                                                 xForBeat (dropPreview.beat + length) - xForBeat (dropPreview.beat),
                                                 (float) laneHeight - 3.0f);
-                g.setColour (juce::Colours::white.withAlpha (0.12f));
-                g.fillRoundedRectangle (r, 3.0f);
-                g.setColour (juce::Colours::white.withAlpha (0.8f));
-                g.drawRoundedRectangle (r, 3.0f, 1.5f);
+                g.setColour (theme::colours::accent.withAlpha (0.18f));
+                g.fillRoundedRectangle (r, 5.0f);
+                g.setColour (theme::colours::accent);
+                g.drawRoundedRectangle (r, 5.0f, 1.5f);
             }
         }
 
         // Start marker and playhead
-        g.setColour (juce::Colour (0xff6fd06f).withAlpha (0.5f));
+        g.setColour (theme::colours::green.withAlpha (0.55f));
         g.drawVerticalLine ((int) xForBeat (state.songStartBeat), 0.0f, (float) getHeight());
 
         const double playBeat = state.getSongPlayheadBeat();
 
         if (playBeat >= 0.0)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.drawVerticalLine ((int) xForBeat (playBeat), 0.0f, (float) getHeight());
+            g.setColour (theme::colours::text);
+            g.fillRect (juce::Rectangle<float> (xForBeat (playBeat) - 1.0f, 0.0f, 2.0f, (float) getHeight()));
         }
     }
 
     void paintAutomationClip (juce::Graphics& g, te::Edit& edit, const juce::ValueTree& clip, juce::Rectangle<float> r)
     {
-        const juce::Colour colour (0xff45c4b0);
+        const juce::Colour colour = theme::colours::teal;
         const bool selected = state.selectedAutomation == clip[ids::sid].toString();
-        g.setColour (colour.withAlpha (0.18f));
-        g.fillRoundedRectangle (r, 3.0f);
-        g.setColour (colour);
-        g.drawRoundedRectangle (r, 3.0f, selected ? 2.0f : 1.0f);
+        g.setColour (colour.withAlpha (0.16f));
+        g.fillRoundedRectangle (r, 5.0f);
+        g.setColour (selected ? theme::colours::text : colour);
+        g.drawRoundedRectangle (r, 5.0f, selected ? 1.6f : 1.0f);
 
         // The curve across the clip.
         const double len = getClipLength (edit, clip);
@@ -378,8 +381,8 @@ public:
                                  .withCentre ({ body.getX() + body.getWidth() * (float) ((double) p[ids::b] / len),
                                                 body.getBottom() - (float) p[ids::v] * body.getHeight() }));
 
-        g.setColour (juce::Colours::white);
-        g.setFont (10.0f);
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (10.0f, theme::Weight::semibold));
         g.drawText (describeAutomationTarget (edit, clip), r.reduced (4.0f, 0.0f).withHeight (11.0f).toNearestInt(),
                     juce::Justification::centredLeft, true);
     }
@@ -398,10 +401,10 @@ public:
         const auto colour = EditorState::channelColour (index);
         const bool selected = state.selectedChannel == channelID;
 
-        g.setColour (colour.withAlpha (0.25f));
-        g.fillRoundedRectangle (r, 3.0f);
-        g.setColour (colour);
-        g.drawRoundedRectangle (r, 3.0f, selected ? 2.0f : 1.0f);
+        g.setColour (colour.withAlpha (0.22f));
+        g.fillRoundedRectangle (r, 5.0f);
+        g.setColour (selected ? theme::colours::text : colour);
+        g.drawRoundedRectangle (r, 5.0f, selected ? 1.6f : 1.0f);
 
         auto& store = state.session.getAssetStore();
         auto body = r.reduced (2.0f, 2.0f);
@@ -419,21 +422,21 @@ public:
         else
         {
             const double progress = store.getProgress (hash);
-            g.setColour (juce::Colours::white.withAlpha (0.7f));
-            g.setFont (11.0f);
-            g.drawText (progress >= 0.0 ? "receiving " + juce::String (juce::roundToInt (progress * 100.0)) + "%"
-                                        : juce::String ("waiting for the file..."),
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::ui (11.0f));
+            g.drawText (progress >= 0.0 ? TRANS ("receiving") + " " + juce::String (juce::roundToInt (progress * 100.0)) + "%"
+                                        : TRANS ("waiting for the file..."),
                         body.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredLeft, true);
         }
 
         // Name on a small dark tab so it stays readable over the waveform.
         const auto name = getAssetName (edit, hash);
-        juce::Font font (juce::FontOptions (11.0f));
+        juce::Font font (theme::ui (10.5f, theme::Weight::semibold));
         const float tabWidth = juce::jmin (r.getWidth() - 2.0f, juce::GlyphArrangement::getStringWidth (font, name) + 12.0f);
-        auto tab = juce::Rectangle<float> (r.getX() + 1.0f, r.getY() + 1.0f, tabWidth, 12.0f);
+        auto tab = juce::Rectangle<float> (r.getX() + 1.0f, r.getY() + 1.0f, tabWidth, 13.0f);
         g.setColour (juce::Colours::black.withAlpha (0.45f));
-        g.fillRoundedRectangle (tab, 2.0f);
-        g.setColour (juce::Colours::white);
+        g.fillRoundedRectangle (tab, 4.0f);
+        g.setColour (theme::colours::text);
         g.setFont (font);
         g.drawText (name, tab.reduced (4.0f, 0.0f).toNearestInt(), juce::Justification::centredLeft, true);
     }
@@ -637,7 +640,9 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1c2025));
+        g.fillAll (theme::colours::wellAlt);
+        g.setColour (theme::colours::line);
+        g.fillRect (0, getHeight() - 1, getWidth(), 1);
         const int scrollX = owner.viewport->getViewPositionX();
         const float ppb = owner.pixelsPerBeat;
         const int firstBar = juce::jmax (0, (int) (scrollX / ppb / 4.0f));
@@ -647,13 +652,13 @@ public:
         for (int bar = firstBar; bar <= lastBar; ++bar)
         {
             const float x = bar * 4.0f * ppb - (float) scrollX;
-            g.setColour (juce::Colour (0xff8a939e));
-            g.drawVerticalLine ((int) x, 6.0f, (float) getHeight());
+            g.setColour (theme::colours::gridBar);
+            g.drawVerticalLine ((int) x, 8.0f, (float) getHeight());
 
             if (bar % labelEvery == 0)
             {
-                g.setFont (11.0f);
-                g.setColour (juce::Colours::white.withAlpha (0.85f));
+                g.setFont (theme::mono (10.5f));
+                g.setColour (theme::colours::muted);
                 g.drawText (juce::String (bar + 1), (int) x + 3, 0, 40, getHeight(), juce::Justification::centredLeft);
             }
         }
@@ -661,15 +666,15 @@ public:
         const float mx = (float) (state.songStartBeat * ppb) - (float) scrollX;
         juce::Path tri;
         tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
-        g.setColour (juce::Colour (0xff6fd06f));
+        g.setColour (theme::colours::green);
         g.fillPath (tri);
 
         const double playBeat = state.getSongPlayheadBeat();
 
         if (playBeat >= 0.0)
         {
-            g.setColour (juce::Colours::white);
-            g.drawVerticalLine ((int) (playBeat * ppb) - scrollX, 0.0f, (float) getHeight());
+            g.setColour (theme::colours::text);
+            g.fillRect ((float) (playBeat * ppb) - (float) scrollX - 1.0f, 0.0f, 2.0f, (float) getHeight());
         }
     }
 
@@ -703,18 +708,21 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (juce::Colour (0xff1c2025));
+        g.fillAll (theme::colours::panel);
         const int scrollY = owner.viewport->getViewPositionY();
-        g.setFont (11.0f);
+        g.setFont (theme::ui (11.0f, theme::Weight::semibold));
 
         for (int lane = 0; lane < numLanes; ++lane)
         {
             const int y = lane * laneHeight - scrollY;
-            g.setColour (lane % 2 == 0 ? juce::Colour (0xff2a3038) : juce::Colour (0xff262b32));
-            g.fillRect (0, y, getWidth() - 2, laneHeight - 1);
-            g.setColour (juce::Colours::white.withAlpha (0.6f));
-            g.drawText ("Track " + juce::String (lane + 1), 6, y, getWidth() - 8, laneHeight, juce::Justification::centredLeft);
+            g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
+            g.fillRect (0, y, getWidth() - 1, laneHeight);
+            g.setColour (theme::colours::muted);
+            g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10, y, getWidth() - 12, laneHeight, juce::Justification::centredLeft);
         }
+
+        g.setColour (theme::colours::line);
+        g.fillRect (getWidth() - 1, 0, 1, getHeight());
     }
 
 private:
@@ -737,27 +745,27 @@ Playlist::Playlist (EditorState& s) : state (s)
     addAndMakeVisible (*ruler);
     addAndMakeVisible (*header);
 
-    title.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
-    title.setFont (juce::FontOptions (13.0f));
+    title.setColour (juce::Label::textColourId, theme::colours::muted);
+    title.setFont (theme::ui (11.0f));
+    title.setMinimumHorizontalScale (1.0f);
     addAndMakeVisible (title);
 
     formats.registerBasicFormats();
 
-    importButton.setTooltip ("Add audio files (WAV, MP3, FLAC...) to the song. You can also drag them onto a lane");
+    importButton.setTooltip (TRANS ("Add audio files (WAV, MP3, FLAC...) to the song. You can also drag them onto a lane"));
     importButton.onClick = [this] { showImportDialog(); };
     addAndMakeVisible (importButton);
 
-    automateButton.setTooltip ("Make an automation clip for any knob: the one you moved last, or pick one "
-                               "(channels, mixer, plugins). Automation plays in SONG mode");
+    automateButton.setTooltip (TRANS ("Make an automation clip for any knob: the one you moved last, or pick one (channels, mixer, plugins). Automation plays in SONG mode"));
     automateButton.onClick = [this] { showAutomateMenu(); };
     addAndMakeVisible (automateButton);
 
-    snapBox.addItem ("Snap: bar", 1);
-    snapBox.addItem ("Snap: beat", 2);
-    snapBox.addItem ("Snap: step", 3);
-    snapBox.addItem ("Snap: none", 4);
+    snapBox.addItem (TRANS ("Snap: bar"), 1);
+    snapBox.addItem (TRANS ("Snap: beat"), 2);
+    snapBox.addItem (TRANS ("Snap: step"), 3);
+    snapBox.addItem (TRANS ("Snap: none"), 4);
     snapBox.setSelectedId (1, juce::dontSendNotification);
-    snapBox.setTooltip ("Grid that clips snap to. Hold Alt while dragging to move freely");
+    snapBox.setTooltip (TRANS ("Grid that clips snap to. Hold Alt while dragging to move freely"));
     snapBox.onChange = [this]
     {
         const int id = snapBox.getSelectedId();
@@ -834,7 +842,7 @@ void Playlist::showAutomateMenu()
         for (auto* p : getMasterEffects (*edit))
             addPluginKnobs (master, *p);
 
-        mixer.addSubMenu ("Master", master);
+        mixer.addSubMenu (TRANS ("Master"), master);
     }
 
     for (auto* insert : getInserts (*edit))
@@ -858,11 +866,11 @@ void Playlist::showAutomateMenu()
     }
 
     if (menu.getNumItems() == 0)
-        menu.addItem (-1, "(move a knob, then come back here to automate it)", false);
+        menu.addItem (-1, TRANS ("(move a knob, then come back here to automate it)"), false);
 
     menu.addSeparator();
-    menu.addSubMenu ("Channels", channels);
-    menu.addSubMenu ("Mixer", mixer);
+    menu.addSubMenu (TRANS ("Channels"), channels);
+    menu.addSubMenu (TRANS ("Mixer"), mixer);
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (automateButton), [this, targets] (int r)
     {
@@ -873,7 +881,7 @@ void Playlist::showAutomateMenu()
 
 void Playlist::showImportDialog()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Import audio", juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
+    chooser = std::make_unique<juce::FileChooser> (TRANS ("Import audio"), juce::File(), "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
                             | juce::FileBrowserComponent::canSelectMultipleItems,
                           [this] (const juce::FileChooser& fc)
@@ -970,9 +978,9 @@ void Playlist::importFiles (const juce::Array<juce::File>& files, int lane, doub
 void Playlist::refresh()
 {
     auto* audio = state.getPlaceAudioChannel();
-    title.setText ("Playlist - click to place \"" + (audio != nullptr ? audio->getName() : state.getPattern()[ids::name].toString())
-                     + "\", drag to move, drag edges to resize, right-click to delete, Alt: no snap, drop audio files here",
-                   juce::dontSendNotification);
+    const auto placing = audio != nullptr ? audio->getName() : state.getPattern()[ids::name].toString();
+    title.setText (juce::String::fromUTF8 ("\xc2\xb7 ") + TRANS ("click to place") + " \"" + placing + "\"", juce::dontSendNotification);
+    title.setTooltip (TRANS ("Click to place") + " \"" + placing + "\". " + TRANS ("Drag to move, drag the edges to resize, right-click to delete, Alt: no snap. Drop audio files here"));
     layoutContent();
     lanes->repaint();
     ruler->repaint();
@@ -980,21 +988,30 @@ void Playlist::refresh()
 
 void Playlist::paint (juce::Graphics& g)
 {
-    g.setColour (juce::Colour (0xff2a2f36));
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    theme::fillPanel (g, getLocalBounds());
+    auto top = getLocalBounds().removeFromTop (headerHeight).reduced (12, 0);
+    theme::drawPanelTitle (g, top, TRANS ("Playlist"));
+    g.setColour (theme::colours::line);
+    g.fillRect (1, headerHeight - 1, getWidth() - 2, 1);
+}
+
+void Playlist::paintOverChildren (juce::Graphics& g)
+{
+    theme::framePanel (g, getLocalBounds());
 }
 
 void Playlist::resized()
 {
-    auto r = getLocalBounds().reduced (4);
-    auto top = r.removeFromTop (22);
-    snapBox.setBounds (top.removeFromRight (110));
+    auto r = getLocalBounds().reduced (1);
+    auto top = r.removeFromTop (headerHeight - 1).reduced (8, 5);
+    snapBox.setBounds (top.removeFromRight (112));
     top.removeFromRight (6);
-    importButton.setBounds (top.removeFromRight (120));
+    importButton.setBounds (top.removeFromRight (124));
     top.removeFromRight (6);
-    automateButton.setBounds (top.removeFromRight (100));
-    title.setBounds (top);
-    r.removeFromTop (2);
+    automateButton.setBounds (top.removeFromRight (104));
+    top.removeFromRight (8);
+    const int titleWidth = (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), TRANS ("Playlist")) + 10;
+    title.setBounds (top.withTrimmedLeft (4 + titleWidth));
 
     auto rulerRow = r.removeFromTop (rulerHeight);
     rulerRow.removeFromLeft (laneHeaderWidth);

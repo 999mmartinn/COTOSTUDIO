@@ -58,7 +58,31 @@ target_sources(COTOSTUDIO PRIVATE
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
     Source/SoundBrowser.cpp
-    Source/AppData.cpp)
+    Source/AppData.cpp
+    Source/Theme.cpp
+    Source/Chrome.cpp)
+
+# Built-in files: the fonts (Inter, JetBrains Mono - SIL Open Font License), the logo
+# and the Spanish translation.
+juce_add_binary_data(COTOSTUDIOData
+    HEADER_NAME BinaryData.h
+    NAMESPACE BinaryData
+    SOURCES
+        Resources/Fonts/Inter-Regular.ttf
+        Resources/Fonts/Inter-Medium.ttf
+        Resources/Fonts/Inter-SemiBold.ttf
+        Resources/Fonts/Inter-Bold.ttf
+        Resources/Fonts/JetBrainsMono-Regular.ttf
+        Resources/Fonts/JetBrainsMono-Bold.ttf
+        Resources/logo-badge.jpg
+        Resources/logo-full.jpg
+        Resources/Translations/es.txt)
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_target_properties(COTOSTUDIOData PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
+target_link_libraries(COTOSTUDIO PRIVATE COTOSTUDIOData)
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)

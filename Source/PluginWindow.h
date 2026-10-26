@@ -21,6 +21,11 @@ public:
             te::AutomatableParameter::Ptr ap (params[i]);
             auto* row = rows.add (new Row());
             row->label.setText (ap->getParameterName(), juce::dontSendNotification);
+            row->label.setColour (juce::Label::textColourId, theme::colours::muted);
+            row->label.setFont (theme::ui (12.0f, theme::Weight::medium));
+            row->slider.setColour (juce::Slider::trackColourId, theme::colours::accent);
+            row->slider.setColour (juce::Slider::textBoxTextColourId, theme::colours::text);
+            row->slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 90, 22);
             row->slider.setRange (0.0, 1.0);
             row->slider.textFromValueFunction = [ap] (double v)
             {
@@ -52,17 +57,19 @@ public:
         startTimerHz (15);
     }
 
+    void paint (juce::Graphics& g) override   { g.fillAll (theme::colours::panel); }
+
     void resized() override
     {
-        viewport.setBounds (getLocalBounds());
+        viewport.setBounds (getLocalBounds().reduced (6));
         content.setSize (getWidth() - viewport.getScrollBarThickness(), 30 * rows.size() + 10);
 
         int y = 5;
 
         for (auto* r : rows)
         {
-            r->label.setBounds (5, y, 150, 26);
-            r->slider.setBounds (160, y, content.getWidth() - 165, 26);
+            r->label.setBounds (8, y, 150, 26);
+            r->slider.setBounds (160, y, content.getWidth() - 168, 26);
             y += 30;
         }
     }
@@ -95,7 +102,7 @@ class PluginEditorWindow  : public juce::DocumentWindow
 {
 public:
     explicit PluginEditorWindow (te::Plugin& p)
-        : DocumentWindow (p.getName(), juce::Colours::darkgrey, DocumentWindow::closeButton),
+        : DocumentWindow (p.getName(), theme::colours::panel, DocumentWindow::closeButton),
           plugin (p)
     {
         setUsingNativeTitleBar (true);

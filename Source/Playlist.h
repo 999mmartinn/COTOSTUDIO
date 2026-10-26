@@ -26,9 +26,11 @@ public:
     /** Imports audio files in the background and places them from a lane/beat on. */
     void importFiles (const juce::Array<juce::File>& files, int lane, double startBeat);
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
+    static constexpr int headerHeight = 36;
 
-    static constexpr int laneHeight = 30, laneHeaderWidth = 64, rulerHeight = 18;
+    static constexpr int laneHeight = 30, laneHeaderWidth = 78, rulerHeight = 20;
 
 private:
     class Lanes;
@@ -43,7 +45,7 @@ private:
     std::unique_ptr<ScrollViewport> viewport;
     juce::Label title;
     juce::ComboBox snapBox;
-    juce::TextButton importButton { "Import audio..." }, automateButton { "Automate..." };
+    juce::TextButton importButton { TRANS ("Import audio...") }, automateButton { TRANS ("Automate...") };
     void showAutomateMenu();
     std::unique_ptr<juce::FileChooser> chooser;
     juce::ThreadPool importPool { 1 };

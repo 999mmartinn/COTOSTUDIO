@@ -33,6 +33,9 @@ private:
     std::unique_ptr<Ruler> ruler;
     juce::Viewport viewport;
     juce::Label title;
+    juce::String heading;
+    juce::Colour headingColour { theme::colours::muted };
+    static constexpr int titleHeight = 32;
     int lastPlayhead = -2;
     bool scrolledOnce = false;
 

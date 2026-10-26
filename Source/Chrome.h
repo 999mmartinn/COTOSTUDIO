@@ -22,10 +22,15 @@ public:
     void paint (juce::Graphics&) override;
     void refresh()                          { repaint(); }
 
-    static constexpr int preferredWidth = 330;
+    /** Narrow windows: bar and tempo only (no time). */
+    void setCompact (bool c)                { if (c != compact) { compact = c; repaint(); } }
+
+    static constexpr int preferredWidth = 330, compactWidth = 250;
 
 private:
     EditorState& state;
+    bool compact = false;
+    int positionWidth() const               { return compact ? 125 : 214; }
     juce::String lastText;
     void timerCallback() override;
     juce::String positionText (juce::String& timeText) const;
@@ -64,7 +69,7 @@ private:
     juce::PropertiesFile& settings;
     Callbacks callbacks;
     juce::TextEditor portEditor, addressEditor;
-    juce::TextButton hostButton { "Host" }, joinButton { "Join" }, leaveButton { "Leave the session" }, copyButton { "Copy" };
+    juce::TextButton hostButton { TRANS ("Host") }, joinButton { TRANS ("Join") }, leaveButton { TRANS ("Leave the session") }, copyButton { TRANS ("Copy") };
     juce::String invite;
 };
 
@@ -72,6 +77,7 @@ private:
 /** The bottom line: the last message (click it for all of them), sync state, what's
     playing, CPU, sound card and version. */
 class StatusBar  : public juce::Component,
+                   public juce::SettableTooltipClient,
                    private juce::Timer
 {
 public:

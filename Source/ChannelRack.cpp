@@ -5,7 +5,7 @@
 #include "Look.h"
 #include "Mixer.h"
 
-static const juce::Colour rackBackground (0xff2a2f36), stepOff (0xff3a414a), stepOffAlt (0xff464e59);
+static const juce::Colour stepOff = theme::colours::stepOff, stepOffAlt = theme::colours::stepOffAlt;
 
 
 //==============================================================================
@@ -25,12 +25,16 @@ public:
             addAndMakeVisible (s);
         }
 
-        volume.setTooltip ("Volume (right-click: reset to 0 dB, or automate it)");
-        pan.setTooltip ("Pan (right-click: reset to centre, or automate it)");
+        volume.setTooltip (TRANS ("Volume (right-click: reset to 0 dB, or automate it)"));
+        pan.setTooltip (TRANS ("Pan (right-click: reset to centre, or automate it)"));
+        pan.getProperties().set ("bipolar", true);
+        pan.setColour (juce::Slider::rotarySliderFillColourId, theme::colours::muted);
+        for (auto* k : { &volume, &pan })
+            k->setColour (juce::Slider::rotarySliderOutlineColourId, theme::colours::stepOffAlt);
         rack.state.enableAutomation (volume, [this] { return (te::Plugin*) getVolume(); }, "volume");
         rack.state.enableAutomation (pan, [this] { return (te::Plugin*) getVolume(); }, "pan");
         volume.describeDefault = [] { return juce::String ("0 dB"); };
-        pan.describeDefault = [] { return juce::String ("centre"); };
+        pan.describeDefault = [] { return TRANS ("centre"); };
         volume.setDoubleClickReturnValue (true, 0.0);   // replaced in refresh() with the real default
         pan.setDoubleClickReturnValue (true, 0.5);
 
@@ -47,7 +51,8 @@ public:
         };
 
         mute.setClickingTogglesState (false);
-        mute.setTooltip ("Click: mute (for everyone). Right-click: solo (only what you hear)");
+        theme::setStyle (mute, "led");
+        mute.setTooltip (TRANS ("Click: mute (for everyone). Right-click: solo (only what you hear)"));
         mute.onClick = [this]
         {
             auto* t = getTrack();
@@ -78,14 +83,12 @@ public:
                 select();
         };
 
-        name.setTooltip ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete."
-                         " Audio channels: drag onto the playlist to place the file."
-                         " Drop a sound from your folders here to give a sampler channel a new sound");
+        name.setTooltip (TRANS ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete. Audio channels: drag onto the playlist to place the file. Drop a sound from your folders here to give a sampler channel a new sound"));
         name.addMouseListener (this, false);   // to start dragging audio channels
         addAndMakeVisible (mute);
         addAndMakeVisible (name);
 
-        route.setTooltip ("Mixer insert this channel plays into (M = master). Click to change, or make a new insert");
+        route.setTooltip (TRANS ("Mixer insert this channel plays into (M = master). Click to change, or make a new insert"));
         route.onClick = [this]
         {
             if (auto* t = getTrack())
@@ -128,14 +131,16 @@ public:
         name.setButtonText (t->getName());
         const bool selected = rack.state.getSelectedChannel() == t;
         name.setColour (juce::TextButton::buttonColourId,
-                        selected ? EditorState::channelColour (index).darker (0.2f) : juce::Colour (0xff3a414a));
-        name.setColour (juce::TextButton::textColourOffId, selected ? juce::Colours::black : juce::Colours::white);
+                        selected ? EditorState::channelColour (index) : theme::colours::well);
+        name.setColour (juce::TextButton::textColourOffId, selected ? theme::colours::accentText : theme::colours::text);
+        theme::setIcon (name, song::isSamplerChannel (*t) ? theme::Icon::wave : song::isAudioChannel (*t) ? theme::Icon::wave : theme::Icon::none);
 
         if (auto* edit = rack.state.getEdit())
         {
             auto* dest = song::resolveRoute (*edit, *t);
             route.setButtonText (dest != nullptr ? juce::String (song::getInsertNumber (*edit, *dest)) : juce::String ("M"));
-            route.setColour (juce::TextButton::buttonColourId, dest != nullptr ? juce::Colour (0xff5a4a2a) : juce::Colour (0xff3a414a));
+            route.setColour (juce::TextButton::buttonColourId, dest != nullptr ? theme::colours::accentSoft : theme::colours::well);
+            route.setColour (juce::TextButton::textColourOffId, dest != nullptr ? theme::colours::lilac : theme::colours::muted);
         }
 
         // Light: green = on, grey = muted, yellow = soloed, dark = silent here because of a solo.
@@ -143,10 +148,10 @@ public:
         const bool soloed = rack.state.session.isSoloed (channelID);
         const bool silenced = rack.state.session.isSilencedBySolo (channelID);
         mute.setButtonText ({});
-        mute.setColour (juce::TextButton::buttonColourId, muted ? juce::Colour (0xff555555)
-                                                        : soloed ? juce::Colour (0xfff0d040)
-                                                        : silenced ? juce::Colour (0xff2f4a2f)
-                                                                   : juce::Colour (0xff6fd06f));
+        mute.setColour (juce::TextButton::buttonColourId, muted ? theme::colours::dim.withAlpha (0.6f)
+                                                        : soloed ? theme::colours::amber
+                                                        : silenced ? theme::colours::green.withAlpha (0.25f)
+                                                                   : theme::colours::green);
 
         if (auto* v = getVolume())
         {
@@ -166,14 +171,14 @@ public:
     void resized() override
     {
         auto r = getLocalBounds().reduced (2, 3);
-        mute.setBounds (r.removeFromLeft (14).withSizeKeepingCentre (14, 14));
-        r.removeFromLeft (6);
+        mute.setBounds (r.removeFromLeft (16).withSizeKeepingCentre (16, 16));
+        r.removeFromLeft (4);
         volume.setBounds (r.removeFromLeft (28));
         pan.setBounds (r.removeFromLeft (28));
         r.removeFromLeft (6);
         route.setBounds (r.removeFromLeft (30));
-        r.removeFromLeft (4);
-        name.setBounds (r.removeFromLeft (stepsX - 6 - 14 - 6 - 56 - 6 - 30 - 4 - 4));
+        r.removeFromLeft (6);
+        name.setBounds (r.removeFromLeft (stepsX - 2 - 16 - 4 - 56 - 6 - 30 - 6 - 10));
     }
 
     juce::Rectangle<float> stepBounds (int step, int numSteps) const
@@ -205,11 +210,11 @@ public:
         {
             // Audio channels play their clips from the playlist, not from patterns.
             auto r = getLocalBounds().withTrimmedLeft (stepsX).reduced (2, 3).toFloat();
-            g.setColour (EditorState::channelColour (index).withAlpha (0.18f));
-            g.fillRoundedRectangle (r, 3.0f);
-            g.setColour (juce::Colours::white.withAlpha (0.6f));
-            g.setFont (12.0f);
-            g.drawText ("Audio channel - its clips are in the playlist (SONG mode)", r.reduced (8.0f, 0.0f).toNearestInt(),
+            g.setColour (EditorState::channelColour (index).withAlpha (0.14f));
+            g.fillRoundedRectangle (r, 5.0f);
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::ui (11.5f));
+            g.drawText (TRANS ("Audio channel - its clips are in the playlist (SONG mode)"), r.reduced (10.0f, 0.0f).toNearestInt(),
                         juce::Justification::centredLeft, true);
             return;
         }
@@ -226,12 +231,12 @@ public:
             auto r = stepBounds (s, numSteps).reduced (1.5f, 0.0f);
             const bool on = song::hasStep (pattern, channelID, s);
             g.setColour (on ? colour : ((s / 4) % 2 == 0 ? stepOff : stepOffAlt));
-            g.fillRoundedRectangle (r, 3.0f);
+            g.fillRoundedRectangle (r, 4.0f);
 
             if (s == playhead)
             {
-                g.setColour (juce::Colours::white.withAlpha (on ? 0.6f : 0.25f));
-                g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, 1.5f);
+                g.setColour (theme::colours::text.withAlpha (on ? 0.85f : 0.35f));
+                g.drawRoundedRectangle (r.reduced (0.75f), 4.0f, 1.5f);
             }
         }
     }
@@ -318,11 +323,12 @@ ChannelRack::ChannelRack (te::Engine& e, EditorState& s) : engine (e), state (s)
     addButton.onClick = [this] { showAddChannelMenu(); };
 
     // Like FL's channel filter: see only the instruments (your patterns) or only the audio (your takes).
-    filterBox.addItem ("Show: all channels", 1);
-    filterBox.addItem ("Show: instruments", 2);
-    filterBox.addItem ("Show: audio (takes)", 3);
+    filterBox.addItem (TRANS ("Show: all channels"), 1);
+    filterBox.addItem (TRANS ("Show: instruments"), 2);
+    filterBox.addItem (TRANS ("Show: audio (takes)"), 3);
     filterBox.setSelectedId (1, juce::dontSendNotification);
-    filterBox.setTooltip ("Which channels the rack shows (only on your screen)");
+    filterBox.setTooltip (TRANS ("Which channels the rack shows (only on your screen)"));
+    theme::setIcon (addButton, theme::Icon::plus);
     filterBox.onChange = [this]
     {
         const int id = filterBox.getSelectedId();
@@ -394,23 +400,41 @@ void ChannelRack::refresh()
 
     for (auto* r : rows)
         r->refresh();
+
+    repaint (getLocalBounds().removeFromBottom (bottomHeight));
 }
 
 void ChannelRack::paint (juce::Graphics& g)
 {
-    g.setColour (rackBackground);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    theme::fillPanel (g, getLocalBounds());
+
+    // The bar at the bottom: a line above it, and what you're editing on the right.
+    auto bottom = getLocalBounds().removeFromBottom (bottomHeight);
+    g.setColour (theme::colours::line);
+    g.fillRect (bottom.removeFromTop (1).reduced (1, 0));
+
+    auto pattern = state.getPattern();
+
+    if (pattern.isValid())
+    {
+        const int bars = song::getBars (pattern);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (11.0f));
+        g.drawText (pattern[song::ids::name].toString() + juce::String::fromUTF8 (" \xc2\xb7 ") + juce::String (bars) + " "
+                      + (bars == 1 ? TRANS ("bar") : TRANS ("bars")) + juce::String::fromUTF8 (" \xc2\xb7 ")
+                      + juce::String (song::getNumSteps (pattern)) + " " + TRANS ("steps"),
+                    bottom.reduced (12, 0).withTrimmedLeft (filterBox.getRight()), juce::Justification::centredRight, true);
+    }
 }
 
 void ChannelRack::resized()
 {
-    auto r = getLocalBounds().reduced (4);
-    auto bottom = r.removeFromBottom (26);
-    addButton.setBounds (bottom.removeFromLeft (110));
+    auto r = getLocalBounds().reduced (1);
+    auto bottom = r.removeFromBottom (bottomHeight - 1).reduced (10, 5);
+    addButton.setBounds (bottom.removeFromLeft (112));
     bottom.removeFromLeft (8);
     filterBox.setBounds (bottom.removeFromLeft (170));
-    r.removeFromBottom (4);
-    viewport.setBounds (r);
+    viewport.setBounds (r.reduced (8, 6));
     layoutRows();
 }
 
@@ -439,6 +463,8 @@ void ChannelRack::timerCallback()
 
 void ChannelRack::paintOverChildren (juce::Graphics& g)
 {
+    theme::framePanel (g, getLocalBounds());
+
     if (! drop.active)
         return;
 
@@ -455,24 +481,29 @@ void ChannelRack::paintOverChildren (juce::Graphics& g)
             if (row->channelID == drop.channelID)
                 area = getLocalArea (&content, row->getBounds()).getIntersection (viewport.getBounds());
 
-        text = midi ? "Notes into " + target->getName() + " (this pattern)" : "New sound for " + target->getName();
+        text = midi ? TRANS ("Notes into") + " " + target->getName() + " (" + TRANS ("this pattern") + ")" : TRANS ("New sound for") + " " + target->getName();
     }
     else
     {
         // A new channel: the whole rack lights up, the label sits at the bottom.
         area = viewport.getBounds().reduced (1);
-        text = midi ? "New Synth channel: " + song::channelNameForFile (drop.file.getFileName())
-                    : "New channel: " + song::channelNameForFile (drop.file.getFileName());
+        text = midi ? TRANS ("New Synth channel:") + " " + song::channelNameForFile (drop.file.getFileName())
+                    : TRANS ("New channel:") + " " + song::channelNameForFile (drop.file.getFileName());
     }
 
     if (area.isEmpty())
         return;
 
-    const auto colour = juce::Colour (0xff4fb0f0);
-    g.setColour (colour.withAlpha (target != nullptr ? 0.18f : 0.08f));
-    g.fillRoundedRectangle (area.toFloat(), 4.0f);
+    const auto colour = theme::colours::accent;
+    g.setColour (theme::colours::accentSoft.withAlpha (target != nullptr ? 0.85f : 0.5f));
+    g.fillRoundedRectangle (area.toFloat(), 7.0f);
     g.setColour (colour);
-    g.drawRoundedRectangle (area.toFloat().reduced (1.0f), 4.0f, 2.0f);
+    juce::Path outline;
+    outline.addRoundedRectangle (area.toFloat().reduced (1.0f), 7.0f);
+    juce::Path dashed;
+    const float dashes[] = { 6.0f, 4.0f };
+    juce::PathStrokeType (2.0f).createDashedStroke (dashed, outline, dashes, 2);
+    g.fillPath (dashed);
 
     auto label = target != nullptr ? area.withTrimmedLeft (stepsX).reduced (8, 0)
                                    : area.removeFromBottom (rowHeight).withTrimmedLeft (stepsX).reduced (8, 0);
@@ -480,11 +511,12 @@ void ChannelRack::paintOverChildren (juce::Graphics& g)
     if (label.getWidth() < 120)
         label = area.reduced (8, 0);
 
-    g.setColour (juce::Colours::black.withAlpha (0.65f));
-    const auto textWidth = juce::jmin (label.getWidth(), juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (13.0f, juce::Font::bold), text) + 16);
-    g.fillRoundedRectangle (label.withWidth (textWidth).withSizeKeepingCentre (textWidth, 20).toFloat(), 4.0f);
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    const auto font = theme::ui (12.5f, theme::Weight::bold);
+    const auto textWidth = juce::jmin (label.getWidth(), juce::GlyphArrangement::getStringWidthInt (font, text) + 18);
+    g.setColour (theme::colours::accent);
+    g.fillRoundedRectangle (label.withWidth (textWidth).withSizeKeepingCentre (textWidth, 22).toFloat(), 6.0f);
+    g.setColour (theme::colours::accentText);
+    g.setFont (font);
     g.drawText (text, label.withWidth (textWidth), juce::Justification::centred, true);
 }
 
@@ -684,13 +716,13 @@ void ChannelRack::showAddChannelMenu()
         return;
 
     juce::PopupMenu m, vst;
-    m.addSectionHeader ("Built-in");
-    m.addItem (1, "Kick (Drum Synth)");
-    m.addItem (2, "Clap (Drum Synth)");
-    m.addItem (3, "Hat (Drum Synth)");
-    m.addItem (4, "Snare (Drum Synth)");
-    m.addItem (5, "Synth (4OSC)");
-    m.addItem (6, "Sampler: choose a sound file...");
+    m.addSectionHeader (TRANS ("Built-in"));
+    m.addItem (1, TRANS ("Kick (Drum Synth)"));
+    m.addItem (2, TRANS ("Clap (Drum Synth)"));
+    m.addItem (3, TRANS ("Hat (Drum Synth)"));
+    m.addItem (4, TRANS ("Snare (Drum Synth)"));
+    m.addItem (5, TRANS ("Synth (4OSC)"));
+    m.addItem (6, TRANS ("Sampler: choose a sound file..."));
 
     juce::Array<juce::PluginDescription> instruments;
 
@@ -699,11 +731,11 @@ void ChannelRack::showAddChannelMenu()
             instruments.add (d);
 
     if (instruments.isEmpty())
-        vst.addItem (-1, "(none found - use Scan plugins...)", false);
+        vst.addItem (-1, TRANS ("(none found - use Scan plugins...)"), false);
     else
         juce::KnownPluginList::addToMenu (vst, instruments, juce::KnownPluginList::sortByManufacturer);
 
-    m.addSubMenu ("Your instruments (VST3)", vst);
+    m.addSubMenu (TRANS ("Your instruments (VST3)"), vst);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addButton),
                      [this, instruments] (int result)
@@ -715,7 +747,7 @@ void ChannelRack::showAddChannelMenu()
 
         if (result == 6)
         {
-            chooser = std::make_unique<juce::FileChooser> ("Sound for the new channel", juce::File(),
+            chooser = std::make_unique<juce::FileChooser> (TRANS ("Sound for the new channel"), juce::File(),
                                                            "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
             chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this] (const juce::FileChooser& fc)
@@ -770,17 +802,17 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         return ext != nullptr && ext->getAudioPluginInstance() == nullptr;
     }();
 
-    m.addItem (1, instrument != nullptr ? "Open instrument (" + instrument->getName() + (missing ? ", not installed here)" : ")")
-                                        : juce::String (song::isAudioChannel (*track) ? "Audio channel (no instrument)" : "No instrument"),
+    m.addItem (1, instrument != nullptr ? TRANS ("Open instrument") + " (" + instrument->getName() + (missing ? ", " + TRANS ("not installed here") + ")" : ")")
+                                        : (song::isAudioChannel (*track) ? TRANS ("Audio channel (no instrument)") : TRANS ("No instrument")),
                instrument != nullptr && ! missing);
 
     if (auto* sampler = dynamic_cast<SamplerPlugin*> (instrument))
     {
         const auto hash = sampler->getAsset();
         const bool here = state.session.getAssetStore().has (hash);
-        m.addItem (-2, "Sound: " + song::getAssetName (*edit, hash) + (here ? juce::String() : "  (still arriving...)"), false);
-        m.addItem (4, "Cut itself (a new hit stops the last one, for 808s)", true, sampler->cutValue.get());
-        m.addItem (5, "Replace the sound...  (or drop one on this channel)");
+        m.addItem (-2, TRANS ("Sound:") + " " + song::getAssetName (*edit, hash) + (here ? juce::String() : "  (" + TRANS ("still arriving...") + ")"), false);
+        m.addItem (4, TRANS ("Cut itself (a new hit stops the last one, for 808s)"), true, sampler->cutValue.get());
+        m.addItem (5, TRANS ("Replace the sound...  (or drop one on this channel)"));
     }
 
     auto effects = song::getEffects (*track);
@@ -788,13 +820,13 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
     for (int i = 0; i < effects.size(); ++i)
     {
         juce::PopupMenu one;
-        one.addItem (100 + i, "Open");
-        one.addItem (200 + i, "Remove");
+        one.addItem (100 + i, TRANS ("Open"));
+        one.addItem (200 + i, TRANS ("Remove"));
         fx.addSubMenu (effects[i]->getName(), one);
     }
 
     if (effects.isEmpty())
-        fx.addItem (-1, "(no effects yet)", false);
+        fx.addItem (-1, TRANS ("(no effects yet)"), false);
 
     juce::Array<juce::PluginDescription> effectTypes;
 
@@ -803,15 +835,15 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
             effectTypes.add (d);
 
     if (effectTypes.isEmpty())
-        addFx.addItem (-1, "(none found - use Scan plugins...)", false);
+        addFx.addItem (-1, TRANS ("(none found - use Scan plugins...)"), false);
     else
         juce::KnownPluginList::addToMenu (addFx, effectTypes, juce::KnownPluginList::sortByManufacturer);
 
-    m.addSubMenu ("Effects", fx);
-    m.addSubMenu ("Add effect (Waves, FabFilter...)", addFx);
+    m.addSubMenu (TRANS ("Effects"), fx);
+    m.addSubMenu (TRANS ("Add effect (Waves, FabFilter...)"), addFx);
     m.addSeparator();
-    m.addItem (2, "Rename...");
-    m.addItem (3, "Delete channel", song::getChannels (*edit).size() > 1);
+    m.addItem (2, TRANS ("Rename..."));
+    m.addItem (3, TRANS ("Delete channel"), song::getChannels (*edit).size() > 1);
 
     m.showMenuAsync ({}, [this, channelID, effectTypes] (int result)
     {
@@ -828,10 +860,10 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         }
         else if (result == 2)
         {
-            auto* w = new juce::AlertWindow ("Rename channel", {}, juce::MessageBoxIconType::NoIcon);
+            auto* w = new juce::AlertWindow (TRANS ("Rename channel"), {}, juce::MessageBoxIconType::NoIcon);
             w->addTextEditor ("name", t->getName());
-            w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+            w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+            w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
             w->enterModalState (true, juce::ModalCallbackFunction::create ([this, channelID, w] (int r)
             {
                 auto* e2 = state.getEdit();
@@ -859,7 +891,7 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         }
         else if (result == 5)
         {
-            chooser = std::make_unique<juce::FileChooser> ("New sound for " + t->getName(), juce::File(),
+            chooser = std::make_unique<juce::FileChooser> (TRANS ("New sound for") + " " + t->getName(), juce::File(),
                                                            "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg");
             chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                   [this, channelID] (const juce::FileChooser& fc)

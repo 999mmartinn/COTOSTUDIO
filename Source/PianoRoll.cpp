@@ -48,26 +48,27 @@ public:
         const int numSteps = getNumSteps (pattern);
         const int playhead = state.getPlayheadStep();
 
-        g.fillAll (juce::Colour (0xff23272d));
+        g.fillAll (theme::colours::lane2);
 
         // Rows and keyboard
         for (int pitch = lowestPitch; pitch <= highestPitch; ++pitch)
         {
             const float y = yForPitch (pitch);
             const bool black = isBlackKey (pitch);
-            g.setColour (black ? juce::Colour (0xff262b32) : juce::Colour (0xff2c323a));
+            g.setColour (black ? theme::colours::lane2 : theme::colours::lane1);
             g.fillRect ((float) keyboardWidth, y, (float) (getWidth() - keyboardWidth), (float) rowHeight);
 
-            g.setColour (black ? juce::Colour (0xff1a1a1a) : juce::Colour (0xffe8e8e8));
+            // Keys: light lilac-white and deep purple-black.
+            g.setColour (black ? juce::Colour (0xff120f19) : juce::Colour (0xffe6e0f4));
             g.fillRect (0.0f, y, (float) keyboardWidth - 2.0f, (float) rowHeight - 1.0f);
 
             if (pitch % 12 == 0)
             {
-                g.setColour (juce::Colours::black);
-                g.setFont (10.0f);
+                g.setColour (theme::colours::accentText.withAlpha (0.8f));
+                g.setFont (theme::mono (9.5f, true));
                 g.drawText ("C" + juce::String (pitch / 12), 2, (int) y, keyboardWidth - 6, rowHeight,
                             juce::Justification::centredRight);
-                g.setColour (juce::Colour (0xff3d4550));
+                g.setColour (theme::colours::gridBar);
                 g.drawHorizontalLine ((int) (y + rowHeight) - 1, (float) keyboardWidth, (float) getWidth());
             }
         }
@@ -76,14 +77,14 @@ public:
         for (int s = 0; s <= numSteps; ++s)
         {
             const float x = xForBeat (s * stepBeats);
-            g.setColour (s % 16 == 0 ? juce::Colour (0xff6b7480) : s % 4 == 0 ? juce::Colour (0xff4a525d) : juce::Colour (0xff353c45));
+            g.setColour (s % 16 == 0 ? theme::colours::gridBar.brighter (0.25f) : s % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
             g.drawVerticalLine ((int) x, 0.0f, (float) getHeight());
         }
 
         juce::ignoreUnused (playhead);
 
         // Start marker (where Play starts)
-        g.setColour (juce::Colour (0xff6fd06f).withAlpha (0.5f));
+        g.setColour (theme::colours::green.withAlpha (0.55f));
         g.drawVerticalLine ((int) xForBeat (state.getStartBeat()), 0.0f, (float) getHeight());
 
         if (channel != nullptr && pattern.isValid())
@@ -94,8 +95,8 @@ public:
 
         if (playBeat >= 0.0)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.8f));
-            g.drawVerticalLine ((int) xForBeat (playBeat), 0.0f, (float) getHeight());
+            g.setColour (theme::colours::text);
+            g.fillRect (juce::Rectangle<float> (xForBeat (playBeat) - 1.0f, 0.0f, 2.0f, (float) getHeight()));
         }
     }
 
@@ -112,9 +113,9 @@ public:
                 continue;
 
             g.setColour (colour);
-            g.fillRoundedRectangle (r.reduced (0.5f, 1.0f), 2.5f);
-            g.setColour (colour.darker (0.6f));
-            g.drawRoundedRectangle (r.reduced (0.5f, 1.0f), 2.5f, 1.0f);
+            g.fillRoundedRectangle (r.reduced (0.5f, 1.0f), 3.0f);
+            g.setColour (colour.darker (0.7f));
+            g.drawRoundedRectangle (r.reduced (0.5f, 1.0f), 3.0f, 1.0f);
         }
     }
 
@@ -362,15 +363,15 @@ public:
             area = vp->getViewArea();
 
         auto* channel = getNoteChannel();
-        const auto text = "Notes from " + midiDrop.getFileName() + " into "
-                           + (channel != nullptr ? channel->getName() : juce::String ("a new Synth channel"));
-        const auto colour = juce::Colour (0xff4fb0f0);
-        g.setColour (colour.withAlpha (0.12f));
+        const auto text = TRANS ("Notes from") + " " + midiDrop.getFileName() + " " + TRANS ("into") + " "
+                           + (channel != nullptr ? channel->getName() : TRANS ("a new Synth channel"));
+        const auto colour = theme::colours::accent;
+        g.setColour (theme::colours::accentSoft.withAlpha (0.6f));
         g.fillRect (area);
         g.setColour (colour);
         g.drawRect (area, 2);
-        g.setColour (juce::Colours::white);
-        g.setFont (juce::FontOptions (15.0f, juce::Font::bold));
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (15.0f, theme::Weight::bold));
         g.drawText (text, area.reduced (12), juce::Justification::centred, true);
     }
 
@@ -396,7 +397,9 @@ public:
         auto pattern = state.getPattern();
         const int numSteps = getNumSteps (pattern);
 
-        g.fillAll (juce::Colour (0xff1c2025));
+        g.fillAll (theme::colours::panel);
+        g.setColour (theme::colours::line);
+        g.fillRect (0, getHeight() - 1, getWidth(), 1);
 
         for (int s = 0; s <= numSteps; ++s)
         {
@@ -404,13 +407,13 @@ public:
 
             if (s % 4 == 0)
             {
-                g.setColour (juce::Colour (s % 16 == 0 ? 0xffa0a8b4 : 0xff5a626d));
+                g.setColour (s % 16 == 0 ? theme::colours::muted : theme::colours::gridBar);
                 g.drawVerticalLine ((int) x, s % 16 == 0 ? 2.0f : 10.0f, (float) getHeight());
 
                 if (s < numSteps)
                 {
-                    g.setFont (11.0f);
-                    g.setColour (juce::Colours::white.withAlpha (s % 16 == 0 ? 0.9f : 0.45f));
+                    g.setFont (theme::mono (10.0f, s % 16 == 0));
+                    g.setColour (s % 16 == 0 ? theme::colours::text : theme::colours::dim);
                     g.drawText (juce::String (s / 16 + 1) + (s % 16 == 0 ? juce::String() : "." + juce::String ((s % 16) / 4 + 1)),
                                 (int) x + 3, 0, 40, getHeight(), juce::Justification::centredLeft);
                 }
@@ -421,20 +424,20 @@ public:
         const float mx = grid.xForBeat (state.getStartBeat());
         juce::Path tri;
         tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
-        g.setColour (juce::Colour (0xff6fd06f));
+        g.setColour (theme::colours::green);
         g.fillPath (tri);
 
         const double playBeat = state.getPlayheadBeat();
 
         if (playBeat >= 0.0)
         {
-            g.setColour (juce::Colours::white);
-            g.drawVerticalLine ((int) grid.xForBeat (playBeat), 0.0f, (float) getHeight());
+            g.setColour (theme::colours::text);
+            g.fillRect (grid.xForBeat (playBeat) - 1.0f, 0.0f, 2.0f, (float) getHeight());
         }
 
-        g.setColour (juce::Colours::white.withAlpha (0.4f));
-        g.setFont (10.0f);
-        g.drawText ("start", 4, 0, keyboardWidth - 8, getHeight(), juce::Justification::centredLeft);
+        g.setColour (theme::colours::dim);
+        g.setFont (theme::ui (10.0f));
+        g.drawText (TRANS ("start"), 4, 0, keyboardWidth - 8, getHeight(), juce::Justification::centredLeft);
     }
 
     void mouseDown (const juce::MouseEvent& e) override    { setStart (e.position.x, true); }
@@ -472,8 +475,8 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     viewport.setScrollBarsShown (true, false);
     addAndMakeVisible (viewport);
 
-    title.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
-    title.setFont (juce::FontOptions (13.0f));
+    title.setColour (juce::Label::textColourId, theme::colours::muted);
+    title.setFont (theme::ui (11.0f));
     addAndMakeVisible (title);
     startTimerHz (30);
 }
@@ -488,29 +491,43 @@ void PianoRoll::refresh()
     auto* channel = state.getSelectedChannel();
     auto pattern = state.getPattern();
 
+    heading = channel != nullptr ? channel->getName() : TRANS ("no channel");
+    headingColour = channel != nullptr && state.getEdit() != nullptr
+                      ? EditorState::channelColour (song::getChannels (*state.getEdit()).indexOf (channel))
+                      : theme::colours::muted;
+
     if (channel != nullptr && song::isAudioChannel (*channel))
-        title.setText ("Piano roll - " + channel->getName() + " is an audio channel: move and trim its clips in the playlist",
-                       juce::dontSendNotification);
+        title.setText (TRANS ("is an audio channel: move and trim its clips in the playlist"), juce::dontSendNotification);
     else
-        title.setText ("Piano roll - " + (channel != nullptr ? channel->getName() : juce::String ("no channel"))
-                         + " in " + pattern[ids::name].toString()
-                         + "   (click: add note, drag: move/longer, right-click: delete, ruler: set play start)",
+        title.setText (TRANS ("in") + " " + pattern[ids::name].toString() + juce::String::fromUTF8 ("  \xc2\xb7  ")
+                         + TRANS ("click: add note, drag: move/longer, right-click: delete, ruler: set play start"),
                        juce::dontSendNotification);
+
+    resized();
+    repaint (getLocalBounds().removeFromTop (titleHeight));
     grid->repaint();
     ruler->repaint();
 }
 
 void PianoRoll::paint (juce::Graphics& g)
 {
-    g.setColour (juce::Colour (0xff2a2f36));
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    g.fillAll (theme::colours::wellAlt);
+
+    // Which channel: a colour chip and its name, then the hint.
+    auto top = getLocalBounds().removeFromTop (titleHeight).reduced (12, 0);
+    g.setColour (headingColour);
+    g.fillRoundedRectangle (top.removeFromLeft (10).toFloat().withSizeKeepingCentre (10.0f, 10.0f), 3.0f);
+    top.removeFromLeft (8);
+    theme::drawPanelTitle (g, top, heading);
 }
 
 void PianoRoll::resized()
 {
-    auto r = getLocalBounds().reduced (4);
-    title.setBounds (r.removeFromTop (20));
-    ruler->setBounds (r.removeFromTop (18).withTrimmedRight (viewport.getScrollBarThickness()));
+    auto r = getLocalBounds();
+    auto top = r.removeFromTop (titleHeight).reduced (12, 0);
+    const int headingWidth = 18 + (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), heading) + 8;
+    title.setBounds (top.withTrimmedLeft (headingWidth));
+    ruler->setBounds (r.removeFromTop (20).withTrimmedRight (viewport.getScrollBarThickness()));
     viewport.setBounds (r);
     grid->setSize (viewport.getWidth() - viewport.getScrollBarThickness(), grid->getHeight());
 

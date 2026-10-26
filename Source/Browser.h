@@ -33,6 +33,7 @@ public:
     std::function<void (const juce::String& name)> onUserNameChanged;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
 
     static constexpr int defaultWidth = 240;

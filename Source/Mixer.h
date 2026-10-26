@@ -23,7 +23,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int stripWidth = 84, slotsWidth = 250, numSlots = 10;
+    static constexpr int stripWidth = 100, stripGap = 6, slotsWidth = 260, numSlots = 10;
 
     /** Shows a menu of effects (built-in + your VST3s). Calls back with either a
         built-in type name or a plugin description; the caller creates the effect
@@ -47,7 +47,13 @@ private:
     juce::OwnedArray<Strip> strips;
     juce::StringArray stripIDs;
     juce::Component stripsContent;
-    juce::Viewport stripsViewport;
+    struct StripsViewport  : public juce::Viewport
+    {
+        std::function<void()> onScroll;
+        void visibleAreaChanged (const juce::Rectangle<int>&) override   { if (onScroll) onScroll(); }
+    };
+
+    StripsViewport stripsViewport;
     juce::TextButton addInsertButton { "+ Insert" }, detachButton { "Own window" }, fullScreenButton { "Full screen" };
     std::unique_ptr<Slots> slots;
 

@@ -10,6 +10,8 @@
 #include "SoundBrowser.h"
 #include "Exporter.h"
 #include "Look.h"
+#include "Theme.h"
+#include "Chrome.h"
 
 //==============================================================================
 class MainComponent  : public juce::Component,
@@ -28,6 +30,9 @@ public:
 
     /** The window's close button: asks to save changes first. */
     void requestQuit();
+
+    /** Your settings (in the data folder). */
+    juce::PropertiesFile& getSettings()        { return *userSettings; }
 
 private:
     te::Engine& engine;
@@ -64,10 +69,23 @@ private:
     static juce::File songsFolder();
     juce::File autosaveFolder() const;
 
-    // Connection bar
-    juce::TextButton hostButton { "Host" }, joinButton { "Join" }, leaveButton { "Leave" };
-    juce::TextEditor portEditor, addressEditor;
-    juce::Label portLabel { {}, "Port" }, addressLabel { {}, "Host address" }, statusLabel;
+    // Top bar: logo, session badge (Host / Join), counter, settings
+    class Logo;
+    std::unique_ptr<Logo> logo;
+    SessionPill sessionPill { session };
+    void showSessionPanel();
+    LcdDisplay lcd { state };
+    juce::TextButton settingsButton;
+    void showSettingsMenu();
+    void showAbout();
+
+    static constexpr int topBarHeight = 58;
+    juce::Array<int> topBarSeparators;   // x of the thin lines between groups (set in resized)
+
+    // Status bar and all messages
+    StatusBar statusBar { engine, session };
+    std::unique_ptr<juce::DocumentWindow> logWindow;
+    void showLog();
 
     // Transport / pattern bar
     juce::TextButton patModeButton { "PAT" }, songModeButton { "SONG" };
@@ -98,11 +116,8 @@ private:
     void exportFinished (const Exporter::Result&);
     juce::File exportsFolder() const;
     void timerCallback() override;
-    juce::TextButton playButton { "Play" }, newPatternButton { "+" }, patternMenuButton { "..." },
-                     undoButton { "Undo" }, redoButton { "Redo" },
-                     scanButton { "Scan plugins..." }, audioButton { "Audio settings..." };
+    juce::TextButton playButton, newPatternButton, patternMenuButton, undoButton, redoButton;
     juce::Slider tempoSlider { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
-    juce::Label tempoLabel { {}, "BPM" }, playingLabel;
     juce::ComboBox patternBox, lengthBox;
 
     // Your own folders of sounds (far left; local only) and what plays them while you browse.
@@ -135,7 +150,9 @@ private:
     AutomationEditor automationEditor { state };
     void createAutomation (const juce::String& pluginID, const juce::String& paramID);
     juce::TabbedComponent bottomTabs { juce::TabbedButtonBar::TabsAtTop };   // Piano roll (F7) / Mixer (F9)
-    juce::TextEditor logView;
+    class Dock;
+    std::unique_ptr<Dock> dock;   // the panel around the tabs
+    juce::TextEditor logView;     // every message (shown in its own window from the status bar)
 
     // Playlist / rack / piano roll, with draggable dividers between them.
     juce::StretchableLayoutManager panelLayout;

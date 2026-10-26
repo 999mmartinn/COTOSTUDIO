@@ -2,6 +2,7 @@
 
 #include "SamplePreviewer.h"
 #include "FileImport.h"
+#include "Theme.h"
 
 /**
     "Sounds": your own folders of drum kits, loops, one-shots and MIDI, in a
@@ -50,10 +51,11 @@ public:
     std::function<void (const juce::File&)> onAddToRack, onAddToPlaylist, onMidiToSelectedChannel, onMidiToNewChannel;
 
     void paint (juce::Graphics&) override;
+    void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
 
-    static constexpr int defaultWidth = 260;
+    static constexpr int defaultWidth = 280, headerHeight = 42;
 
 private:
     class Item;
@@ -74,7 +76,7 @@ private:
     juce::String shownInfo;
     juce::AudioThumbnailCache thumbCache { 4 };
     juce::AudioThumbnail thumbnail;
-    juce::Rectangle<int> previewArea, waveArea;
+    juce::Rectangle<int> previewArea, waveArea, noteArea;
     juce::uint32 lastPreviewStart = 0;
     bool wasPlaying = false;
 

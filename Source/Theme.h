@@ -74,6 +74,17 @@ namespace theme
     void setStyle (juce::Button&, const char* style);
 
     //==============================================================================
+    // Panels are rounded cards (like the design): fillPanel in paint(), framePanel in
+    // paintOverChildren() so the corners and border stay clean over scrolling content.
+    constexpr float panelRadius = 10.0f;
+    void fillPanel (juce::Graphics&, juce::Rectangle<int> area, juce::Colour fill = colours::panel);
+    void framePanel (juce::Graphics&, juce::Rectangle<int> area);
+    /** A panel's title row text: bold title, then a muted note. Returns what's left of the row. */
+    juce::Rectangle<int> drawPanelTitle (juce::Graphics&, juce::Rectangle<int> row, const juce::String& title, const juce::String& note = {});
+    /** Small caps heading (PATTERNS, CHAT...). */
+    void drawHeading (juce::Graphics&, juce::Rectangle<int> area, const juce::String& text, juce::Justification = juce::Justification::centredLeft);
+
+    //==============================================================================
     /** The look of every standard control: buttons, menus, lists, sliders, fields... */
     class Look  : public juce::LookAndFeel_V4
     {
@@ -98,6 +109,7 @@ namespace theme
                                 const juce::String& shortcutKeyText, const juce::Drawable* icon, const juce::Colour* textColour) override;
         void drawPopupMenuSectionHeader (juce::Graphics&, const juce::Rectangle<int>&, const juce::String&) override;
         juce::Font getPopupMenuFont() override;
+        void getIdealPopupMenuItemSize (const juce::String&, bool isSeparator, int standardHeight, int& w, int& h) override;
         int getPopupMenuBorderSize() override                              { return 4; }
 
         // Text
@@ -117,6 +129,7 @@ namespace theme
         void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos, float minPos, float maxPos,
                                juce::Slider::SliderStyle, juce::Slider&) override;
         juce::Label* createSliderTextBox (juce::Slider&) override;
+        int getSliderThumbRadius (juce::Slider&) override;
         juce::Button* createSliderButton (juce::Slider&, bool isIncrement) override;
 
         // Scroll bars, tabs, trees, dividers, progress

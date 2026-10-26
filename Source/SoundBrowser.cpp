@@ -1,7 +1,7 @@
 #include "SoundBrowser.h"
 
-static const juce::Colour panelColour (0xff2a2f36), selectColour (0xfff0a030),
-                          folderColour (0xffd8b45f), audioColour (0xff45c4b0), midiColour (0xffd86f8f);
+static const juce::Colour selectColour = theme::colours::accent, folderColour = theme::colours::amber,
+                          audioColour = theme::colours::teal, midiColour = theme::colours::pink;
 
 //==============================================================================
 // Little drawn icons (no image files needed).
@@ -16,14 +16,11 @@ static void drawFolderIcon (juce::Graphics& g, juce::Rectangle<float> r, bool op
     p.lineTo (r.getRight(), r.getY() + 2.5f);
     p.lineTo (r.getRight(), r.getBottom());
     p.closeSubPath();
-    g.setColour (folderColour.withAlpha (open ? 0.55f : 1.0f));
+    // Outlined in amber; filled when open (like the design).
+    g.setColour (folderColour.withAlpha (open ? 0.35f : 0.12f));
     g.fillPath (p);
-
-    if (open)
-    {
-        g.setColour (folderColour);
-        g.fillRect (r.withTrimmedTop (5.0f).translated (1.5f, 0.0f).withWidth (r.getWidth() - 1.0f));
-    }
+    g.setColour (folderColour);
+    g.strokePath (p, juce::PathStrokeType (1.1f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 }
 
 static void drawAudioIcon (juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c)
@@ -135,14 +132,14 @@ public:
 
         if (isSelected())
         {
-            g.setColour (selectColour.withAlpha (0.28f));
-            g.fillRoundedRectangle (r, 3.0f);
+            g.setColour (theme::colours::accentSoft);
+            g.fillRoundedRectangle (r, 5.0f);
         }
 
         if (kind == Kind::note)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.4f));
-            g.setFont (juce::FontOptions (12.0f, juce::Font::italic));
+            g.setColour (theme::colours::dim);
+            g.setFont (theme::ui (11.5f).italicised());
             g.drawText (text, r.reduced (4.0f, 0.0f), juce::Justification::centredLeft, true);
             return;
         }
@@ -155,12 +152,12 @@ public:
             drawMidiIcon (g, icon);
         else
             drawAudioIcon (g, icon, owner.previewer.isPlaying() && owner.previewer.getFile() == file
-                                        ? juce::Colours::white : audioColour);
+                                        ? theme::colours::text : audioColour);
 
         r.removeFromLeft (4.0f);
         const bool missing = topLevel && ! file.isDirectory();
-        g.setColour (missing ? juce::Colours::white.withAlpha (0.4f) : juce::Colours::white);
-        g.setFont (juce::FontOptions (topLevel ? 13.5f : 12.5f, topLevel ? juce::Font::bold : juce::Font::plain));
+        g.setColour (missing ? theme::colours::dim : isSelected() ? theme::colours::text : theme::colours::text.withAlpha (0.92f));
+        g.setFont (theme::ui (topLevel ? 12.5f : 12.0f, topLevel ? theme::Weight::bold : isSelected() ? theme::Weight::semibold : theme::Weight::regular));
         auto name = kind == Kind::folder || kind == Kind::root ? file.getFileName() : file.getFileNameWithoutExtension();
 
         if (name.isEmpty())
@@ -172,13 +169,13 @@ public:
             const auto nameWidth = juce::jmin ((int) r.getWidth(),
                                                juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), name) + 8);
             g.drawText (name, r.removeFromLeft ((float) nameWidth), juce::Justification::centredLeft, true);
-            g.setColour (juce::Colours::white.withAlpha (0.4f));
-            g.setFont (juce::FontOptions (11.0f));
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::ui (10.5f));
             g.drawText (file.getParentDirectory().getFileName(), r, juce::Justification::centredLeft, true);
             return;
         }
 
-        g.drawText (name + (missing ? "  (not found)" : juce::String()), r.reduced (0.0f, 0.0f),
+        g.drawText (name + (missing ? "  (" + TRANS ("not found") + ")" : juce::String()), r.reduced (0.0f, 0.0f),
                     juce::Justification::centredLeft, true);
     }
 
@@ -333,14 +330,21 @@ SoundBrowser::SoundBrowser (SamplePreviewer& p)
     tree.setColour (juce::TreeView::selectedItemBackgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible (tree);
 
-    searchBox.setTextToShowWhenEmpty ("Search your sounds...", juce::Colours::white.withAlpha (0.35f));
-    searchBox.setFont (juce::FontOptions (13.0f));
-    searchBox.setTooltip ("Finds sounds and MIDI by name in all your folders (several words: all of them)");
+    searchBox.setTextToShowWhenEmpty (TRANS ("Search your sounds..."), theme::colours::dim);
+    searchBox.setFont (theme::ui (12.0f));
+    searchBox.setIndents (28, 7);   // room for the magnifier
+    searchBox.setTooltip (TRANS ("Finds sounds and MIDI by name in all your folders (several words: all of them)"));
     searchBox.onTextChange = [this] { searchCountdown = 6; };   // wait until you stop typing (~0.2 s)
     searchBox.onEscapeKey = [this] { searchBox.clear(); searchCountdown = 1; };
     addAndMakeVisible (searchBox);
 
-    addButton.setTooltip ("Add a folder of yours (your Beats folder, a sample pack...). Only on this PC");
+    addButton.setTooltip (TRANS ("Add a folder of yours (your Beats folder, a sample pack...). Only on this PC"));
+    addButton.setButtonText (TRANS ("Folder"));
+    theme::setIcon (addButton, theme::Icon::plus);
+    addButton.getProperties().set ("small", true);
+    bigAddButton.setButtonText (TRANS ("Add your Beats folder..."));
+    theme::setIcon (bigAddButton, theme::Icon::folder);
+    theme::setStyle (bigAddButton, "accent");
     addButton.onClick = [this] { chooseFolder(); };
     addAndMakeVisible (addButton);
 
@@ -348,12 +352,15 @@ SoundBrowser::SoundBrowser (SamplePreviewer& p)
     bigAddButton.onClick = [this] { chooseFolder(); };
     addChildComponent (bigAddButton);
 
-    collapseButton.setTooltip ("Hide your sounds (Alt+F8 shows them again)");
+    collapseButton.setTooltip (TRANS ("Hide your sounds (Alt+F8 shows them again)"));
+    collapseButton.setButtonText ({});
+    theme::setIcon (collapseButton, theme::Icon::chevronLeft);
     collapseButton.onClick = [this] { if (onCollapse) onCollapse(); };
     addAndMakeVisible (collapseButton);
 
-    playButton.setButtonText (juce::String::fromUTF8 ("\xe2\x96\xb6"));
-    playButton.setTooltip ("Play / stop this sound (only you hear it)");
+    theme::setIcon (playButton, theme::Icon::play);
+    theme::setStyle (playButton, "accent");
+    playButton.setTooltip (TRANS ("Play / stop this sound (only you hear it)"));
     playButton.onClick = [this]
     {
         if (previewer.isPlaying())
@@ -365,7 +372,8 @@ SoundBrowser::SoundBrowser (SamplePreviewer& p)
 
     volume.setRange (0.0, 1.0);
     volume.setValue (previewer.getGain(), juce::dontSendNotification);
-    volume.setTooltip ("How loud sounds play while you browse (only you)");
+    volume.setTooltip (TRANS ("How loud sounds play while you browse (only you)"));
+    volume.setColour (juce::Slider::trackColourId, theme::colours::accent);
     volume.onValueChange = [this] { previewer.setGain ((float) volume.getValue()); };
     addAndMakeVisible (volume);
 
@@ -447,7 +455,7 @@ void SoundBrowser::foldersChanged()
 
 void SoundBrowser::chooseFolder()
 {
-    chooser = std::make_unique<juce::FileChooser> ("Choose a folder of sounds (your Beats folder, a pack...)",
+    chooser = std::make_unique<juce::FileChooser> (TRANS ("Choose a folder of sounds (your Beats folder, a pack...)"),
                                                    juce::File::getSpecialLocation (juce::File::userMusicDirectory));
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
                           [this] (const juce::FileChooser& fc)
@@ -639,7 +647,7 @@ void SoundBrowser::timerCallback()
 
         if (playing != wasPlaying)
         {
-            playButton.setButtonText (juce::String::fromUTF8 (playing ? "\xe2\x96\xa0" : "\xe2\x96\xb6"));
+            theme::setIcon (playButton, playing ? theme::Icon::stop : theme::Icon::play);
             tree.repaint();
         }
     }
@@ -656,30 +664,30 @@ void SoundBrowser::showItemMenu (Item& item)
 
     if (item.kind == Item::Kind::audio)
     {
-        m.addItem (1, "Listen");
-        m.addItem (2, "New channel in the rack with it");
-        m.addItem (3, "Add to the playlist (at the start marker)");
+        m.addItem (1, TRANS ("Listen"));
+        m.addItem (2, TRANS ("New channel in the rack with it"));
+        m.addItem (3, TRANS ("Add to the playlist (at the start marker)"));
     }
     else if (item.kind == Item::Kind::midi)
     {
-        m.addItem (4, "Notes into the selected channel (this pattern)");
-        m.addItem (5, "New Synth channel with these notes");
+        m.addItem (4, TRANS ("Notes into the selected channel (this pattern)"));
+        m.addItem (5, TRANS ("New Synth channel with these notes"));
     }
     else if (item.kind == Item::Kind::folder)
     {
-        m.addItem (6, "Refresh");
+        m.addItem (6, TRANS ("Refresh"));
     }
     else
     {
         return;
     }
 
-    m.addItem (7, "Show in Explorer", file.exists());
+    m.addItem (7, TRANS ("Show in Explorer"), file.exists());
 
     if (top)
     {
         m.addSeparator();
-        m.addItem (8, "Remove from this list (the folder stays on your PC)");
+        m.addItem (8, TRANS ("Remove from this list (the folder stays on your PC)"));
     }
 
     m.showMenuAsync (juce::PopupMenu::Options(), [this, file, safe = juce::Component::SafePointer<SoundBrowser> (this)] (int r)
@@ -732,63 +740,99 @@ void SoundBrowser::mouseDown (const juce::MouseEvent& e)
 //==============================================================================
 void SoundBrowser::paint (juce::Graphics& g)
 {
-    g.setColour (panelColour);
-    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+    using namespace theme::colours;
+    theme::fillPanel (g, getLocalBounds());
 
-    // Title
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    g.drawText ("Sounds", getLocalBounds().reduced (8, 4).removeFromTop (24), juce::Justification::centredLeft, false);
+    // Title: the note icon and SOUNDS.
+    auto header = getLocalBounds().removeFromTop (headerHeight).reduced (12, 0);
+    theme::drawIcon (g, theme::Icon::sounds, header.removeFromLeft (16).toFloat().withSizeKeepingCentre (16.0f, 16.0f), accent);
+    header.removeFromLeft (8);
+    g.setColour (text);
+    g.setFont (theme::ui (13.0f, theme::Weight::bold).withExtraKerningFactor (0.04f));
+    g.drawText (TRANS ("Sounds").toUpperCase(), header, juce::Justification::centredLeft, false);
+
+    // The magnifier in the search box, and a line under it.
+    const auto sb = searchBox.getBounds();
+    g.setColour (line);
+    g.fillRect (sb.getX(), sb.getBottom() + 7, sb.getWidth(), 1);
 
     if (folders.isEmpty())
     {
-        auto r = tree.getBounds().withTrimmedTop (60).reduced (10, 0);
-        g.setColour (juce::Colours::white.withAlpha (0.6f));
-        g.setFont (juce::FontOptions (13.0f));
-        g.drawFittedText ("Add the folders where you keep your drum kits, loops and MIDI. They stay on this PC: "
-                          "a sound only joins the song (and is sent to the others) when you drag it onto the "
-                          "channel rack, the playlist or the piano roll.",
-                          r.removeFromTop (110), juce::Justification::centredTop, 7);
+        auto r = tree.getBounds().withTrimmedTop (52).reduced (12, 0);
+        g.setColour (muted);
+        g.setFont (theme::ui (12.0f));
+        g.drawFittedText (TRANS ("Add the folders where you keep your drum kits, loops and MIDI. They stay on this PC: "
+                                 "a sound only joins the song (and is sent to the others) when you drag it onto the "
+                                 "channel rack, the playlist or the piano roll."),
+                          r.removeFromTop (120), juce::Justification::centredTop, 8);
+    }
+
+    // A reminder that this column is yours only (dashed box with a lock).
+    if (! noteArea.isEmpty())
+    {
+        juce::Path outline, dashed;
+        outline.addRoundedRectangle (noteArea.toFloat().reduced (0.5f), 7.0f);
+        const float dashes[] = { 4.0f, 3.0f };
+        juce::PathStrokeType (1.0f).createDashedStroke (dashed, outline, dashes, 2);
+        g.setColour (well);
+        g.fillRoundedRectangle (noteArea.toFloat(), 7.0f);
+        g.setColour (gridBar);
+        g.fillPath (dashed);
+
+        auto n = noteArea.reduced (9, 6);
+        auto lock = n.removeFromLeft (14).removeFromTop (14).toFloat();
+        g.setColour (muted);
+        g.drawRoundedRectangle (lock.withTrimmedTop (5.5f).reduced (1.5f, 0.5f), 1.5f, 1.2f);
+        juce::Path shackle;
+        shackle.addCentredArc (lock.getCentreX(), lock.getY() + 5.5f, 2.6f, 3.0f, 0.0f,
+                               -juce::MathConstants<float>::halfPi, juce::MathConstants<float>::halfPi, true);
+        g.strokePath (shackle, juce::PathStrokeType (1.2f));
+        n.removeFromLeft (7);
+        g.setFont (theme::ui (10.5f));
+        g.drawFittedText (TRANS ("Only you see these folders. A sound is shared when you drop it into the rack, the playlist or the piano roll."),
+                          n, juce::Justification::centredLeft, 3, 1.0f);
     }
 
     // The sound at the bottom: name, waveform with playhead, details.
     if (previewArea.isEmpty())
         return;
 
-    g.setColour (juce::Colour (0xff23272d));
-    g.fillRoundedRectangle (previewArea.toFloat(), 4.0f);
+    g.setColour (lcd);
+    g.fillRoundedRectangle (previewArea.toFloat(), 9.0f);
+    g.setColour (line);
+    g.drawRoundedRectangle (previewArea.toFloat().reduced (0.5f), 9.0f, 1.0f);
 
     if (shownFile == juce::File())
     {
-        g.setColour (juce::Colours::white.withAlpha (0.4f));
-        g.setFont (juce::FontOptions (12.0f));
-        g.drawFittedText ("Click a sound to hear it", previewArea.reduced (8), juce::Justification::centred, 2);
+        g.setColour (lcdMuted);
+        g.setFont (theme::ui (12.0f));
+        g.drawFittedText (TRANS ("Click a sound to hear it"), previewArea.reduced (8), juce::Justification::centred, 2);
         return;
     }
 
-    auto r = previewArea.reduced (8, 5);
-    auto top = r.removeFromTop (20);
-    top.removeFromLeft (playButton.isVisible() ? 28 : 0);
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (shownFile.getFileName(), top, juce::Justification::centredLeft, true);
+    auto r = previewArea.reduced (10, 8);
+    auto top = r.removeFromTop (28);
+    top.removeFromLeft (playButton.isVisible() ? 34 : 0);
+    g.setColour (text);
+    g.setFont (theme::ui (12.0f, theme::Weight::bold));
+    g.drawText (shownFile.getFileName(), top.removeFromTop (15), juce::Justification::centredLeft, true);
+    g.setColour (lcdMuted);
+    g.setFont (theme::mono (10.0f));
+    g.drawText (shownInfo, top, juce::Justification::centredLeft, true);
 
-    auto infoRow = r.removeFromBottom (14);
-    infoRow.removeFromRight (86);   // the volume slider
-    g.setColour (juce::Colours::white.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (11.0f));
-    g.drawText (shownInfo, infoRow, juce::Justification::centredLeft, true);
+    auto infoRow = r.removeFromBottom (16);
+    g.setColour (lcdMuted);
+    g.setFont (theme::ui (10.0f));
+    g.drawText (TRANS ("Only you"), infoRow.removeFromRight (56), juce::Justification::centredRight, false);
+    theme::drawIcon (g, theme::Icon::wave, infoRow.removeFromLeft (14).toFloat().withSizeKeepingCentre (12.0f, 12.0f), lcdMuted);
 
     // Waveform
     if (! waveArea.isEmpty() && fileimport::isAudioFile (shownFile))
     {
-        g.setColour (juce::Colour (0xff1b1e23));
-        g.fillRoundedRectangle (waveArea.toFloat(), 3.0f);
-
         if (thumbnail.getTotalLength() > 0.0)
         {
-            g.setColour (audioColour);
-            thumbnail.drawChannels (g, waveArea.reduced (2), 0.0, thumbnail.getTotalLength(), 1.0f);
+            g.setColour (lcdText);
+            thumbnail.drawChannels (g, waveArea.reduced (0, 2), 0.0, thumbnail.getTotalLength(), 1.0f);
         }
 
         if (previewer.isPlaying() && previewer.getFile() == shownFile && previewer.getLengthSeconds() > 0.0)
@@ -796,41 +840,57 @@ void SoundBrowser::paint (juce::Graphics& g)
             const float x = (float) waveArea.getX()
                             + (float) (previewer.getPositionSeconds() / previewer.getLengthSeconds()) * (float) waveArea.getWidth();
             g.setColour (juce::Colours::white);
-            g.fillRect (x, (float) waveArea.getY(), 1.5f, (float) waveArea.getHeight());
+            g.fillRoundedRectangle (x, (float) waveArea.getY(), 2.0f, (float) waveArea.getHeight(), 1.0f);
         }
     }
     else if (fileimport::isMidiFile (shownFile))
     {
-        g.setColour (midiColour.withAlpha (0.7f));
-        g.setFont (juce::FontOptions (12.0f));
-        g.drawFittedText ("MIDI: drag it onto a channel or the piano roll", waveArea, juce::Justification::centred, 2);
+        g.setColour (midiColour);
+        g.setFont (theme::ui (11.5f));
+        g.drawFittedText (TRANS ("MIDI: drag it onto a channel or the piano roll"), waveArea, juce::Justification::centred, 2);
     }
+}
+
+void SoundBrowser::paintOverChildren (juce::Graphics& g)
+{
+    // The magnifier inside the search box.
+    const auto sb = searchBox.getBounds();
+    theme::drawIcon (g, theme::Icon::search, juce::Rectangle<float> ((float) sb.getX() + 9.0f, (float) sb.getCentreY() - 6.5f, 13.0f, 13.0f),
+                     theme::colours::muted);
+    theme::framePanel (g, getLocalBounds());
 }
 
 void SoundBrowser::resized()
 {
-    auto r = getLocalBounds().reduced (6);
-    auto header = r.removeFromTop (24);
-    collapseButton.setBounds (header.removeFromRight (22));
-    header.removeFromRight (4);
-    addButton.setBounds (header.removeFromRight (74));
+    auto r = getLocalBounds().reduced (1);
+    auto header = r.removeFromTop (headerHeight - 1).reduced (8, 7);
+    collapseButton.setBounds (header.removeFromRight (26));
+    header.removeFromRight (6);
+    addButton.setBounds (header.removeFromRight (86));
 
-    r.removeFromTop (6);
-    searchBox.setBounds (r.removeFromTop (26));
-    r.removeFromTop (6);
+    r.reduce (8, 0);
+    searchBox.setBounds (r.removeFromTop (30));
+    r.removeFromTop (14);
 
-    previewArea = r.removeFromBottom (92);
-    r.removeFromBottom (6);
+    previewArea = r.removeFromBottom (112);
+    r.removeFromBottom (8);
+    noteArea = folders.isEmpty() || r.getHeight() < 260 ? juce::Rectangle<int>() : r.removeFromBottom (48);
+
+    if (! noteArea.isEmpty())
+        r.removeFromBottom (8);
+
     tree.setBounds (r);
     bigAddButton.setBounds (r.removeFromTop (34).reduced (10, 0));
 
     applyPendingState();   // the first time the column has a size
 
-    auto p = previewArea.reduced (8, 5);
-    playButton.setBounds (p.removeFromTop (20).removeFromLeft (24));
-    auto bottom = p.removeFromBottom (14);
-    volume.setBounds (bottom.removeFromRight (80).withSizeKeepingCentre (80, 18));
-    p.removeFromBottom (4);
-    p.removeFromTop (4);
+    auto p = previewArea.reduced (10, 8);
+    playButton.setBounds (p.removeFromTop (28).removeFromLeft (26).withSizeKeepingCentre (26, 26));
+    auto bottom = p.removeFromBottom (16);
+    bottom.removeFromLeft (20);
+    bottom.removeFromRight (60);
+    volume.setBounds (bottom);
+    p.removeFromBottom (6);
+    p.removeFromTop (6);
     waveArea = p;
 }

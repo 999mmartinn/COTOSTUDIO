@@ -41,6 +41,57 @@ static juce::Image loadImage (const char* originalName)
     return {};
 }
 
+//==============================================================================
+void fillPanel (juce::Graphics& g, juce::Rectangle<int> area, juce::Colour fill)
+{
+    g.setColour (colours::bg);
+    g.fillRect (area);
+    g.setColour (fill);
+    g.fillRoundedRectangle (area.toFloat(), panelRadius);
+}
+
+void framePanel (juce::Graphics& g, juce::Rectangle<int> area)
+{
+    const auto r = area.toFloat();
+    juce::Path corners;
+    corners.addRectangle (r);
+    corners.addRoundedRectangle (r, panelRadius);
+    corners.setUsingNonZeroWinding (false);
+    g.setColour (colours::bg);
+    g.fillPath (corners);
+
+    g.setColour (colours::line);
+    g.drawRoundedRectangle (r.reduced (0.5f), panelRadius - 0.5f, 1.0f);
+}
+
+juce::Rectangle<int> drawPanelTitle (juce::Graphics& g, juce::Rectangle<int> row, const juce::String& title, const juce::String& note)
+{
+    auto f = ui (12.5f, Weight::bold);
+    const int w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (f, title)) + 2;
+    g.setColour (colours::text);
+    g.setFont (f);
+    g.drawText (title, row.removeFromLeft (w), juce::Justification::centredLeft, false);
+
+    if (note.isNotEmpty())
+    {
+        row.removeFromLeft (6);
+        auto nf = ui (11.0f);
+        const int nw = juce::jmin (row.getWidth(), (int) std::ceil (juce::GlyphArrangement::getStringWidth (nf, note)) + 2);
+        g.setColour (colours::muted);
+        g.setFont (nf);
+        g.drawText (note, row.removeFromLeft (nw), juce::Justification::centredLeft, true);
+    }
+
+    return row;
+}
+
+void drawHeading (juce::Graphics& g, juce::Rectangle<int> area, const juce::String& text, juce::Justification j)
+{
+    g.setColour (colours::muted);
+    g.setFont (ui (10.0f, Weight::bold).withExtraKerningFactor (0.1f));
+    g.drawText (text.toUpperCase(), area, j, true);
+}
+
 juce::Image logoBadge()   { return loadImage ("logo-badge.jpg"); }
 juce::Image logoFull()    { return loadImage ("logo-full.jpg"); }
 
@@ -98,8 +149,7 @@ static IconShape shapeOf (Icon icon)
         case Icon::metronome:     return { "M5.8 1.8 H10.2 L13.4 14.2 H2.6 Z M8 10 L11.6 3.6", nullptr };
         case Icon::undo:          return { "M5 3.5 L2 6.5 L5 9.5 M2 6.5 H10 A3.5 3.5 0 0 1 10 13.5 H7", nullptr };
         case Icon::redo:          return { "M11 3.5 L14 6.5 L11 9.5 M14 6.5 H6 A3.5 3.5 0 0 0 6 13.5 H9", nullptr };
-        case Icon::gear:          return { "M8 5.4 A2.6 2.6 0 1 1 7.99 5.4 Z M8 1.5 V3.5 M8 12.5 V14.5 M1.5 8 H3.5 M12.5 8 H14.5 M3.4 3.4 L4.8 4.8 "
-                                           "M11.2 11.2 L12.6 12.6 M3.4 12.6 L4.8 11.2 M11.2 4.8 L12.6 3.4", nullptr };
+        case Icon::gear:          return { "M6.93 3.22 L7.17 1.45 L8.83 1.45 L9.07 3.22 L10.63 3.86 L12.05 2.78 L13.22 3.95 L12.14 5.37 L12.78 6.93 L14.55 7.17 L14.55 8.83 L12.78 9.07 L12.14 10.63 L13.22 12.05 L12.05 13.22 L10.63 12.14 L9.07 12.78 L8.83 14.55 L7.17 14.55 L6.93 12.78 L5.37 12.14 L3.95 13.22 L2.78 12.05 L3.86 10.63 L3.22 9.07 L1.45 8.83 L1.45 7.17 L3.22 6.93 L3.86 5.37 L2.78 3.95 L3.95 2.78 L5.37 3.86 Z M8 5.7 A2.3 2.3 0 1 1 7.99 5.7 Z", nullptr };
         case Icon::share:         return { "M4.8 4.8 A4.5 4.5 0 0 0 4.8 11.2 M11.2 4.8 A4.5 4.5 0 0 1 11.2 11.2 "
                                            "M2.6 2.6 A7.6 7.6 0 0 0 2.6 13.4 M13.4 2.6 A7.6 7.6 0 0 1 13.4 13.4",
                                            "M8 6.2 A1.8 1.8 0 1 1 7.99 6.2 Z" };
@@ -263,6 +313,22 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
     // Colours set by the code (lights, channel names...) win over the style.
     const bool custom = b.isColourSpecified (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
 
+    if (style == "led")
+    {
+        // A round light (the rack's on/mute light): the button colour is the light.
+        auto dot = r.withSizeKeepingCentre (11.0f, 11.0f);
+        g.setColour (colour);
+        g.fillEllipse (dot);
+
+        if (over || down)
+        {
+            g.setColour (text.withAlpha (0.55f));
+            g.drawEllipse (dot.expanded (2.0f), 1.0f);
+        }
+
+        return;
+    }
+
     if (style == "flat")
     {
         if (! (over || down || on))
@@ -303,18 +369,28 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
     else if (over)
         fill = fill.brighter (0.07f);
 
+    // Buttons joined to a neighbour (PAT|SONG) are square on that side.
+    const bool left = b.isConnectedOnLeft(), right = b.isConnectedOnRight(),
+               top = b.isConnectedOnTop(), bottom = b.isConnectedOnBottom();
+    juce::Path shape;
+    shape.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(), corner, corner,
+                               ! (left || top), ! (right || top), ! (left || bottom), ! (right || bottom));
+
     g.setColour (fill);
-    g.fillRoundedRectangle (r, corner);
+    g.fillPath (shape);
 
     if (! border.isTransparent())
     {
         g.setColour (border);
-        g.drawRoundedRectangle (r, corner, 1.0f);
+        g.strokePath (shape, juce::PathStrokeType (1.0f));
     }
 }
 
-juce::Font Look::getTextButtonFont (juce::TextButton&, int h)
+juce::Font Look::getTextButtonFont (juce::TextButton& b, int h)
 {
+    if ((bool) b.getProperties()["small"])   // mixer strips, compact rows
+        return ui (juce::jlimit (9.5f, 11.0f, (float) h * 0.5f), Weight::semibold);
+
     return ui (juce::jlimit (11.0f, 13.5f, (float) h * 0.5f), Weight::semibold);
 }
 
@@ -333,8 +409,8 @@ void Look::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool)
     if (! b.isEnabled())
         textColour = textColour.withMultipliedAlpha (0.45f);
 
-    auto r = b.getLocalBounds().toFloat().reduced (6.0f, 2.0f);
-    const auto text = b.getButtonText();
+    auto r = b.getLocalBounds().toFloat().reduced ((bool) b.getProperties()["small"] ? 3.0f : 6.0f, 2.0f);
+    const auto text = (bool) b.getProperties()["iconOnly"] ? juce::String() : b.getButtonText();
     const auto font = getTextButtonFont (b, b.getHeight());
     const float iconSize = juce::jmin (15.0f, r.getHeight() - 2.0f);
 
@@ -355,8 +431,19 @@ void Look::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool)
         const float textWidth = juce::GlyphArrangement::getStringWidth (font, text);
         const float total = juce::jmin (r.getWidth(), iconSize + 6.0f + textWidth);
         auto group = r.withSizeKeepingCentre (total, r.getHeight());
-        drawIcon (g, icon, group.removeFromLeft (iconSize).withSizeKeepingCentre (iconSize, iconSize), iconColour);
-        group.removeFromLeft (6.0f);
+
+        if ((bool) b.getProperties()["iconRight"])   // "File  v": the text, then a small chevron
+        {
+            const float small = juce::jmin (11.0f, iconSize);
+            drawIcon (g, icon, group.removeFromRight (small).withSizeKeepingCentre (small, small), iconColour);
+            group.removeFromRight (5.0f);
+        }
+        else
+        {
+            drawIcon (g, icon, group.removeFromLeft (iconSize).withSizeKeepingCentre (iconSize, iconSize), iconColour);
+            group.removeFromLeft (6.0f);
+        }
+
         g.setColour (textColour);
         g.setFont (font);
         g.drawText (text, group, juce::Justification::centredLeft, true);
@@ -418,6 +505,20 @@ void Look::drawPopupMenuBackground (juce::Graphics& g, int w, int h)
 
 juce::Font Look::getPopupMenuFont()    { return ui (13.5f); }
 
+void Look::getIdealPopupMenuItemSize (const juce::String& itemText, bool isSeparator, int standardHeight, int& w, int& h)
+{
+    if (isSeparator)
+    {
+        w = 50;
+        h = 9;
+        return;
+    }
+
+    // (JUCE measures the text and the shortcut together.) Room for the tick, the sub-menu arrow and the padding.
+    h = standardHeight > 0 ? standardHeight : 28;
+    w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (getPopupMenuFont(), itemText)) + 4 + 6 + 18 + 16 + 30;
+}
+
 void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator, bool isActive,
                               bool isHighlighted, bool isTicked, bool hasSubMenu, const juce::String& textToDraw,
                               const juce::String& shortcutKeyText, const juce::Drawable* icon, const juce::Colour* textColourToUse)
@@ -455,9 +556,12 @@ void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& are
 
     if (shortcutKeyText.isNotEmpty())
     {
-        g.setFont (mono (11.5f));
+        const auto f = mono (11.5f);
+        g.setFont (f);
         g.setColour (muted);
-        g.drawText (shortcutKeyText, r.removeFromRight (110), juce::Justification::centredRight, true);
+        g.drawText (shortcutKeyText, r.removeFromRight ((int) juce::GlyphArrangement::getStringWidth (f, shortcutKeyText) + 8),
+                    juce::Justification::centredRight, false);
+        r.removeFromRight (16);
     }
 
     g.setFont (getPopupMenuFont());
@@ -613,6 +717,14 @@ void Look::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, floa
     }
 
     juce::LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, minPos, maxPos, style, s);
+}
+
+int Look::getSliderThumbRadius (juce::Slider& s)
+{
+    if (s.getSliderStyle() == juce::Slider::LinearVertical)
+        return 14;   // the fader cap is 28 high: the travel stops where the cap still fits
+
+    return juce::LookAndFeel_V4::getSliderThumbRadius (s);
 }
 
 juce::Label* Look::createSliderTextBox (juce::Slider& s)
