@@ -753,6 +753,54 @@ juce::StringArray getAutomatedPlugins (te::Edit& edit)
 }
 
 //==============================================================================
+juce::String getLaneName (te::Edit& edit, int lane)
+{
+    for (auto l : getModel (edit).getChildWithName (ids::LANES))
+        if (l.hasType (ids::LANE) && (int) l[ids::lane] == lane)
+            return l[ids::name].toString();
+
+    return {};
+}
+
+void setLaneName (te::Edit& edit, int lane, const juce::String& nameIn)
+{
+    if (! juce::isPositiveAndBelow (lane, numLanes))
+        return;
+
+    const auto name = nameIn.trim().substring (0, 60);
+    auto model = getModel (edit);
+    auto list = model.getChildWithName (ids::LANES);
+
+    for (auto l : list)
+    {
+        if (l.hasType (ids::LANE) && (int) l[ids::lane] == lane)
+        {
+            if (name.isEmpty())
+                list.removeChild (l, um (edit));
+            else if (l[ids::name].toString() != name)
+                l.setProperty (ids::name, name, um (edit));
+
+            return;
+        }
+    }
+
+    if (name.isEmpty())
+        return;
+
+    if (! list.isValid())
+    {
+        list = juce::ValueTree (ids::LANES);
+        model.appendChild (list, um (edit));
+    }
+
+    juce::ValueTree l (ids::LANE);
+    l.setProperty (ids::sid, newSyncID(), nullptr);
+    l.setProperty (ids::lane, lane, nullptr);
+    l.setProperty (ids::name, name, nullptr);
+    list.appendChild (l, um (edit));
+}
+
+//==============================================================================
 static juce::ValueTree getSendList (te::Edit& edit, bool createIfMissing)
 {
     auto model = getModel (edit);

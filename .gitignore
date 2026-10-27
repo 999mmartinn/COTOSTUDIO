@@ -2,3 +2,5 @@ build/
 *.user
 .vs/
 out/
+build-dev/
+build-dev*.log

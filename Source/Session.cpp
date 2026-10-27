@@ -2072,6 +2072,28 @@ juce::String Session::newProject()
     return replaceSong (std::move (newEdit), "started a new song");
 }
 
+juce::String Session::newProject (std::function<void (te::Edit&)> fill, const juce::String& title)
+{
+    if (! canReplaceSong())
+        return "Only the host can start a new song while you're connected";
+
+    if (isRecording())
+        return "Stop recording first";
+
+    auto newEdit = te::createEmptyEdit (engine, juce::File());
+
+    // Tracktion starts an Edit with one plain audio track; songs only use channels and inserts.
+    for (auto* t : te::getAudioTracks (*newEdit))
+        newEdit->deleteTrack (t);
+
+    if (fill)
+        fill (*newEdit);
+
+    song::setTitle (*newEdit, title);
+    newEdit->getUndoManager().clearUndoHistory();
+    return replaceSong (std::move (newEdit), "started a new song");
+}
+
 void Session::openProject (const juce::File& file, std::function<void (juce::String)> onDone,
                            const juce::String& titleOverride)
 {

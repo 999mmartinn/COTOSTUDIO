@@ -74,6 +74,8 @@ namespace song
         SONG_DECLARE_ID (APOINT)
         SONG_DECLARE_ID (plugin)
         SONG_DECLARE_ID (param)
+        SONG_DECLARE_ID (LANES)
+        SONG_DECLARE_ID (LANE)
         #undef SONG_DECLARE_ID
     }
 
@@ -154,6 +156,11 @@ namespace song
     double getClipLength (te::Edit&, const juce::ValueTree& clip);
     /** End of the last clip, rounded up to a whole bar (at least one bar). */
     double getSongLengthBeats (te::Edit&);
+
+    /** Playlist track names (shared): SONGMODEL/LANES/LANE (sid, lane = 0-based, name).
+        "" = no name (the header shows "Track <n>"). */
+    juce::String getLaneName (te::Edit&, int lane);
+    void setLaneName (te::Edit&, int lane, const juce::String& name);
 
     //==============================================================================
     // Mixer. Routing is stored as the destination insert's ID ("" = master) in our

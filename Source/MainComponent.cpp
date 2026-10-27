@@ -2,6 +2,7 @@
 #include "PatternCompiler.h"
 #include "ProjectFile.h"
 #include "AppData.h"
+#include "FlpImportDialog.h"
 
 static const juce::Colour background = theme::colours::bg, accent = theme::colours::accent;
 
@@ -1862,6 +1863,7 @@ void MainComponent::showFileMenu()
 
     templateMenu.addSeparator();
     templateMenu.addItem (30, TRANS ("Save this song as a template..."));
+    templateMenu.addItem (34, TRANS ("Import an FL Studio template (.flp)..."), canReplace);
 
     defaultMenu.addItem (31, TRANS ("An empty song"), true, ! startFrom.existsAsFile());
 
@@ -1919,6 +1921,7 @@ void MainComponent::showFileMenu()
         }
 
         if (r == 30)       saveAsTemplate();
+        else if (r == 34)  importFlTemplate();
         else if (r == 32)  newEmptySong();
         else if (r == 33)  { appdata::templatesFolder().createDirectory(); appdata::templatesFolder().startAsProcess(); }
         else if (r == 1)   newSong();
@@ -2126,6 +2129,74 @@ void MainComponent::saveAsTemplate()
 
         write();
     }), true);
+}
+
+void MainComponent::importFlTemplate()
+{
+    if (! session.canReplaceSong())
+    {
+        appendLog (TRANS ("Only the host can start a new song during a session"));
+        return;
+    }
+
+    const auto flTemplates = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                                 .getChildFile ("Image-Line").getChildFile ("FL Studio").getChildFile ("Projects").getChildFile ("Templates");
+
+    fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Import an FL Studio template"),
+                                                       flTemplates.isDirectory() ? flTemplates : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+                                                       "*.flp");
+    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [this] (const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+
+        if (! file.existsAsFile())
+            return;
+
+        auto project = std::make_shared<flimport::Project>();
+        const auto error = flimport::parse (file, *project);
+
+        if (error.isNotEmpty())
+        {
+            appendLog (TRANS ("Could not open {FILE}").replace ("{FILE}", file.getFileName()) + ": " + error);
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Import an FL Studio template"), TRANS (error));
+            return;
+        }
+
+        if (engine.getPluginManager().knownPluginList.getNumTypes() == 0)
+            appendLog (TRANS ("No plugins scanned yet: scan them first (Settings > Find my plugins) so the import finds your VST3 effects"));
+
+        FlpImportDialog::show (*project, file.getFileName(), [this, project, file] (const flimport::Options& options)
+        {
+            askToSaveChanges ([this, project, file, options]
+            {
+                flimport::Report report;
+                const auto name = file.getFileNameWithoutExtension();
+                const auto error = session.newProject ([&] (te::Edit& e)
+                {
+                    report = flimport::apply (e, *project, options);
+                    song::addPattern (e, "Pattern 1", 1);
+                }, name);
+
+                if (error.isNotEmpty())
+                {
+                    appendLog (error);
+                    return;
+                }
+
+                currentFile = juce::File();
+                savedHash = lastAutosaveHash = currentHash();
+                dirty = false;
+                state.viewedPattern = state.selectedChannel = state.placeAudioChannel = state.selectedInsert = {};
+                refresh();
+
+                appendLog (TRANS ("Imported \"{NAME}\" from FL Studio").replace ("{NAME}", name));
+                FlpImportDialog::showText (TRANS ("Imported from FL Studio"),
+                                           report.toText() + "\n\n"
+                                           + TRANS ("Next: in the mixer, pick the input of the insert you record on and arm it, then File > Templates > Save this song as a template."));
+            });
+        });
+    });
 }
 
 void MainComponent::newEmptySong()

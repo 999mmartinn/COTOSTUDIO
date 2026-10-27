@@ -59,6 +59,8 @@ target_sources(COTOSTUDIO PRIVATE
     Source/ParametricEQEditor.cpp
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
+    Source/FlpImport.cpp
+    Source/FlpImportDialog.cpp
     Source/SoundBrowser.cpp
     Source/AppData.cpp
     Source/Theme.cpp

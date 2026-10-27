@@ -26,6 +26,61 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.4
+
+* **Import an FL Studio template**: *File → Templates → Import an FL Studio
+  template (.flp)...* reads your FL recording template and builds a new song
+  from it:
+  * the **mixer inserts** with their names, faders and pan;
+  * the **routing**: each insert gets one output (the master, or the insert FL
+    routed it to) and every other destination becomes a **send** at FL's level
+    (sends that were at zero in FL come in closed, ready to open);
+  * the **effects, in their slots**: your **VST3 plugins come with the settings
+    you saved in FL** (Pro-Q curves, Waves settings, Auto-Tune...). Waves
+    plugins are found inside their WaveShell even if you renamed them in FL.
+    *Fruity Parametric EQ 2* becomes our Parametric EQ (set its bands again);
+  * effects that were **off** (bypassed) in FL stay off;
+  * the **tempo** and the **names of the playlist tracks**.
+
+  Before anything is built, a window lists the inserts in use with their
+  effects (hover over one to see its chain) and where they go. **Untick the
+  ones you don't need**: each one left out also leaves out its effects, which
+  saves CPU. *Leave out effects that are off in FL* (on by default) skips
+  plugins that were switched off anyway. Afterwards a report says what came
+  over and what didn't. Then pick the input of the insert you record on, arm
+  it, and use *File → Templates → Save this song as a template...*.
+
+  **Scan your plugins first** (Settings → Find my plugins), so the import finds
+  them. What doesn't come over: FL's own effects that COTOSTUDIO doesn't have
+  yet (Fruity Limiter, Reeverb 2, Delay 3, Compressor, Soundgoodizer, Flangus,
+  Love Philter... they're listed in the report), the settings of plugins FL used
+  as **VST2** (install their VST3 version; it loads with default settings), FL's
+  per-slot mix knob (effects come in at 100 %), the channel rack, patterns and
+  clips. Faders and send levels are converted from FL's scale (0 dB = FL's
+  default, +5.6 dB = FL's maximum); a fader can go up to +6 dB here.
+* **Playlist tracks can have names**: **double-click** a track's header (on the
+  left of the playlist) to name it; everyone in the session sees the name.
+  Empty = no name ("Track 7" again).
+
+### A light recording template (less CPU)
+
+What the CPU spends its time on while you record is every plugin on every
+insert, even on inserts that are silent at that moment. So:
+
+* Keep only the inserts you really use; a template doesn't need a bus "just in
+  case". Effects that are switched off still load (memory, start-up time):
+  remove them instead.
+* Reverbs and delays as **sends to a few shared return inserts** (one reverb
+  insert fed by several vocal inserts) cost much less than a reverb on every
+  insert.
+* Mastering plugins on the master (limiter, glue compressor, saturation,
+  linear-phase EQ, oversampling) are the heaviest and add delay: switch them off
+  while recording and back on to mix.
+* Analysis plugins (a key finder, a reference / "car test" plugin) only need to
+  run for a moment: switch them off afterwards.
+* Turn up the **gain on your interface** rather than the faders: a quiet
+  recording pushed up +10 dB in the mixer also pushes up its noise.
+
 ## What's new in 1.3
 
 * **Parametric EQ (7 band)**, our own built-in EQ in the spirit of FL's
@@ -271,6 +326,12 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   follow the tempo, sounds longer than 5 minutes are cut). A MIDI file's notes
   all go to one channel and its tempo changes are ignored. Previews go straight
   to your speakers, not through the mixer.
+* FL Studio import: made for FL Studio 20-26 projects. An insert here has one
+  output plus sends, so an FL insert routed to several places keeps its
+  loudest route as the output (its level goes into the fader) and the others
+  become sends. FL's fader curve isn't published: levels are converted from its
+  ends (0 dB and +5.6 dB) and can be a dB or two off in between, so check them by
+  ear. Plugin settings carry over for VST3 plugins only.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -287,6 +348,11 @@ metronome staying personal, recording with a count-in (lined up to the sample),
 punch in / out (recording stops by itself at the punch-out while the song plays
 on; the take covers exactly the range, lined up to the sample), disarm / arm all,
 templates (a new song from one is the same song, untitled, with its inputs back),
+the FL Studio import (an .flp written the way FL writes it: inserts, routing,
+a closed send, a +5.6 dB fader, a VST3 effect loading with its saved knob
+value, the same plugin found only by its VST3 class ID as with a renamed Waves
+plugin, an effect that was off, FL effects left out, tempo, track names),
+playlist track names reaching every PC,
 the scale helper,
 export (mix + stems, a seamless pattern loop, MP3 on Windows), automation
 clips (shared; built by each PC in SONG mode only; the knob follows the curve
@@ -310,6 +376,13 @@ Audio and Takes, saving again writes nothing new, an old `.syncsong` still opens
 and an older version's files are moved into the data folder intact).
 The self-test never touches your data folder. The Windows build on GitHub runs
 it automatically.
+
+`COTOSTUDIO.exe --flp-info=<file.flp>` prints what COTOSTUDIO reads from an FL
+Studio project (inserts, routing, effects, which ones are off). Add
+`--flp-dry-run` to see what the import would build with the plugins found on
+this PC (nothing is saved); `--flp-skip="Name|Name"` leaves inserts out and
+`--flp-skip-off` leaves out the effects that are off. Add `> info.txt` to keep
+the text in a file (on Windows the app has no console window of its own).
 
 ## Building
 

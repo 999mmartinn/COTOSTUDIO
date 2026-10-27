@@ -865,16 +865,20 @@ private:
 };
 
 //==============================================================================
-class Playlist::LaneHeader  : public juce::Component
+class Playlist::LaneHeader  : public juce::Component,
+                              public juce::SettableTooltipClient
 {
 public:
-    LaneHeader (Playlist& p) : owner (p) {}
+    LaneHeader (Playlist& p) : owner (p)
+    {
+        setTooltip (TRANS ("Double-click a track to name it (everyone sees the name)"));
+    }
 
     void paint (juce::Graphics& g) override
     {
         g.fillAll (theme::colours::panel);
         const int scrollY = owner.viewport->getViewPositionY();
-        g.setFont (theme::ui (11.0f, theme::Weight::semibold));
+        auto* edit = owner.state.getEdit();
 
         const int firstLane = juce::jmax (0, scrollY / laneHeight);
         const int lastLane = juce::jmin (numLanes - 1, (scrollY + getHeight()) / laneHeight);
@@ -884,12 +888,55 @@ public:
             const int y = lane * laneHeight - scrollY;
             g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, y, getWidth() - 1, laneHeight);
-            g.setColour (theme::colours::muted);
-            g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10, y, getWidth() - 12, laneHeight, juce::Justification::centredLeft);
+
+            const auto name = edit != nullptr ? getLaneName (*edit, lane) : juce::String();
+
+            if (name.isEmpty())
+            {
+                g.setFont (theme::ui (11.0f, theme::Weight::semibold));
+                g.setColour (theme::colours::muted);
+                g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10, y, getWidth() - 12, laneHeight, juce::Justification::centredLeft);
+            }
+            else
+            {
+                // The track's name, its number small above it.
+                g.setFont (theme::mono (9.0f));
+                g.setColour (theme::colours::dim);
+                g.drawText (juce::String (lane + 1), 8, y + 2, getWidth() - 10, 10, juce::Justification::centredLeft);
+                g.setFont (theme::ui (11.0f, theme::Weight::semibold));
+                g.setColour (theme::colours::text);
+                g.drawFittedText (name, 8, y + 11, getWidth() - 10, laneHeight - 13, juce::Justification::centredLeft, 1, 0.7f);
+            }
         }
 
         g.setColour (theme::colours::line);
         g.fillRect (getWidth() - 1, 0, 1, getHeight());
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        auto* edit = owner.state.getEdit();
+        const int lane = (e.y + owner.viewport->getViewPositionY()) / laneHeight;
+
+        if (edit == nullptr || ! juce::isPositiveAndBelow (lane, numLanes))
+            return;
+
+        auto* w = new juce::AlertWindow (TRANS ("Name this track"),
+                                         TRANS ("Track {N} (empty = no name):").replace ("{N}", juce::String (lane + 1)),
+                                         juce::MessageBoxIconType::NoIcon);
+        w->addTextEditor ("name", getLaneName (*edit, lane));
+        w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<LaneHeader> (this), w, lane] (int r)
+        {
+            if (safe == nullptr || r != 1)
+                return;
+
+            if (auto* ed = safe->owner.state.getEdit())
+                setLaneName (*ed, lane, w->getTextEditorContents ("name"));
+
+            safe->repaint();
+        }), true);
     }
 
 private:
@@ -1165,6 +1212,7 @@ void Playlist::refresh()
     layoutContent();
     lanes->repaint();
     ruler->repaint();
+    header->repaint();   // track names
 }
 
 void Playlist::paint (juce::Graphics& g)

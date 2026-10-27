@@ -195,6 +195,9 @@ public:
                       const juce::String& titleOverride = {});
     /** Starts a new song (the default one). Same rule as openProject. Returns an error or "". */
     juce::String newProject();
+    /** Starts a new, empty song (no channels, no patterns) that `fill` builds before it
+        replaces the current one (e.g. an imported FL Studio template). */
+    juce::String newProject (std::function<void (te::Edit&)> fill, const juce::String& title = "Untitled");
     bool canReplaceSong() const noexcept           { return mode == Mode::offline || mode == Mode::hosting; }
     bool isBusyWithFile() const noexcept           { return fileJobsRunning > 0; }
     /** Why the song was last replaced: "own" (new/open here), "join", "newSong" (the host

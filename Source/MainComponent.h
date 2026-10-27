@@ -61,6 +61,7 @@ private:
     void newEmptySong();
     void newSongFromTemplate (const juce::File&);
     void saveAsTemplate();
+    void importFlTemplate();
     juce::File defaultTemplate() const;
     void openSong();
     void openSongFile (const juce::File&);

@@ -8,6 +8,8 @@
 #include "Recorder.h"
 #include "Theme.h"
 #include "BinaryData.h"
+#include "FlpImportDialog.h"
+#include <iostream>
 
 /** Engine settings: raw recordings go to this copy's own folder (see Recorder). */
 struct AppEngineBehaviour  : public te::EngineBehaviour
@@ -136,6 +138,45 @@ public:
 
         if (! args.contains ("--selftest"))
             applyLanguage (args);
+
+        for (auto& a : args)
+        {
+            if (a.startsWith ("--flp-info="))   // (developer: what COTOSTUDIO reads from an FL Studio project)
+            {
+                const juce::File flp (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
+                std::cout << flimport::describeFile (flp) << std::endl;
+
+                // --flp-dry-run [--flp-skip=Name|Name] [--flp-skip-off]: what the import would build
+                // here, with this PC's plugin list (nothing is saved).
+                if (args.contains ("--flp-dry-run"))
+                {
+                    createEngine();
+                    std::cout << "\n=== dry run ===\n" << flimport::dryRun (*engine, flp, args) << std::endl;
+                }
+
+                // --flp-dialog-image=<png>: a picture of the import dialog for this file (checking its layout).
+                for (auto& b : args)
+                {
+                    if (b.startsWith ("--flp-dialog-image="))
+                    {
+                        flimport::Project project;
+
+                        if (flimport::parse (flp, project).isEmpty())
+                        {
+                            FlpImportDialog dialog (project, flp.getFileName(), {});
+                            const juce::File png (b.fromFirstOccurrenceOf ("=", false, false).unquoted());
+                            png.deleteFile();
+                            juce::FileOutputStream out (png);
+                            juce::PNGImageFormat().writeImageToStream (dialog.createComponentSnapshot (dialog.getLocalBounds(), true, 1.0f), out);
+                        }
+                    }
+                }
+
+                setApplicationReturnValue (0);
+                quit();
+                return;
+            }
+        }
 
         if (args.contains ("--selftest"))
         {

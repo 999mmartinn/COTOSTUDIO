@@ -19,9 +19,64 @@
 #include "SamplePreviewer.h"
 #include "FileImport.h"
 #include "AppData.h"
+#include "FlpImport.h"
 
 namespace
 {
+    /** Writes a small FL Studio project (.flp) the way FL does, for the import test. */
+    struct FlpWriter
+    {
+        juce::MemoryOutputStream events;
+
+        void byteEvent (int id, int v)               { events.writeByte ((char) id); events.writeByte ((char) v); }
+        void wordEvent (int id, int v)               { events.writeByte ((char) id); events.writeShort ((short) v); }
+        void dwordEvent (int id, juce::uint32 v)     { events.writeByte ((char) id); events.writeInt ((int) v); }
+
+        void dataEvent (int id, const void* data, size_t size)
+        {
+            events.writeByte ((char) id);
+
+            for (auto n = size;;)
+            {
+                auto b = (juce::uint8) (n & 0x7f);
+                n >>= 7;
+                events.writeByte ((char) (n > 0 ? (b | 0x80) : b));
+                if (n == 0) break;
+            }
+
+            events.write (data, size);
+        }
+
+        void dataEvent (int id, const juce::MemoryBlock& m)    { dataEvent (id, m.getData(), m.getSize()); }
+
+        void textEvent (int id, const juce::String& s)          // UTF-16, as FL writes texts
+        {
+            juce::MemoryOutputStream t;
+            for (auto p = s.getCharPointer(); ! p.isEmpty();)
+                t.writeShort ((short) p.getAndAdvance());
+            t.writeShort (0);
+            dataEvent (id, t.getData(), t.getDataSize());
+        }
+
+        static void record (juce::MemoryOutputStream& o, int id, const juce::MemoryBlock& m)
+        {
+            o.writeInt (id);
+            o.writeInt64 ((juce::int64) m.getSize());
+            o.write (m.getData(), m.getSize());
+        }
+
+        static juce::MemoryBlock text8 (const juce::String& s)  { return juce::MemoryBlock (s.toRawUTF8(), s.getNumBytesAsUTF8()); }
+
+        juce::MemoryBlock finish()
+        {
+            juce::MemoryOutputStream f;
+            f.write ("FLhd", 4);  f.writeInt (6);  f.writeShort (0);  f.writeShort (1);  f.writeShort (96);
+            f.write ("FLdt", 4);  f.writeInt ((int) events.getDataSize());
+            f.write (events.getData(), events.getDataSize());
+            return f.getMemoryBlock();
+        }
+    };
+
     struct Step
     {
         juce::String name;
@@ -267,6 +322,9 @@ private:
     juce::File templateFile;
     juce::String templateChoices, templateVocalsID;
     bool emptySongHadInput = false, scaleCheck = false;
+
+    // FL Studio template import
+    bool flpCheck = false;
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -2645,6 +2703,230 @@ private:
                     && fourth.getRecorder().getInputFor (templateVocalsID) == "test-mic" && fourth.getRecorder().isArmed (templateVocalsID);
             },
             30000 });
+
+        steps.push_back ({ "FL template import: an .flp's inserts, routing, sends, faders, effects (VST3 with its saved settings), tempo and track names",
+            [this]
+            {
+                // The test plugin's VST3 state with its knob at 0.3: what FL would have saved.
+                juce::PluginDescription gainDesc;
+                juce::MemoryBlock component, controller;
+
+                if (pluginFile.exists())
+                {
+                    juce::VST3PluginFormat format;
+                    juce::OwnedArray<juce::PluginDescription> found;
+                    format.findAllTypesForFile (found, pluginFile.getFullPathName());
+
+                    if (! found.isEmpty())
+                    {
+                        gainDesc = *found[0];
+                        engine.getPluginManager().knownPluginList.addType (gainDesc);
+                        juce::String error;
+
+                        if (auto instance = format.createInstanceFromDescription (gainDesc, 44100.0, 512, error))
+                        {
+                            instance->getParameters()[0]->setValue (0.3f);
+                            juce::MemoryBlock state;
+                            instance->getStateInformation (state);
+
+                            if (auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), (int) state.getSize()))
+                            {
+                                if (auto* c = xml->getChildByName ("IComponent"))     component.fromBase64Encoding (c->getAllSubText());
+                                if (auto* c = xml->getChildByName ("IEditController")) controller.fromBase64Encoding (c->getAllSubText());
+                            }
+                        }
+                    }
+                }
+
+                const bool havePlugin = component.getSize() > 0;
+
+                // master; 1 "Vocals" -> 2 "Bus" (main route) + 4 "FX" (closed send);
+                // 2 "Bus" -> master at FL's 16000 (+5.6 dB); 3 unnamed, empty, plain: not used; 4 "FX" -> master.
+                FlpWriter w;
+                auto version = FlpWriter::text8 ("26.1.5.0");
+                version.append ("\0", 1);
+                w.dataEvent (199, version);
+                w.dwordEvent (156, 140000);
+                w.byteEvent (17, 4);
+                w.byteEvent (18, 4);
+
+                for (auto [track, name] : { std::pair<int, const char*> { 1, "GRABAR VOCALES" }, { 3, "CHORUS 1" } })
+                {
+                    juce::MemoryBlock info (70, true);
+                    info.copyFrom (&track, 0, 4);
+                    w.dataEvent (238, info);
+                    w.textEvent (239, name);
+                }
+
+                // A channel (its plugin must not end up in the master's slots).
+                w.textEvent (201, "Fruity Wrapper");
+                w.dataEvent (212, juce::MemoryBlock (52, true));
+
+                auto slot = [&w] (int number) { w.wordEvent (98, number); };
+                auto header = [&w] (const juce::String& name)
+                {
+                    if (name.isNotEmpty())
+                        w.textEvent (204, name);
+                    w.dataEvent (236, juce::MemoryBlock (12, true));
+                };
+                auto routing = [&w] (std::initializer_list<int> to)
+                {
+                    juce::MemoryBlock r (8, true);
+                    for (auto t : to)
+                        r[(size_t) t] = 1;
+                    w.dataEvent (235, r);
+                };
+
+                header ("The Master");
+                w.textEvent (201, "Fruity Limiter");  slot (0);
+                for (int i = 1; i < 10; ++i) slot (i);
+                routing ({});
+
+                header ("Vocals");
+                {
+                    juce::MemoryOutputStream wrapper, state;
+                    wrapper.writeInt (12);
+                    juce::MemoryBlock kind (4, true);  kind[0] = 7;
+                    FlpWriter::record (wrapper, 50, kind);
+                    FlpWriter::record (wrapper, 54, FlpWriter::text8 (gainDesc.name.isNotEmpty() ? gainDesc.name : juce::String ("SyncTestGain")));
+                    FlpWriter::record (wrapper, 55, FlpWriter::text8 (pluginFile.getFullPathName()));
+                    FlpWriter::record (wrapper, 56, FlpWriter::text8 ("SyncTest contributors"));
+                    state.writeRepeatedByte (0, 80);
+                    FlpWriter::record (state, 3, component);
+                    FlpWriter::record (state, 2, controller);
+                    FlpWriter::record (wrapper, 53, state.getMemoryBlock());
+
+                    w.textEvent (201, "Fruity Wrapper");
+                    w.dataEvent (212, juce::MemoryBlock (52, true));
+                    w.textEvent (203, "my gain");
+                    w.dataEvent (213, wrapper.getMemoryBlock());
+                    slot (0);
+                }
+                {
+                    // The same plugin renamed "brighter" inside a "WaveShell": only its VST3 class ID can
+                    // find it (like a renamed Waves plugin). A JUCE plugin's class: 0xABCDEF01 0x9182FAEB
+                    // <maker code> <plugin code>, laid out in memory the way this platform does it.
+                    const juce::uint32 words[4] = { 0xABCDEF01u, 0x9182FAEBu, 0x53796E74u /* Synt */, 0x5374476Eu /* StGn */ };
+                    juce::MemoryBlock cid (16, true);
+                    auto* b = (juce::uint8*) cid.getData();
+                    auto bigEndian = [b] (int at, juce::uint32 v) { for (int i = 0; i < 4; ++i) b[at + i] = (juce::uint8) (v >> (24 - 8 * i)); };
+                   #if JUCE_WINDOWS
+                    for (int i = 0; i < 4; ++i) b[i] = (juce::uint8) (words[0] >> (8 * i));                // COM layout
+                    b[4] = (juce::uint8) (words[1] >> 16);  b[5] = (juce::uint8) (words[1] >> 24);
+                    b[6] = (juce::uint8) words[1];          b[7] = (juce::uint8) (words[1] >> 8);
+                   #else
+                    bigEndian (0, words[0]);
+                    bigEndian (4, words[1]);
+                   #endif
+                    bigEndian (8, words[2]);
+                    bigEndian (12, words[3]);
+
+                    juce::MemoryOutputStream wrapper, state;
+                    wrapper.writeInt (12);
+                    juce::MemoryBlock kind (4, true);  kind[0] = 7;
+                    FlpWriter::record (wrapper, 50, kind);
+                    FlpWriter::record (wrapper, 52, cid);
+                    FlpWriter::record (wrapper, 54, FlpWriter::text8 ("WaveShell1-VST3 99.0_x64"));
+                    FlpWriter::record (wrapper, 55, FlpWriter::text8 ("C:\\Program Files\\Common Files\\VST3\\WaveShell1-VST3 99.0_x64.vst3"));
+                    state.writeRepeatedByte (0, 80);
+                    FlpWriter::record (state, 3, component);
+                    FlpWriter::record (wrapper, 53, state.getMemoryBlock());
+
+                    w.textEvent (201, "Fruity Wrapper");
+                    w.textEvent (203, "brighter");
+                    w.dataEvent (213, wrapper.getMemoryBlock());
+                    slot (1);
+                }
+                w.textEvent (201, "Fruity Parametric EQ 2");  slot (2);
+                w.textEvent (201, "Fruity Reeverb 2");        slot (3);
+                for (int i = 4; i < 10; ++i) slot (i);
+                routing ({ 2, 4 });
+
+                header ("Bus");   for (int i = 0; i < 10; ++i) slot (i);  routing ({ 0 });
+                header ({});      for (int i = 0; i < 10; ++i) slot (i);  routing ({ 0 });
+                header ("FX");    for (int i = 0; i < 10; ++i) slot (i);  routing ({ 0 });
+
+                juce::MemoryOutputStream params;
+                auto param = [&params] (int what, int kind, int insert, int sub, int value)
+                {
+                    params.writeInt (0);
+                    params.writeByte ((char) what);
+                    params.writeByte ((char) kind);
+                    params.writeShort ((short) (0x7000 + insert * 64 + sub));
+                    params.writeInt (value);
+                };
+                param (0xc0, 0x1f, 2, 0, 16000);    // Bus fader at FL's maximum
+                param (0, 0x1f, 1, 2, 0);           // Vocals slot 2 (the EQ) off
+                param (4, 0x20, 1, 0, 0);           // Vocals -> FX closed
+                w.dataEvent (225, params.getMemoryBlock());
+
+                // Read it back and build a song from it.
+                flimport::Project project;
+                const auto error = flimport::parse (w.finish(), project);
+                const auto used = project.getUsedInserts();
+
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                for (auto* t : te::getAudioTracks (*edit))
+                    edit->deleteTrack (t);
+
+                flimport::Options options;
+                options.inserts = used;
+                const auto report = flimport::apply (*edit, project, options);
+
+                auto* vocals = insert (*edit, "Vocals");
+                auto* bus = insert (*edit, "Bus");
+                auto* fx = insert (*edit, "FX");
+                auto vocalSends = vocals != nullptr ? song::getSendsFrom (*edit, vocals->itemID.toString()) : juce::Array<juce::ValueTree>();
+                auto effects = vocals != nullptr ? song::getInsertEffects (*vocals) : juce::Array<te::Plugin*>();
+                const float busDb = bus != nullptr ? song::getVolumePlugin (*bus)->getVolumeDb() : -1000.0f;
+
+                auto gainOf = [&effects] (int index)
+                {
+                    if (auto* ext = dynamic_cast<te::ExternalPlugin*> (effects[index]))
+                        if (auto* pi = ext->getAudioPluginInstance())
+                            return pi->getParameters()[0]->getValue();
+
+                    return -1.0f;
+                };
+
+                const float gain = gainOf (0), gainByClass = gainOf (1);
+                const bool eqOff = effects.size() == (havePlugin ? 3 : 1) && ! effects.getLast()->isEnabled()
+                                && effects.getLast()->getPluginType() == juce::String (ParametricEQPlugin::xmlTypeName);
+
+                std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << ", " << project.bpm << " BPM, used inserts "
+                          << juce::String (used.size()) << ", inserts made " << report.insertsMade
+                          << ", Vocals -> " << (vocals != nullptr && bus != nullptr && song::getRoute (*vocals) == bus->itemID.toString() ? "Bus" : "?")
+                          << ", sends " << vocalSends.size() << (vocalSends.size() == 1 ? " at " + juce::String (song::getSendLevel (vocalSends[0])) + " dB" : juce::String())
+                          << ", Bus fader " << busDb << " dB, gain knob " << gain << " / found by class ID " << gainByClass
+                          << " (want 0.3), EQ in and off: " << (eqOff ? "yes" : "NO")
+                          << ", not available: " << report.notAvailable.joinIntoString ("; ")
+                          << ", track 1 \"" << song::getLaneName (*edit, 0) << "\", track 3 \"" << song::getLaneName (*edit, 2) << "\"" << std::endl;
+
+                flpCheck = error.isEmpty() && std::abs (project.bpm - 140.0) < 1.0e-6
+                        && used == juce::Array<int> { 1, 2, 4 } && report.insertsMade == 3
+                        && vocals != nullptr && bus != nullptr && fx != nullptr && song::getInserts (*edit).size() == 3
+                        && song::getRoute (*vocals) == bus->itemID.toString() && song::getRoute (*bus).isEmpty()
+                        && vocalSends.size() == 1 && vocalSends[0][song::ids::to].toString() == fx->itemID.toString()
+                        && std::abs (song::getSendLevel (vocalSends[0]) - song::minSendDb) < 1.0e-6
+                        && std::abs (busDb - 5.6f) < 0.05f
+                        && eqOff
+                        && (! havePlugin || (std::abs (gain - 0.3f) < 1.0e-3f && std::abs (gainByClass - 0.3f) < 1.0e-3f))
+                        && (! havePlugin || report.effectsWithSettings == 2)
+                        && report.notAvailable.size() == 2   // Fruity Limiter (master), Fruity Reeverb 2
+                        && edit->tempoSequence.getTempo (0)->getBpm() == 140.0
+                        && song::getLaneName (*edit, 0) == "GRABAR VOCALES" && song::getLaneName (*edit, 2) == "CHORUS 1"
+                        && song::getLaneName (*edit, 1).isEmpty();
+            },
+            [this] { return flpCheck; },
+            30000 });
+
+        steps.push_back ({ "Playlist track names: the host names track 6 -> every PC shows it",
+            [this] { song::setLaneName (H(), 5, "Hook"); },
+            [this] { return everywhere ([] (te::Edit& e) { return song::getLaneName (e, 5) == "Hook"; }); } });
+
+        steps.push_back ({ "Playlist track names: clearing the name removes it on every PC",
+            [this] { song::setLaneName (H(), 5, {}); },
+            [this] { return everywhere ([] (te::Edit& e) { return song::getLaneName (e, 5).isEmpty(); }); } });
 
         steps.push_back ({ "Scale helper: notes snap to the scale (C major, A minor, C minor pentatonic), off-scale ties go down unless dragging up",
             [this]
