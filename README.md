@@ -26,6 +26,49 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.6
+
+Things that were missing compared with FL, found while playing online:
+
+* **Piano roll follows the song in SONG mode**: the white playhead now moves over the
+  pattern you're editing while the song plays (whenever one of its clips in the
+  playlist is under the song position), and the channel rack lights its steps too.
+  Zoomed in, the view turns the page when the playhead leaves it.
+* **Piano roll tools**, like FL (buttons in the piano roll's title row):
+  * **Pencil (P)**: click to add a note (as long as the last note you touched) and
+    drag to move it; drag a note to move it, its right edge to change its length;
+    right-click deletes, and keeps deleting while you sweep with the right button.
+    Ctrl+drag selects, Shift+drag copies.
+  * **Select (E)**: drag a box to select many notes at once, then drag any of them
+    to move them all (or their edge to make them all longer). Ctrl+click adds or
+    removes one note; Shift+drag copies the selection.
+  * **Slice (C)**: click a note, or drag down across several, to cut them in two
+    at that point.
+* **Shortcuts** (click the notes first): Ctrl+A select all, Ctrl+D deselect,
+  Ctrl+C / Ctrl+X / Ctrl+V copy / cut / paste (pasted at the same beats, also into
+  another pattern or channel), **Ctrl+B** duplicate right after itself (the pattern
+  grows if needed, up to 8 bars), **Ctrl+L** quick legato (each note lasts until
+  the next one), **Ctrl+Q** quantize to the grid, Delete, Up / Down a semitone
+  (Ctrl or Shift: an octave), Left / Right one grid step. With nothing selected,
+  copy, duplicate, legato and quantize work on every note (like FL).
+* **Zoom**: Ctrl + mouse wheel zooms in and out in time, around the mouse.
+* **Snap** button: bar, beat, 1/2 beat, step, 1/2 step, 1/3 step (triplets),
+  1/4 step or none; hold Alt to place freely. Notes show their name (C5...) when
+  there's room.
+* **Quiet while playing**: notes you place or drag are only heard when the song is
+  stopped (clicking the keyboard on the left always plays).
+* **Edit sound** (right-click a channel in the rack): the sampler's own window,
+  like FL's channel settings. The waveform shows the trim (drag the S and E
+  markers), the fades (drag the dots) and where each hit is playing.
+  * Sample: start, end, fade in, fade out, reverse, and **Cut itself** (still also in
+    the right-click menu).
+  * Pitch and level: tune (semitones), fine (cents), level.
+  * Envelope (off = one-shot, as before): attack, hold, decay, sustain, release -
+    with it on, a sound fades out when its note ends.
+  * Filter: low, high or band pass, cutoff, resonance.
+  Every knob syncs to the session and can be automated. On the drum channels
+  (Kick, Clap...) *Edit sound...* opens their own knobs.
+
 ## What's new in 1.5
 
 Three more of our own effects, in the spirit of FL's Fruity Limiter, Fruity Delay 3
@@ -242,9 +285,10 @@ D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOST
 * **Browser** (F8): Patterns, Audio in the song, and Session (your name, who's
   connected, chat).
 * **Playlist**, **channel rack**, and the **Piano roll / Mixer / Automation**
-  tabs (F7 / F9); drag the bars between them to resize. The rack, piano roll and
-  mixer can each go to their own window; the playlist and piano roll can fill
-  the window (Esc goes back).
+  tabs (F7 / F9); drag the bars between them to resize. The piano roll has the
+  Pencil / Select / Slice tools, Snap and Scale in its title row. The rack,
+  piano roll and mixer can each go to their own window; the playlist and piano
+  roll can fill the window (Esc goes back).
 * **Status bar**: the last message (click it to see all of them), sync state,
   what's playing, CPU and your sound card.
 

@@ -83,7 +83,7 @@ public:
                 select();
         };
 
-        name.setTooltip (TRANS ("Click: select (piano roll below). Right-click: instrument, effects, rename, delete. Audio channels: drag onto the playlist to place the file. Drop a sound from your folders here to give a sampler channel a new sound"));
+        name.setTooltip (TRANS ("Click: select (piano roll below). Right-click: edit sound, effects, rename, delete. Audio channels: drag onto the playlist to place the file. Drop a sound from your folders here to give a sampler channel a new sound"));
         name.addMouseListener (this, false);   // to start dragging audio channels
         addAndMakeVisible (mute);
         addAndMakeVisible (name);
@@ -841,8 +841,11 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
     m.addItem (6, TRANS ("Piano roll (full screen)"), ! song::isAudioChannel (*track));
     m.addSeparator();
 
-    m.addItem (1, instrument != nullptr ? TRANS ("Open instrument") + " (" + instrument->getName() + (missing ? ", " + TRANS ("not installed here") + ")" : ")")
-                                        : (song::isAudioChannel (*track) ? TRANS ("Audio channel (no instrument)") : TRANS ("No instrument")),
+    // Our own instruments: "Edit sound..." (FL's channel settings). Plugins: their own window.
+    const bool ours = dynamic_cast<SamplerPlugin*> (instrument) != nullptr || dynamic_cast<DrumSynthPlugin*> (instrument) != nullptr;
+    m.addItem (1, ours ? TRANS ("Edit sound...")
+                       : instrument != nullptr ? TRANS ("Open instrument") + " (" + instrument->getName() + (missing ? ", " + TRANS ("not installed here") + ")" : ")")
+                                               : (song::isAudioChannel (*track) ? TRANS ("Audio channel (no instrument)") : TRANS ("No instrument")),
                instrument != nullptr && ! missing);
 
     if (auto* sampler = dynamic_cast<SamplerPlugin*> (instrument))

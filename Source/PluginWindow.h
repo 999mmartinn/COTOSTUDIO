@@ -7,6 +7,7 @@
 #include "LimiterEditor.h"
 #include "DelayEditor.h"
 #include "ReverbEditor.h"
+#include "SamplerEditor.h"
 
 namespace te = tracktion;
 
@@ -130,6 +131,8 @@ public:
             content = std::make_unique<DelayEditor> (*delay);
         else if (auto* reverb = dynamic_cast<ReverbPlugin*> (&plugin))
             content = std::make_unique<ReverbEditor> (*reverb);
+        else if (auto* sampler = dynamic_cast<SamplerPlugin*> (&plugin))
+            content = std::make_unique<SamplerEditor> (*sampler);
 
         if (content == nullptr)
             content = std::make_unique<GenericPluginPanel> (plugin);

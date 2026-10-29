@@ -19,6 +19,7 @@
 #include "Scales.h"
 #include "Exporter.h"
 #include "SamplerPlugin.h"
+#include "EditorState.h"
 #include "SamplePreviewer.h"
 #include "FileImport.h"
 #include "AppData.h"
@@ -3341,6 +3342,232 @@ private:
                 });
             },
             8000, 600 });
+
+        steps.push_back ({ "Edit sound: peer 2 trims the 808 (end 40%), fades it out 50 ms, turns on the envelope and a 800 Hz low pass -> same everywhere",
+            [this]
+            {
+                if (auto* t = ch (P2(), "808 long"))
+                    if (auto* s = dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)))
+                    {
+                        P2().getUndoManager().beginNewTransaction();
+                        s->endParam->setParameter (0.4f, juce::sendNotification);
+                        s->fadeOutParam->setParameter (50.0f, juce::sendNotification);
+                        s->envOnParam->setParameter (1.0f, juce::sendNotification);
+                        s->filterTypeParam->setParameter (1.0f, juce::sendNotification);
+                        s->cutoffParam->setParameter (800.0f, juce::sendNotification);
+                    }
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    auto* t = ch (e, "808 long");
+                    auto* s = t != nullptr ? dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)) : nullptr;
+                    return s != nullptr && std::abs (s->endParam->getCurrentValue() - 0.4f) < 1.0e-4f
+                        && std::abs (s->fadeOutParam->getCurrentValue() - 50.0f) < 1.0e-3f
+                        && s->envOnParam->getCurrentValue() > 0.5f && juce::roundToInt (s->filterTypeParam->getCurrentValue()) == 1
+                        && std::abs (s->cutoffParam->getCurrentValue() - 800.0f) < 0.5f && s->cutValue.get();
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Edit sound: measured (trim, reverse, fades, tune, envelope and release at the note's end, one-shot without it, cut itself, filters)",
+            [] {},
+            [this]
+            {
+                const double sr = 44100.0;
+                const int n = 44100;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi && ! std::isnan (got);
+                    std::cout << "    " << what << ": " << juce::String (got, 5) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                // Two test sounds: a ramp 0 -> 1 over one second (each sample tells where it was read), and a 5 kHz sine.
+                auto writeWav = [] (const juce::File& f, std::function<float (int)> wave, int length)
+                {
+                    juce::AudioBuffer<float> b (1, length);
+                    for (int i = 0; i < length; ++i) b.setSample (0, i, wave (i));
+                    f.deleteFile();
+                    std::unique_ptr<juce::AudioFormatWriter> w (juce::WavAudioFormat().createWriterFor (new juce::FileOutputStream (f), 44100.0, 1, 32, {}, 0));
+                    if (w != nullptr) w->writeFromAudioSampleBuffer (b, 0, length);
+                };
+                const auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("cotostudio-sampler-test");
+                dir.createDirectory();
+                writeWav (dir.getChildFile ("ramp.wav"), [n] (int i) { return (float) i / (float) n; }, n);
+                writeWav (dir.getChildFile ("sine.wav"), [] (int i) { return 0.5f * (float) std::sin (2.0 * juce::MathConstants<double>::pi * 5000.0 * i / 44100.0); }, n);
+
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                auto plugin = edit->getPluginCache().createNewPlugin (SamplerPlugin::xmlTypeName, {});
+                auto* s = dynamic_cast<SamplerPlugin*> (plugin.get());
+
+                if (s == nullptr)
+                    return false;
+
+                s->initialise ({ te::TimePosition(), sr, 512 });
+                s->loadSample ("ramp", dir.getChildFile ("ramp.wav"));
+
+                auto defaults = [s]
+                {
+                    for (auto* p : s->params())
+                        p->setParameter (p->getDefaultValue().value_or (0.0f), juce::sendNotificationSync);
+
+                    s->cutValue = false;
+                };
+
+                // Plays notes (sample position, on / off) and returns the left output.
+                auto render = [s, sr] (int total, std::vector<std::pair<int, bool>> notes)
+                {
+                    s->reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    std::vector<float> out;
+
+                    for (int pos = 0; pos < total; pos += 512)
+                    {
+                        midi.clear();
+
+                        for (auto& note : notes)
+                            if (note.first >= pos && note.first < pos + 512)
+                                midi.addMidiMessage (note.second ? juce::MidiMessage::noteOn (1, 60, 1.0f) : juce::MidiMessage::noteOff (1, 60),
+                                                     (note.first - pos) / sr, te::MPESourceID {});
+
+                        buffer.clear();
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        s->applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                            out.push_back (buffer.getSample (0, i));
+                    }
+
+                    return out;
+                };
+
+                auto ramp = [n] (double i) { return i / n; };
+                const std::vector<std::pair<int, bool>> hit { { 0, true } };
+
+                defaults();
+                auto o = render (n + 2048, hit);
+                check ("plain: sample 1000 plays the file's sample 1000", o[1000], ramp (1000) - 1e-5, ramp (1000) + 1e-5);
+                check ("plain: the whole file plays, then silence (sample 44200)", o[30000] - ramp (30000) + std::abs (o[44200]), -1e-4, 1e-4);
+
+                defaults(); s->startParam->setParameter (0.5f, juce::sendNotificationSync);
+                o = render (4096, hit);
+                check ("start 50%: first sample", o[0], 0.4999, 0.5001);
+
+                defaults(); s->endParam->setParameter (0.25f, juce::sendNotificationSync);
+                o = render (16384, hit);
+                check ("end 25%: still playing at 11000", o[11000], ramp (11000) - 1e-4, ramp (11000) + 1e-4);
+                check ("end 25%: silent from 11030 (250 ms)", std::abs (o[11030]) + std::abs (o[12000]), 0.0, 1e-9);
+
+                defaults(); s->reverseParam->setParameter (1.0f, juce::sendNotificationSync);
+                o = render (n + 2048, hit);
+                check ("reverse: starts at the file's end", o[0], 0.9995, 1.0001);
+                check ("reverse: half way = the file's middle", o[22050], 0.4995, 0.5005);
+
+                defaults(); s->reverseParam->setParameter (1.0f, juce::sendNotificationSync); s->endParam->setParameter (0.5f, juce::sendNotificationSync);
+                o = render (n, hit);
+                check ("reverse + end 50%: plays the file's second half backwards, then stops", (o[22000] > 0.49 ? 1.0 : 0.0) + std::abs (o[22100]), 0.9999, 1.0001);
+
+                defaults(); s->fadeInParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = render (8192, hit);
+                check ("fade in 100 ms: half volume at 50 ms", o[2205] / ramp (2205), 0.49, 0.51);
+                check ("fade in 100 ms: full volume at 150 ms", o[6615] / ramp (6615), 0.999, 1.001);
+
+                defaults(); s->fadeOutParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = render (n + 2048, hit);
+                check ("fade out 100 ms: half volume 50 ms before the end", o[n - 1 - 2205] / ramp (n - 1 - 2205), 0.49, 0.51);
+
+                defaults(); s->tuneParam->setParameter (12.0f, juce::sendNotificationSync);
+                o = render (n, hit);
+                check ("tune +12: twice as fast (sample 1000 plays 2000)", o[1000], ramp (2000) - 1e-4, ramp (2000) + 1e-4);
+                check ("tune +12: over after half a second", std::abs (o[22060]), 0.0, 1e-9);
+
+                defaults(); s->fineParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = render (4096, hit);
+                check ("fine +100 cents = one semitone", o[1000], ramp (1000 * std::pow (2.0, 1.0 / 12.0)) - 1e-4, ramp (1000 * std::pow (2.0, 1.0 / 12.0)) + 1e-4);
+
+                const std::vector<std::pair<int, bool>> shortNote { { 0, true }, { 4410, false } };
+                defaults();
+                o = render (16384, shortNote);
+                check ("envelope off: a 100 ms note still plays the whole sound (one-shot)", o[8820], ramp (8820) - 1e-4, ramp (8820) + 1e-4);
+
+                defaults(); s->envOnParam->setParameter (1.0f, juce::sendNotificationSync); s->releaseParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = render (16384, shortNote);
+                check ("envelope on: full volume while the note lasts", o[4000] / ramp (4000), 0.999, 1.001);
+                check ("release 100 ms: half volume 50 ms after the note ends", o[4410 + 2205] / ramp (4410 + 2205), 0.48, 0.52);
+                check ("release 100 ms: silent after it", std::abs (o[4410 + 4410 + 50]) + std::abs (o[12000]), 0.0, 1e-9);
+
+                defaults(); s->envOnParam->setParameter (1.0f, juce::sendNotificationSync); s->attackParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = render (8192, hit);
+                check ("attack 100 ms: half volume at 50 ms", o[2205] / ramp (2205), 0.49, 0.51);
+
+                defaults(); s->envOnParam->setParameter (1.0f, juce::sendNotificationSync);
+                s->decayParam->setParameter (100.0f, juce::sendNotificationSync); s->sustainParam->setParameter (0.5f, juce::sendNotificationSync);
+                o = render (12288, hit);
+                check ("decay 100 ms to sustain 50%: 75% half way", o[2205] / ramp (2205), 0.74, 0.76);
+                check ("sustain 50% held", o[10000] / ramp (10000), 0.499, 0.501);
+
+                const std::vector<std::pair<int, bool>> twoHits { { 0, true }, { 1000, true } };
+                defaults();
+                o = render (4096, twoHits);
+                check ("without cut itself: both hits sound together", o[3000], ramp (3000) + ramp (2000) - 1e-4, ramp (3000) + ramp (2000) + 1e-4);
+                s->cutValue = true;
+                o = render (4096, twoHits);
+                check ("cut itself: only the new hit after 5 ms", o[3000], ramp (2000) - 1e-4, ramp (2000) + 1e-4);
+
+                // Filters on the 5 kHz sine (level measured once it has settled).
+                s->loadSample ("sine", dir.getChildFile ("sine.wav"));
+                auto rmsDb = [&render, &hit]
+                {
+                    auto out = render (24576, hit);
+                    double sum = 0.0;
+                    for (int i = 10000; i < 20000; ++i) sum += out[(size_t) i] * out[(size_t) i];
+                    return juce::Decibels::gainToDecibels (std::sqrt (sum / 10000.0), -200.0);
+                };
+
+                defaults();
+                const double plain = rmsDb();
+                check ("5 kHz sine, no filter (0.5 peak = -9 dB RMS)", plain, -9.1, -8.9);
+                s->filterTypeParam->setParameter (1.0f, juce::sendNotificationSync); s->cutoffParam->setParameter (500.0f, juce::sendNotificationSync);
+                check ("low pass 500 Hz: 5 kHz down by", rmsDb() - plain, -60.0, -30.0);
+                s->filterTypeParam->setParameter (2.0f, juce::sendNotificationSync);
+                check ("high pass 500 Hz: 5 kHz untouched", rmsDb() - plain, -0.3, 0.3);
+                s->filterTypeParam->setParameter (3.0f, juce::sendNotificationSync); s->cutoffParam->setParameter (5000.0f, juce::sendNotificationSync);
+                check ("band pass at 5 kHz: 0 dB at its centre", rmsDb() - plain, -0.5, 0.3);
+                s->cutoffParam->setParameter (500.0f, juce::sendNotificationSync);
+                check ("band pass at 500 Hz (soft, 6 dB/oct each side): 5 kHz down by", rmsDb() - plain, -16.0, -12.0);
+
+                plugin = nullptr;
+                edit = nullptr;
+                return ok;
+            },
+            30000 });
+
+        steps.push_back ({ "Piano roll in SONG mode: the playhead finds the viewed pattern's clip under the song position",
+            [] {},
+            [this]
+            {
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                auto a = song::addPattern (*edit, "A", 1);
+                auto b = song::addPattern (*edit, "B", 2);
+                song::addClip (*edit, a[song::ids::sid].toString(), 0, 8.0);
+                song::addClip (*edit, b[song::ids::sid].toString(), 1, 0.0);
+                song::addClip (*edit, a[song::ids::sid].toString(), 2, 16.0);
+
+                const double inA = EditorState::beatInPattern (*edit, a, 9.5);
+                const double gapA = EditorState::beatInPattern (*edit, a, 12.5);
+                const double secondA = EditorState::beatInPattern (*edit, a, 19.75);
+                const double inB = EditorState::beatInPattern (*edit, b, 6.0);
+                const double before = EditorState::beatInPattern (*edit, a, 2.0);
+                std::cout << "    A at 9.5: " << inA << ", A at 12.5: " << gapA << ", A at 19.75: " << secondA
+                          << ", B at 6: " << inB << ", A at 2: " << before << std::endl;
+                edit = nullptr;
+                return std::abs (inA - 1.5) < 1e-9 && gapA < 0.0 && std::abs (secondA - 3.75) < 1e-9
+                    && std::abs (inB - 6.0) < 1e-9 && before < 0.0;
+            } });
 
         steps.push_back ({ "Sounds: peer 2 drops melody.mid on the Synth, the host drops it on empty rack space -> the notes replace Synth's, a new 'melody' channel; everywhere",
             [this]

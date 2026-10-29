@@ -4,6 +4,53 @@
 
 using namespace song;
 
+namespace
+{
+    const char* const noteNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+
+    /** Notes copied with Ctrl+C / Ctrl+X (this PC only). Ctrl+V puts them back at the same
+        beats, in whichever pattern and channel you are on then (like FL). */
+    struct CopiedNote { int p, v; double b, l; };
+    std::vector<CopiedNote> copiedNotes;
+
+    /** A mouse cursor drawn from one of our icons: white with a dark outline. */
+    juce::MouseCursor iconCursor (theme::Icon icon, float hotX, float hotY)
+    {
+        constexpr int size = 22;
+        juce::Image image (juce::Image::ARGB, size, size, true);
+        juce::Graphics g (image);
+        const auto area = juce::Rectangle<float> (1.0f, 1.0f, size - 2.0f, size - 2.0f);
+        theme::drawIcon (g, icon, area, juce::Colour (0xff120f19), 3.4f);
+        theme::drawIcon (g, icon, area, juce::Colours::white, 1.6f);
+        const float scale = (size - 2.0f) / 16.0f;
+        return juce::MouseCursor (image, juce::roundToInt (1.0f + hotX * scale), juce::roundToInt (1.0f + hotY * scale));
+    }
+
+
+    /** The snap choices (beats; 0 = none), like FL's. */
+    struct SnapChoice { double beats; const char* name; };
+    const SnapChoice snapChoices[] =
+    {
+        { 4.0,               NEEDS_TRANS ("Bar") },
+        { 1.0,               NEEDS_TRANS ("Beat") },
+        { 0.5,               NEEDS_TRANS ("1/2 beat") },
+        { stepBeats,         NEEDS_TRANS ("Step") },
+        { stepBeats / 2.0,   NEEDS_TRANS ("1/2 step") },
+        { stepBeats / 3.0,   NEEDS_TRANS ("1/3 step") },
+        { stepBeats / 4.0,   NEEDS_TRANS ("1/4 step") },
+        { 0.0,               NEEDS_TRANS ("None") },
+    };
+
+    juce::String snapName (double beats)
+    {
+        for (auto& c : snapChoices)
+            if (std::abs (c.beats - beats) < 1.0e-9)
+                return TRANS (c.name);
+
+        return TRANS ("Step");
+    }
+}
+
 //==============================================================================
 class PianoRoll::Grid  : public juce::Component,
                         public juce::DragAndDropTarget,
@@ -13,20 +60,49 @@ public:
     explicit Grid (EditorState& s) : state (s)
     {
         setSize (600, (highestPitch - lowestPitch + 1) * rowHeight);
+        setWantsKeyboardFocus (true);
     }
 
-    int pitchAtY (float y) const       { return juce::jlimit (lowestPitch, highestPitch, highestPitch - (int) (y / rowHeight)); }
+    // The tools' mouse pointers (made here, not as statics: they must go before the window system does).
+    const juce::MouseCursor pencilCursor = iconCursor (theme::Icon::pencil, 2.5f, 13.5f);
+    const juce::MouseCursor sliceCursor = iconCursor (theme::Icon::slice, 8.0f, 6.5f);
+
+    double pixelsPerBeat = 40.0;                            // set by the piano roll (zoom)
+    std::function<void (float factor, float x)> onZoom;     // Ctrl+wheel at x (in this component)
+    std::function<void()> onToolKey;                        // P / E / C changed the tool
+    std::function<void()> onPreviewChanged;                 // (the keyboard shows the key)
+
+    int pitchAtY (float y) const       { return juce::jlimit (lowestPitch, highestPitch, highestPitch - (int) std::floor (y / rowHeight)); }
     float yForPitch (int pitch) const   { return (float) ((highestPitch - pitch) * rowHeight); }
+    double beatAtX (float x) const     { return juce::jmax (0.0, x / pixelsPerBeat); }
+    float xForBeat (double beat) const  { return (float) (beat * pixelsPerBeat); }
 
-    double beatsPerPixel() const
+    /** The snap grid in beats, 0 = off. Alt held = off, like FL. */
+    double gridBeats() const
     {
-        auto pattern = state.getPattern();
-        return getLengthBeats (pattern) / juce::jmax (1.0, (double) (getWidth() - keyboardWidth));
+        return juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : juce::jmax (0.0, state.pianoSnapBeats);
     }
 
-    double beatAtX (float x) const     { return juce::jmax (0.0, (x - keyboardWidth) * beatsPerPixel()); }
-    float xForBeat (double beat) const  { return keyboardWidth + (float) (beat / beatsPerPixel()); }
-    static double snap (double beat)    { return std::floor (beat / stepBeats + 1.0e-6) * stepBeats; }
+    double snapDown (double beat) const
+    {
+        const double g = gridBeats();
+        return g > 0.0 ? std::floor (beat / g + 1.0e-6) * g : beat;
+    }
+
+    double snapNearest (double beat) const
+    {
+        const double g = gridBeats();
+        return g > 0.0 ? std::round (beat / g) * g : beat;
+    }
+
+    /** The grid step used by quantize and the arrow keys (a step when snapping is off). */
+    double moveStep() const
+    {
+        const double g = gridBeats();
+        return g > 0.0 ? g : stepBeats;
+    }
+
+    static constexpr double shortestNote = stepBeats / 4.0;   // (song::addNote's minimum)
 
     /** The selected channel, if it plays notes (audio channels have none). */
     te::AudioTrack* getNoteChannel() const
@@ -50,27 +126,83 @@ public:
         return n == 1 || n == 3 || n == 6 || n == 8 || n == 10;
     }
 
+    //==============================================================================
+    // Notes and the selection (sync IDs: this PC only; dropped when the pattern or channel changes)
+    juce::StringArray selected;
+    juce::String contextKey;
+
+    juce::Array<juce::ValueTree> currentNotes() const
+    {
+        auto pattern = state.getPattern();
+        auto* channel = getNoteChannel();
+
+        if (channel == nullptr || ! pattern.isValid())
+            return {};
+
+        return getNotes (pattern, getChannelID (*channel));
+    }
+
+    bool isSelected (const juce::ValueTree& n) const   { return selected.contains (n[ids::sid].toString()); }
+
+    juce::Array<juce::ValueTree> selectedNotes() const
+    {
+        juce::Array<juce::ValueTree> result;
+
+        if (! selected.isEmpty())
+            for (auto& n : currentNotes())
+                if (isSelected (n))
+                    result.add (n);
+
+        return result;
+    }
+
+    /** What most keys work on: the selection, or every note when nothing is selected (like FL). */
+    juce::Array<juce::ValueTree> targetNotes() const
+    {
+        auto s = selectedNotes();
+        return s.isEmpty() ? currentNotes() : s;
+    }
+
+    /** Called when the view changes: a different pattern or channel drops the selection. */
+    void checkContext()
+    {
+        auto* channel = getNoteChannel();
+        const auto key = state.getPattern()[ids::sid].toString() + "|" + (channel != nullptr ? getChannelID (*channel) : juce::String());
+
+        if (key != contextKey)
+        {
+            contextKey = key;
+            selected.clear();
+            action = Action::none;
+            held.clear();
+        }
+    }
+
+    //==============================================================================
     void paint (juce::Graphics& g) override
     {
         auto pattern = state.getPattern();
         auto* channel = getNoteChannel();
         const double length = getLengthBeats (pattern);
-        const int numSteps = getNumSteps (pattern);
-        const int playhead = state.getPlayheadStep();
+        const auto clip = g.getClipBounds();
 
         g.fillAll (theme::colours::lane2);
 
-        // Rows and keyboard
+        // Rows
         for (int pitch = lowestPitch; pitch <= highestPitch; ++pitch)
         {
             const float y = yForPitch (pitch);
+
+            if (y > clip.getBottom() || y + rowHeight < clip.getY())
+                continue;
+
             const bool black = isBlackKey (pitch);
-            const bool inScale = ! state.scaleSnap || scales::contains (state.scaleKey, state.scaleType, pitch);
-            const auto row = juce::Rectangle<float> ((float) keyboardWidth, y, (float) (getWidth() - keyboardWidth), (float) rowHeight);
+            const auto row = juce::Rectangle<float> ((float) clip.getX(), y, (float) clip.getWidth(), (float) rowHeight);
 
             if (state.scaleSnap)
             {
                 // Scale rows light, the others dark; the key note's rows tinted.
+                const bool inScale = scales::contains (state.scaleKey, state.scaleType, pitch);
                 g.setColour (inScale ? theme::colours::lane1.brighter (0.16f) : theme::colours::bg.darker (0.35f));
                 g.fillRect (row);
 
@@ -86,46 +218,61 @@ public:
                 g.fillRect (row);
             }
 
-            // Keys: light lilac-white and deep purple-black.
-            g.setColour (black ? juce::Colour (0xff120f19) : juce::Colour (0xffe6e0f4));
-            g.fillRect (0.0f, y, (float) keyboardWidth - 2.0f, (float) rowHeight - 1.0f);
-
-            if (state.scaleSnap && inScale)
-            {
-                // A dot on the keys of the scale (lilac on the key note).
-                const bool keyNote = scales::isKeyNote (state.scaleKey, pitch);
-                g.setColour (keyNote ? theme::colours::accent : (black ? juce::Colour (0xffb9b0cc) : juce::Colour (0xff6f6585)));
-                g.fillEllipse (juce::Rectangle<float> (keyNote ? 6.0f : 4.0f, keyNote ? 6.0f : 4.0f)
-                                 .withCentre ({ 9.0f, y + rowHeight * 0.5f - 0.5f }));
-            }
-
             if (pitch % 12 == 0)
             {
-                g.setColour (theme::colours::accentText.withAlpha (0.8f));
-                g.setFont (theme::mono (9.5f, true));
-                g.drawText ("C" + juce::String (pitch / 12), 2, (int) y, keyboardWidth - 6, rowHeight,
-                            juce::Justification::centredRight);
                 g.setColour (theme::colours::gridBar);
-                g.drawHorizontalLine ((int) (y + rowHeight) - 1, (float) keyboardWidth, (float) getWidth());
+                g.drawHorizontalLine ((int) (y + rowHeight) - 1, (float) clip.getX(), (float) clip.getRight());
             }
         }
 
-        // Vertical step lines
-        for (int s = 0; s <= numSteps; ++s)
+        // Vertical lines: bars, beats, steps, and the snap grid when it is finer and there is room.
+        const double firstBeat = beatAtX ((float) clip.getX()), lastBeat = juce::jmin (length, beatAtX ((float) clip.getRight()) + 0.25);
+        const double snap = state.pianoSnapBeats;
+
+        if (snap > 0.0 && snap < stepBeats - 1.0e-9 && snap * pixelsPerBeat >= 6.0)
         {
-            const float x = xForBeat (s * stepBeats);
-            g.setColour (s % 16 == 0 ? theme::colours::gridBar.brighter (0.25f) : s % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
-            g.drawVerticalLine ((int) x, 0.0f, (float) getHeight());
+            g.setColour (theme::colours::grid.withAlpha (0.45f));
+
+            for (double b = std::floor (firstBeat / snap) * snap; b <= lastBeat; b += snap)
+                g.drawVerticalLine ((int) xForBeat (b), 0.0f, (float) getHeight());
         }
 
-        juce::ignoreUnused (playhead);
+        const bool showSteps = stepBeats * pixelsPerBeat >= 4.0;
+
+        for (int s = (int) std::floor (firstBeat / stepBeats); s * stepBeats <= lastBeat + 1.0e-9; ++s)
+        {
+            if (s % 4 != 0 && ! showSteps)
+                continue;
+
+            g.setColour (s % 16 == 0 ? theme::colours::gridBar.brighter (0.25f) : s % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
+            g.drawVerticalLine ((int) xForBeat (s * stepBeats), 0.0f, (float) getHeight());
+        }
 
         // Start marker (where Play starts)
         g.setColour (theme::colours::green.withAlpha (0.55f));
         g.drawVerticalLine ((int) xForBeat (state.getStartBeat()), 0.0f, (float) getHeight());
 
         if (channel != nullptr && pattern.isValid())
-            paintNotes (g, pattern, *channel, length);
+            paintNotes (g, *channel, length);
+
+        // The selection box
+        if (action == Action::marquee)
+        {
+            g.setColour (theme::colours::accent.withAlpha (0.14f));
+            g.fillRect (marqueeArea);
+            g.setColour (theme::colours::accent);
+            g.drawRect (marqueeArea, 1.0f);
+        }
+
+        // The slice line
+        if (action == Action::slice)
+        {
+            const float x = xForBeat (sliceBeat);
+            const float y1 = yForPitch (juce::jmax (slicePitch1, slicePitch2));
+            const float y2 = yForPitch (juce::jmin (slicePitch1, slicePitch2)) + rowHeight;
+            g.setColour (theme::colours::accent);
+            g.fillRect (juce::Rectangle<float> (x - 1.0f, y1 - 4.0f, 2.0f, y2 - y1 + 8.0f));
+        }
 
         // Playhead
         const double playBeat = state.getPlayheadBeat();
@@ -137,22 +284,35 @@ public:
         }
     }
 
-    void paintNotes (juce::Graphics& g, const juce::ValueTree& pattern, te::AudioTrack& channel, double length)
+    void paintNotes (juce::Graphics& g, te::AudioTrack& channel, double length)
     {
-
         const auto colour = EditorState::channelColour (getChannels (channel.edit).indexOf (&channel));
+        const auto clip = g.getClipBounds().toFloat();
+        const auto font = theme::mono (9.0f, true);
 
-        for (auto& n : getNotes (pattern, getChannelID (channel)))
+        for (auto& n : getNotes (state.getPattern(), getChannelID (channel)))
         {
             auto r = noteBounds (n);
 
-            if (r.getX() >= xForBeat (length))
+            if (r.getX() >= xForBeat (length) || ! r.intersects (clip))
                 continue;
 
-            g.setColour (colour);
-            g.fillRoundedRectangle (r.reduced (0.5f, 1.0f), 3.0f);
-            g.setColour (colour.darker (0.7f));
-            g.drawRoundedRectangle (r.reduced (0.5f, 1.0f), 3.0f, 1.0f);
+            const bool sel = isSelected (n);
+            const auto body = r.reduced (0.5f, 1.0f);
+            g.setColour (sel ? colour.brighter (0.45f) : colour);
+            g.fillRoundedRectangle (body, 3.0f);
+            g.setColour (sel ? juce::Colours::white : colour.darker (0.7f));
+            g.drawRoundedRectangle (body, 3.0f, sel ? 1.5f : 1.0f);
+
+            // The note's name when it fits (C5 = MIDI 60, as on the keyboard).
+            if (body.getWidth() >= 26.0f)
+            {
+                const int p = n[ids::p];
+                g.setColour (juce::Colour (0xff120f19).withAlpha (0.75f));
+                g.setFont (font);
+                g.drawText (juce::String (noteNames[p % 12]) + juce::String (p / 12), body.reduced (4.0f, 0.0f),
+                            juce::Justification::centredLeft, false);
+            }
         }
     }
 
@@ -163,15 +323,12 @@ public:
         return { x1, yForPitch ((int) n[ids::p]), juce::jmax (4.0f, x2 - x1), (float) rowHeight };
     }
 
+    /** How close to a note's right end its length handle is. */
+    static float edgeWidth (juce::Rectangle<float> r)  { return juce::jmin (6.0f, r.getWidth() * 0.34f); }
+
     juce::ValueTree noteAt (juce::Point<float> p) const
     {
-        auto pattern = state.getPattern();
-        auto* channel = getNoteChannel();
-
-        if (channel == nullptr || ! pattern.isValid())
-            return {};
-
-        auto notes = getNotes (pattern, getChannelID (*channel));
+        auto notes = currentNotes();
 
         for (int i = notes.size(); --i >= 0;)
             if (noteBounds (notes[i]).contains (p))
@@ -181,16 +338,26 @@ public:
     }
 
     //==============================================================================
-    // Note preview (local only, like FL): hear the note while you place or drag it.
-    void startPreview (int pitch)
+    // Note preview (local only, like FL): hear the note while you place or drag it, but only
+    // while the song is stopped (while it plays it would only confuse). The keyboard always plays.
+    bool isPlaying() const
     {
-        if (pitch == previewPitch)
+        auto* edit = state.getEdit();
+        return edit != nullptr && edit->getTransport().isPlaying();
+    }
+
+    void startPreview (int pitch, bool evenWhilePlaying = false)
+    {
+        if (pitch == previewPitch || (! evenWhilePlaying && isPlaying()))
             return;
 
         if (auto* channel = getNoteChannel())
         {
             channel->playGuideNote (pitch, te::MidiChannel (1), 100, true, true, false);
             previewPitch = pitch;
+
+            if (onPreviewChanged)
+                onPreviewChanged();
         }
     }
 
@@ -201,66 +368,135 @@ public:
                 channel->turnOffGuideNotes();
 
         previewPitch = -1;
+
+        if (onPreviewChanged)
+            onPreviewChanged();
     }
 
+    int previewPitch = -1;
+
+    //==============================================================================
     void mouseMove (const juce::MouseEvent& e) override
     {
+        if (state.pianoTool == EditorState::PianoTool::slice)
+        {
+            setMouseCursor (sliceCursor);
+            return;
+        }
+
         auto n = noteAt (e.position);
-        const bool onEdge = n.isValid() && e.position.x > noteBounds (n).getRight() - 6.0f;
-        setMouseCursor (onEdge ? juce::MouseCursor::LeftRightResizeCursor
-                               : n.isValid() ? juce::MouseCursor::DraggingHandCursor
-                                             : juce::MouseCursor::NormalCursor);
+
+        if (n.isValid())
+        {
+            const auto r = noteBounds (n);
+            setMouseCursor (e.position.x > r.getRight() - edgeWidth (r) ? juce::MouseCursor::LeftRightResizeCursor
+                                                                       : juce::MouseCursor::DraggingHandCursor);
+        }
+        else
+        {
+            setMouseCursor (state.pianoTool == EditorState::PianoTool::pencil && ! e.mods.isCommandDown()
+                              ? pencilCursor : juce::MouseCursor (juce::MouseCursor::NormalCursor));
+        }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        grabKeyboardFocus();
+
         auto* edit = state.getEdit();
         auto pattern = state.getPattern();
         auto* channel = getNoteChannel();
-        dragNote = {};
+        action = Action::none;
+        held.clear();
+        copied = false;
 
         if (edit == nullptr || channel == nullptr || ! pattern.isValid())
             return;
 
-        if (e.position.x < keyboardWidth)
+        checkContext();
+        state.beginAction();
+        const auto tool = state.pianoTool;
+        auto hit = noteAt (e.position);
+
+        // Right button: delete what it touches (keep it held and sweep to delete more), like FL.
+        if (e.mods.isPopupMenu())
         {
-            // Clicking the keyboard just plays the key.
-            startPreview (pitchAtY (e.position.y));
+            action = Action::erase;
+            eraseAt (e.position);
             return;
         }
 
-        state.beginAction();
-        auto hit = noteAt (e.position);
-
-        if (e.mods.isPopupMenu())
+        if (tool == EditorState::PianoTool::slice)
         {
-            if (hit.isValid())
-                removeNote (*edit, hit);
+            action = Action::slice;
+            sliceBeat = snapNearest (beatAtX (e.position.x));
+            slicePitch1 = slicePitch2 = pitchAtY (e.position.y);
+            repaint();
+            return;
+        }
 
+        const bool selectTool = tool == EditorState::PianoTool::select;
+
+        // A box to select notes: Select tool on empty space, or Ctrl+drag with the pencil.
+        if (! hit.isValid() && (selectTool || e.mods.isCommandDown()))
+        {
+            action = Action::marquee;
+            const bool adding = e.mods.isShiftDown() || (selectTool && e.mods.isCommandDown());
+            marqueeBase = adding ? selected : juce::StringArray();
+            marqueeArea = { e.position, e.position };
+            selected = marqueeBase;
             repaint();
             return;
         }
 
         if (hit.isValid())
         {
-            dragNote = hit;
-            dragMode = e.position.x > noteBounds (hit).getRight() - 6.0f ? DragMode::resize : DragMode::move;
-            dragStartBeat = hit[ids::b];
-            dragStartPitch = hit[ids::p];
-            dragGrabBeat = beatAtX (e.position.x);
-            startPreview (dragStartPitch);
+            const auto sid = hit[ids::sid].toString();
+
+            if (selectTool && e.mods.isCommandDown())   // Ctrl+click: add or remove one note
+            {
+                if (selected.contains (sid))
+                    selected.removeString (sid);
+                else
+                    selected.add (sid);
+
+                repaint();
+                return;
+            }
+
+            if (! selected.contains (sid))
+            {
+                // A note outside the selection: the Select tool selects it; the pencil just takes it.
+                selected.clear();
+
+                if (selectTool)
+                    selected.add (sid);
+            }
+
+            const auto r = noteBounds (hit);
+            action = e.position.x > r.getRight() - edgeWidth (r) ? Action::resize : Action::move;
+            lastLength = hit[ids::l];
+            holdNotes (selected.contains (sid) ? selectedNotes() : juce::Array<juce::ValueTree> { hit }, hit, e.position);
+            copyOnDrag = e.mods.isShiftDown() && action == Action::move;
+            startPreview (anchorP);
         }
         else
         {
-            const double beat = snap (beatAtX (e.position.x));
+            // Pencil on empty space: a new note, as long as the last one you touched; keep
+            // the button down to move it (like FL).
+            const double length = getLengthBeats (pattern);
+            const double beat = snapDown (beatAtX (e.position.x));
 
-            if (beat >= getLengthBeats (pattern))
+            if (beat >= length - 1.0e-6)
                 return;
 
             const int pitch = snapPitch (pitchAtY (e.position.y));
-            dragNote = addNote (*edit, pattern, getChannelID (*channel), pitch, beat, stepBeats);
-            dragMode = DragMode::resize;
-            dragStartBeat = beat;
+            selected.clear();
+            auto n = addNote (*edit, pattern, getChannelID (*channel), pitch, beat,
+                              juce::jlimit (shortestNote, juce::jmax (shortestNote, length - beat), lastLength));
+            action = Action::move;
+            holdNotes ({ n }, n, e.position);
+            copyOnDrag = false;
             startPreview (pitch);
         }
 
@@ -271,58 +507,524 @@ public:
     {
         auto* edit = state.getEdit();
 
-        if (e.mouseDownPosition.x < keyboardWidth && ! dragNote.isValid())
-        {
-            startPreview (pitchAtY (e.position.y));   // glide over the keys
-            return;
-        }
-
-        if (! dragNote.isValid() || edit == nullptr)
+        if (edit == nullptr)
             return;
 
-        auto* um = &edit->getUndoManager();
-        const double length = getLengthBeats (state.getPattern());
-
-        if (dragMode == DragMode::resize)
+        switch (action)
         {
-            const double start = dragNote[ids::b];
-            const double end = juce::jlimit (start + stepBeats, length, snap (beatAtX (e.position.x)) + stepBeats);
+            case Action::erase:
+                eraseAt (e.position);
+                break;
 
-            if (std::abs (end - start - (double) dragNote[ids::l]) > 1.0e-6)
-                dragNote.setProperty (ids::l, end - start, um);
-        }
-        else
-        {
-            const double noteLength = dragNote[ids::l];
-            const double newStart = juce::jlimit (0.0, juce::jmax (0.0, length - stepBeats),
-                                                  snap (dragStartBeat + beatAtX (e.position.x) - dragGrabBeat + stepBeats * 0.5));
-            const int rows = pitchAtY (e.position.y) - pitchAtY (e.mouseDownPosition.y);
-            int newPitch = juce::jlimit (lowestPitch, highestPitch, dragStartPitch + rows);
+            case Action::slice:
+                sliceBeat = snapNearest (beatAtX (e.position.x));
+                slicePitch2 = pitchAtY (e.position.y);
+                repaint();
+                break;
 
-            // Scale helper: moved up or down, the note lands on a scale note (left
-            // where it is while only moved in time, even if it is off the scale).
-            if (rows != 0)
-                newPitch = snapPitch (newPitch, rows > 0);
-
-            if (std::abs (newStart - (double) dragNote[ids::b]) > 1.0e-6)
-                dragNote.setProperty (ids::b, newStart, um);
-
-            if (newPitch != (int) dragNote[ids::p])
+            case Action::marquee:
             {
-                dragNote.setProperty (ids::p, newPitch, um);
-                startPreview (newPitch);
+                marqueeArea = juce::Rectangle<float> (e.mouseDownPosition, e.position);
+                selected = marqueeBase;
+
+                for (auto& n : currentNotes())
+                    if (noteBounds (n).intersects (marqueeArea))
+                        selected.addIfNotAlreadyThere (n[ids::sid].toString());
+
+                repaint();
+                break;
             }
 
-            juce::ignoreUnused (noteLength);
+            case Action::move:     if (e.mouseWasDraggedSinceMouseDown()) dragMove (e); break;
+            case Action::resize:   if (e.mouseWasDraggedSinceMouseDown()) dragResize (e); break;
+            case Action::none:
+            default:               break;
         }
-
-        repaint();
     }
 
     void mouseUp (const juce::MouseEvent&) override
     {
-        dragNote = {};
+        if (action == Action::slice)
+            sliceNotes (sliceBeat, juce::jmin (slicePitch1, slicePitch2), juce::jmax (slicePitch1, slicePitch2));
+
+        action = Action::none;
+        held.clear();
         stopPreview();
+        repaint();
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        // Ctrl+wheel: zoom in time around the mouse (FL). Otherwise the view scrolls.
+        if (e.mods.isCommandDown() && onZoom != nullptr)
+        {
+            const float d = std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : w.deltaX;
+
+            if (d != 0.0f)
+                onZoom (d > 0.0f ? 1.25f : 0.8f, e.position.x);
+
+            return;
+        }
+
+        juce::Component::mouseWheelMove (e, w);
+    }
+
+    //==============================================================================
+    // Dragging notes
+    enum class Action { none, move, resize, marquee, erase, slice };
+    Action action = Action::none;
+
+    struct Held { juce::ValueTree note; double b, l; int p; };
+    std::vector<Held> held;            // the notes being moved or resized, as they were
+    double anchorB = 0.0, anchorL = 0.0, grabBeat = 0.0, lastLength = stepBeats;
+    int anchorP = 60;
+    bool copyOnDrag = false, copied = false;
+    juce::Rectangle<float> marqueeArea;
+    juce::StringArray marqueeBase;
+    double sliceBeat = 0.0;
+    int slicePitch1 = 60, slicePitch2 = 60;
+
+    void holdNotes (const juce::Array<juce::ValueTree>& notes, const juce::ValueTree& anchor, juce::Point<float> mouse)
+    {
+        held.clear();
+
+        for (auto& n : notes)
+            held.push_back ({ n, (double) n[ids::b], (double) n[ids::l], (int) n[ids::p] });
+
+        anchorB = anchor[ids::b];
+        anchorL = anchor[ids::l];
+        anchorP = anchor[ids::p];
+        grabBeat = beatAtX (mouse.x);
+    }
+
+    void dragMove (const juce::MouseEvent& e)
+    {
+        auto* edit = state.getEdit();
+        auto pattern = state.getPattern();
+        auto* channel = getNoteChannel();
+
+        if (edit == nullptr || channel == nullptr || held.empty())
+            return;
+
+        auto* um = &edit->getUndoManager();
+        const double length = getLengthBeats (pattern);
+
+        // Shift+drag: copies move, the originals stay (made on the first real move).
+        if (copyOnDrag && ! copied)
+        {
+            copied = true;
+            selected.clear();
+
+            for (auto& h : held)
+            {
+                h.note = addNote (*edit, pattern, getChannelID (*channel), h.p, h.b, h.l, (int) h.note.getProperty (ids::v, 100));
+                selected.add (h.note[ids::sid].toString());
+            }
+        }
+
+        // Time: the grabbed note lands on the grid; the others keep their distance to it.
+        double minB = length, maxB = 0.0;
+
+        for (auto& h : held)
+        {
+            minB = juce::jmin (minB, h.b);
+            maxB = juce::jmax (maxB, h.b);
+        }
+
+        const double newAnchor = snapNearest (anchorB + beatAtX (e.position.x) - grabBeat);
+        const double deltaB = juce::jlimit (-minB, juce::jmax (-minB, length - shortestNote - maxB), newAnchor - anchorB);
+
+        // Pitch: rows moved (the scale helper puts the grabbed note on the scale; a chord keeps its shape).
+        const int rows = pitchAtY (e.position.y) - pitchAtY (e.mouseDownPosition.y);
+        int newP = juce::jlimit (lowestPitch, highestPitch, anchorP + rows);
+
+        if (rows != 0)
+            newP = snapPitch (newP, rows > 0);
+
+        int lowP = highestPitch, highP = lowestPitch;
+
+        for (auto& h : held)
+        {
+            lowP = juce::jmin (lowP, h.p);
+            highP = juce::jmax (highP, h.p);
+        }
+
+        const int deltaP = juce::jlimit (lowestPitch - lowP, highestPitch - highP, newP - anchorP);
+
+        for (auto& h : held)
+        {
+            const double b = h.b + deltaB;
+            const int p = h.p + deltaP;
+
+            if (std::abs (b - (double) h.note[ids::b]) > 1.0e-9)
+                h.note.setProperty (ids::b, b, um);
+
+            if (p != (int) h.note[ids::p])
+                h.note.setProperty (ids::p, p, um);
+        }
+
+        startPreview (anchorP + deltaP);
+        repaint();
+    }
+
+    void dragResize (const juce::MouseEvent& e)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr || held.empty())
+            return;
+
+        auto* um = &edit->getUndoManager();
+        const double length = getLengthBeats (state.getPattern());
+        const double g = gridBeats();
+        const double newEnd = snapNearest (beatAtX (e.position.x));
+        const double delta = newEnd - (anchorB + anchorL);
+
+        for (auto& h : held)
+        {
+            // At least one grid step (or the note's own length, if it was shorter), inside the pattern.
+            const double shortest = juce::jmin (h.l, juce::jmax (shortestNote, g));
+            const double l = juce::jlimit (shortest, juce::jmax (shortest, length - h.b), h.l + delta);
+
+            if (std::abs (l - (double) h.note[ids::l]) > 1.0e-9)
+                h.note.setProperty (ids::l, l, um);
+        }
+
+        lastLength = held.front().note[ids::l];
+
+        for (auto& h : held)
+            if (h.b == anchorB && h.p == anchorP)
+                lastLength = h.note[ids::l];
+
+        repaint();
+    }
+
+    void eraseAt (juce::Point<float> p)
+    {
+        auto* edit = state.getEdit();
+        auto hit = noteAt (p);
+
+        if (edit != nullptr && hit.isValid())
+        {
+            selected.removeString (hit[ids::sid].toString());
+            removeNote (*edit, hit);
+            repaint();
+        }
+    }
+
+    /** Cuts every note between two pitches that goes across a beat into two notes. */
+    void sliceNotes (double at, int lowPitch, int highPitch)
+    {
+        auto* edit = state.getEdit();
+        auto pattern = state.getPattern();
+        auto* channel = getNoteChannel();
+
+        if (edit == nullptr || channel == nullptr)
+            return;
+
+        auto* um = &edit->getUndoManager();
+
+        for (auto& n : currentNotes())
+        {
+            const int p = n[ids::p];
+            const double b = n[ids::b], l = n[ids::l], end = b + l;
+
+            if (p < lowPitch || p > highPitch || at - b < shortestNote - 1.0e-9 || end - at < shortestNote - 1.0e-9)
+                continue;
+
+            n.setProperty (ids::l, at - b, um);
+            auto second = addNote (*edit, pattern, getChannelID (*channel), p, at, end - at, (int) n.getProperty (ids::v, 100));
+
+            if (isSelected (n))
+                selected.add (second[ids::sid].toString());
+        }
+    }
+
+    //==============================================================================
+    // Keys
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        const int cmd = juce::ModifierKeys::commandModifier, shift = juce::ModifierKeys::shiftModifier;
+        auto is = [&key] (int code, int mods = 0) { return key == juce::KeyPress (code, mods, 0); };
+
+        if (is ('p'))   return setTool (EditorState::PianoTool::pencil);
+        if (is ('e'))   return setTool (EditorState::PianoTool::select);
+        if (is ('c'))   return setTool (EditorState::PianoTool::slice);
+
+        if (is ('a', cmd))   { selected.clear(); for (auto& n : currentNotes()) selected.add (n[ids::sid].toString()); repaint(); return true; }
+        if (is ('d', cmd))   { selected.clear(); repaint(); return true; }
+        if (is ('c', cmd))   return copyNotes (false);
+        if (is ('x', cmd))   return copyNotes (true);
+        if (is ('v', cmd))   return pasteNotes();
+        if (is ('b', cmd))   return duplicateNotes();
+        if (is ('l', cmd))   return legato();
+        if (is ('q', cmd))   return quantize();
+
+        if (is (juce::KeyPress::deleteKey) || is (juce::KeyPress::backspaceKey))
+            return deleteSelected();
+
+        if (is (juce::KeyPress::upKey))                                 return transpose (1);
+        if (is (juce::KeyPress::downKey))                               return transpose (-1);
+        if (is (juce::KeyPress::upKey, cmd) || is (juce::KeyPress::upKey, shift))       return transpose (12);
+        if (is (juce::KeyPress::downKey, cmd) || is (juce::KeyPress::downKey, shift))   return transpose (-12);
+        if (is (juce::KeyPress::leftKey))                               return shiftTime (-1);
+        if (is (juce::KeyPress::rightKey))                              return shiftTime (1);
+
+        return false;   // (Space, Ctrl+Z, Esc... go on to the main window)
+    }
+
+    bool setTool (EditorState::PianoTool t)
+    {
+        state.pianoTool = t;
+
+        if (onToolKey)
+            onToolKey();
+
+        return true;
+    }
+
+    /** Starts an undo step and gives what an edit needs; false if there is nothing to edit. */
+    bool begin (te::Edit*& edit, juce::ValueTree& pattern, te::AudioTrack*& channel)
+    {
+        edit = state.getEdit();
+        pattern = state.getPattern();
+        channel = getNoteChannel();
+
+        if (edit == nullptr || channel == nullptr || ! pattern.isValid())
+            return false;
+
+        checkContext();
+        state.beginAction();
+        return true;
+    }
+
+    bool copyNotes (bool cut)
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        auto notes = targetNotes();
+
+        if (notes.isEmpty())
+            return true;
+
+        copiedNotes.clear();
+
+        for (auto& n : notes)
+            copiedNotes.push_back ({ (int) n[ids::p], (int) n.getProperty (ids::v, 100), (double) n[ids::b], (double) n[ids::l] });
+
+        if (cut)
+        {
+            for (auto& n : notes)
+                removeNote (*edit, n);
+
+            selected.clear();
+        }
+
+        repaint();
+        return true;
+    }
+
+    bool pasteNotes()
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (copiedNotes.empty() || ! begin (edit, pattern, channel))
+            return true;
+
+        const double length = getLengthBeats (pattern);
+        selected.clear();
+
+        for (auto& c : copiedNotes)
+            if (c.b < length - 1.0e-6)
+                selected.add (addNote (*edit, pattern, getChannelID (*channel), c.p, c.b,
+                                       juce::jmin (c.l, length - c.b), c.v)[ids::sid].toString());
+
+        repaint();
+        return true;
+    }
+
+    /** Ctrl+B: a copy of the notes right after them (FL). The jump is their span rounded up
+        to a step (under a beat), a beat (under a bar) or a bar; the pattern grows if needed. */
+    bool duplicateNotes()
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        auto notes = targetNotes();
+
+        if (notes.isEmpty())
+            return true;
+
+        double start = 1.0e9, end = 0.0;
+
+        for (auto& n : notes)
+        {
+            start = juce::jmin (start, (double) n[ids::b]);
+            end = juce::jmax (end, (double) n[ids::b] + (double) n[ids::l]);
+        }
+
+        const double span = end - start;
+        const double unit = span < 1.0 - 1.0e-9 ? stepBeats : span < 4.0 - 1.0e-9 ? 1.0 : 4.0;
+        const double jump = juce::jmax (unit, std::ceil (end / unit - 1.0e-6) * unit - std::floor (start / unit + 1.0e-6) * unit);
+        const double newEnd = end + jump;
+
+        if (newEnd > getLengthBeats (pattern) + 1.0e-6)
+            setBars (*edit, pattern, juce::jmin (8, (int) std::ceil (newEnd / 4.0 - 1.0e-6)));
+
+        const double length = getLengthBeats (pattern);
+        int left = 0;
+        selected.clear();
+
+        for (auto& n : notes)
+        {
+            const double b = (double) n[ids::b] + jump;
+
+            if (b >= length - 1.0e-6)
+            {
+                ++left;
+                continue;
+            }
+
+            selected.add (addNote (*edit, pattern, getChannelID (*channel), n[ids::p], b,
+                                   juce::jmin ((double) n[ids::l], length - b), (int) n.getProperty (ids::v, 100))[ids::sid].toString());
+        }
+
+        if (left > 0)
+            state.session.logMessage (TRANS ("A pattern is at most 8 bars: {N} note(s) did not fit")
+                                        .replace ("{N}", juce::String (left)));
+
+        repaint();
+        return true;
+    }
+
+    /** Ctrl+L: each note lasts until the next note starts (FL's quick legato); the last ones stay. */
+    bool legato()
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        auto notes = targetNotes();
+        std::vector<double> starts;
+
+        for (auto& n : notes)
+            starts.push_back (n[ids::b]);
+
+        std::sort (starts.begin(), starts.end());
+
+        for (auto& n : notes)
+        {
+            const double b = n[ids::b];
+            auto next = std::upper_bound (starts.begin(), starts.end(), b + 1.0e-6);
+
+            if (next != starts.end() && std::abs ((*next - b) - (double) n[ids::l]) > 1.0e-9)
+                n.setProperty (ids::l, *next - b, &edit->getUndoManager());
+        }
+
+        repaint();
+        return true;
+    }
+
+    /** Ctrl+Q: note starts onto the nearest grid line (lengths stay). */
+    bool quantize()
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        const double g = moveStep(), length = getLengthBeats (pattern);
+
+        for (auto& n : targetNotes())
+        {
+            const double b = n[ids::b];
+            double q = std::round (b / g) * g;
+
+            if (q >= length - 1.0e-6)
+                q = std::floor (b / g) * g;
+
+            if (std::abs (q - b) > 1.0e-9)
+                n.setProperty (ids::b, q, &edit->getUndoManager());
+        }
+
+        repaint();
+        return true;
+    }
+
+    bool deleteSelected()
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        for (auto& n : selectedNotes())
+            removeNote (*edit, n);
+
+        selected.clear();
+        repaint();
+        return true;
+    }
+
+    /** Up / down: the selected notes (nothing selected: the key goes on, e.g. to scroll). */
+    bool transpose (int semitones)
+    {
+        auto notes = selectedNotes();
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (notes.isEmpty() || ! begin (edit, pattern, channel))
+            return false;
+
+        int lowP = highestPitch, highP = lowestPitch;
+
+        for (auto& n : notes)
+        {
+            lowP = juce::jmin (lowP, (int) n[ids::p]);
+            highP = juce::jmax (highP, (int) n[ids::p]);
+        }
+
+        const int d = juce::jlimit (lowestPitch - lowP, highestPitch - highP, semitones);
+
+        if (d != 0)
+            for (auto& n : notes)
+                n.setProperty (ids::p, (int) n[ids::p] + d, &edit->getUndoManager());
+
+        repaint();
+        return true;
+    }
+
+    /** Left / right: the selected notes one grid step (a step when snap is off). */
+    bool shiftTime (int direction)
+    {
+        auto notes = selectedNotes();
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (notes.isEmpty() || ! begin (edit, pattern, channel))
+            return false;
+
+        double minB = 1.0e9, maxB = 0.0;
+
+        for (auto& n : notes)
+        {
+            minB = juce::jmin (minB, (double) n[ids::b]);
+            maxB = juce::jmax (maxB, (double) n[ids::b]);
+        }
+
+        const double length = getLengthBeats (pattern);
+        const double d = juce::jlimit (-minB, juce::jmax (-minB, length - shortestNote - maxB), direction * moveStep());
+
+        if (std::abs (d) > 1.0e-9)
+            for (auto& n : notes)
+                n.setProperty (ids::b, (double) n[ids::b] + d, &edit->getUndoManager());
+
+        repaint();
+        return true;
     }
 
     //==============================================================================
@@ -419,21 +1121,84 @@ public:
     }
 
     juce::File midiDrop;
-
     EditorState& state;
-    juce::ValueTree dragNote;
-    enum class DragMode { move, resize } dragMode = DragMode::move;
-    double dragStartBeat = 0.0, dragGrabBeat = 0.0;
-    int dragStartPitch = 60, previewPitch = -1;
+};
+
+//==============================================================================
+/** The keyboard on the left: scrolls up and down with the notes; click to play a key. */
+class PianoRoll::Keys  : public juce::Component
+{
+public:
+    Keys (EditorState& s, Grid& g) : state (s), grid (g)
+    {
+        setSize (keyboardWidth, grid.getHeight());
+    }
+
+    std::function<void (const juce::MouseEvent&, const juce::MouseWheelDetails&)> onWheel;
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (theme::colours::lane2);
+
+        for (int pitch = lowestPitch; pitch <= highestPitch; ++pitch)
+        {
+            const float y = grid.yForPitch (pitch);
+            const bool black = Grid::isBlackKey (pitch);
+
+            // Light lilac-white and deep purple-black; the key you are hearing in the accent.
+            g.setColour (pitch == grid.previewPitch ? theme::colours::accent
+                                                    : black ? juce::Colour (0xff120f19) : juce::Colour (0xffe6e0f4));
+            g.fillRect (0.0f, y, (float) keyboardWidth - 2.0f, (float) rowHeight - 1.0f);
+
+            if (state.scaleSnap && scales::contains (state.scaleKey, state.scaleType, pitch))
+            {
+                // A dot on the keys of the scale (lilac on the key note).
+                const bool keyNote = scales::isKeyNote (state.scaleKey, pitch);
+                g.setColour (keyNote ? theme::colours::accent : (black ? juce::Colour (0xffb9b0cc) : juce::Colour (0xff6f6585)));
+                g.fillEllipse (juce::Rectangle<float> (keyNote ? 6.0f : 4.0f, keyNote ? 6.0f : 4.0f)
+                                 .withCentre ({ 9.0f, y + rowHeight * 0.5f - 0.5f }));
+            }
+
+            if (pitch % 12 == 0)
+            {
+                g.setColour (theme::colours::accentText.withAlpha (0.8f));
+                g.setFont (theme::mono (9.5f, true));
+                g.drawText ("C" + juce::String (pitch / 12), 2, (int) y, keyboardWidth - 6, rowHeight,
+                            juce::Justification::centredRight);
+            }
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override     { grid.startPreview (grid.pitchAtY (e.position.y), true); }
+    void mouseDrag (const juce::MouseEvent& e) override     { grid.startPreview (grid.pitchAtY (e.position.y), true); }   // glide
+    void mouseUp (const juce::MouseEvent&) override         { grid.stopPreview(); }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (onWheel)
+            onWheel (e, w);
+    }
+
+private:
+    EditorState& state;
+    Grid& grid;
 };
 
 //==============================================================================
 /** Time ruler above the piano roll: click or drag to set where Play starts.
-    While playing, clicking jumps there (for everyone). */
+    While playing, clicking jumps there (for everyone). Ctrl+wheel zooms. */
 class PianoRoll::Ruler  : public juce::Component
 {
 public:
     Ruler (EditorState& s, Grid& g) : state (s), grid (g) {}
+
+    std::function<int()> getViewX;
+    std::function<void (float factor, float gridX)> onZoom;
+    std::function<void (const juce::MouseEvent&, const juce::MouseWheelDetails&)> onWheel;
+
+    float viewX() const                 { return getViewX != nullptr ? (float) getViewX() : 0.0f; }
+    float xForBeat (double beat) const  { return keyboardWidth + grid.xForBeat (beat) - viewX(); }
+    float gridX (float x) const         { return x - keyboardWidth + viewX(); }
 
     void paint (juce::Graphics& g) override
     {
@@ -444,16 +1209,24 @@ public:
         g.setColour (theme::colours::line);
         g.fillRect (0, getHeight() - 1, getWidth(), 1);
 
-        for (int s = 0; s <= numSteps; ++s)
         {
-            const float x = grid.xForBeat (s * stepBeats);
+            juce::Graphics::ScopedSaveState save (g);
+            g.reduceClipRegion (keyboardWidth, 0, getWidth() - keyboardWidth, getHeight());
 
-            if (s % 4 == 0)
+            // Beat numbers only when there is room for them (bars always).
+            const bool beatLabels = grid.pixelsPerBeat >= 34.0;
+
+            for (int s = 0; s <= numSteps; s += 4)
             {
+                const float x = xForBeat (s * stepBeats);
+
+                if (x < keyboardWidth - 2.0f || x > (float) getWidth() + 2.0f)
+                    continue;
+
                 g.setColour (s % 16 == 0 ? theme::colours::muted : theme::colours::gridBar);
                 g.drawVerticalLine ((int) x, s % 16 == 0 ? 2.0f : 10.0f, (float) getHeight());
 
-                if (s < numSteps)
+                if (s < numSteps && (s % 16 == 0 || beatLabels))
                 {
                     g.setFont (theme::mono (10.0f, s % 16 == 0));
                     g.setColour (s % 16 == 0 ? theme::colours::text : theme::colours::dim);
@@ -461,21 +1234,21 @@ public:
                                 (int) x + 3, 0, 40, getHeight(), juce::Justification::centredLeft);
                 }
             }
-        }
 
-        // Start marker
-        const float mx = grid.xForBeat (state.getStartBeat());
-        juce::Path tri;
-        tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
-        g.setColour (theme::colours::green);
-        g.fillPath (tri);
+            // Start marker
+            const float mx = xForBeat (state.getStartBeat());
+            juce::Path tri;
+            tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
+            g.setColour (theme::colours::green);
+            g.fillPath (tri);
 
-        const double playBeat = state.getPlayheadBeat();
+            const double playBeat = state.getPlayheadBeat();
 
-        if (playBeat >= 0.0)
-        {
-            g.setColour (theme::colours::text);
-            g.fillRect (grid.xForBeat (playBeat) - 1.0f, 0.0f, 2.0f, (float) getHeight());
+            if (playBeat >= 0.0)
+            {
+                g.setColour (theme::colours::text);
+                g.fillRect (xForBeat (playBeat) - 1.0f, 0.0f, 2.0f, (float) getHeight());
+            }
         }
 
         g.setColour (theme::colours::dim);
@@ -486,12 +1259,24 @@ public:
     void mouseDown (const juce::MouseEvent& e) override    { setStart (e.position.x, true); }
     void mouseDrag (const juce::MouseEvent& e) override    { setStart (e.position.x, false); }
 
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (e.mods.isCommandDown() && onZoom != nullptr)
+        {
+            const float d = std::abs (w.deltaY) > std::abs (w.deltaX) ? w.deltaY : w.deltaX;
+
+            if (d != 0.0f)
+                onZoom (d > 0.0f ? 1.25f : 0.8f, gridX (e.position.x));
+        }
+        else if (onWheel)
+        {
+            onWheel (e, w);
+        }
+    }
+
     void setStart (float x, bool seekIfPlaying)
     {
-        if (x < keyboardWidth)
-            x = (float) keyboardWidth;
-
-        state.startBeat = Grid::snap (grid.beatAtX (x));
+        state.startBeat = grid.snapDown (grid.beatAtX (gridX (juce::jmax ((float) keyboardWidth, x))));
         state.startBeat = state.getStartBeat();   // keep it inside the pattern
 
         if (seekIfPlaying)
@@ -513,15 +1298,69 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
 {
     grid = std::make_unique<Grid> (state);
     ruler = std::make_unique<Ruler> (state, *grid);
+    keys = std::make_unique<Keys> (state, *grid);
     addAndMakeVisible (*ruler);
     viewport.setViewedComponent (grid.get(), false);
-    viewport.setScrollBarsShown (true, false);
+    viewport.setScrollBarsShown (true, true);
+    viewport.onMoved = [this] { viewMoved(); };
     addAndMakeVisible (viewport);
+    keysHolder.addAndMakeVisible (*keys);
+    keysHolder.setInterceptsMouseClicks (false, true);
+    addAndMakeVisible (keysHolder);
+
+    grid->onZoom = [this] (float factor, float x) { zoomAround (factor, x); };
+    ruler->onZoom = [this] (float factor, float x) { zoomAround (factor, x); };
+    ruler->getViewX = [this] { return viewport.getViewPositionX(); };
+    grid->onToolKey = [this] { updateTools(); };
+    grid->onPreviewChanged = [this] { keys->repaint(); };
+
+    // The wheel over the keyboard or the ruler scrolls the notes.
+    auto wheelToView = [this] (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+    {
+        viewport.mouseWheelMove (e.getEventRelativeTo (&viewport), w);
+    };
+    keys->onWheel = wheelToView;
+    ruler->onWheel = wheelToView;
 
     title.setColour (juce::Label::textColourId, theme::colours::muted);
     title.setFont (theme::ui (11.0f));
     title.setMinimumHorizontalScale (1.0f);
     addAndMakeVisible (title);
+
+    // Tools: Pencil, Select, Slice (one of them on, like FL).
+    const auto keysHelp = TRANS ("Keys: Ctrl+A all, Ctrl+C / X / V copy / cut / paste, Ctrl+B duplicate, Ctrl+L legato, "
+                                 "Ctrl+Q quantize, Delete, arrows move (Ctrl+Up/Down: an octave), Ctrl+wheel zoom");
+    pencilButton.setTooltip (TRANS ("Pencil (P): click to add a note, drag it to move it, drag its right edge to change "
+                                    "its length; right-click or right-drag deletes. Shift+drag copies, Ctrl+drag selects") + "\n" + keysHelp);
+    selectButton.setTooltip (TRANS ("Select (E): drag a box around notes to select them, then drag one of them to move "
+                                    "them all. Ctrl+click adds or removes a note, Shift+drag copies") + "\n" + keysHelp);
+    sliceButton.setTooltip (TRANS ("Slice (C): click a note, or drag down across several, to cut them in two there") + "\n" + keysHelp);
+    theme::setIcon (pencilButton, theme::Icon::pencil);
+    theme::setIcon (selectButton, theme::Icon::select);
+    theme::setIcon (sliceButton, theme::Icon::slice);
+
+    for (auto* b : { &pencilButton, &selectButton, &sliceButton })
+    {
+        b->getProperties().set ("iconOnly", true);
+        theme::setStyle (*b, "toggle");
+        b->setClickingTogglesState (false);
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+        addAndMakeVisible (b);
+    }
+
+    pencilButton.onClick = [this] { state.pianoTool = EditorState::PianoTool::pencil; updateTools(); focusNotes(); };
+    selectButton.onClick = [this] { state.pianoTool = EditorState::PianoTool::select; updateTools(); focusNotes(); };
+    sliceButton.onClick  = [this] { state.pianoTool = EditorState::PianoTool::slice;  updateTools(); focusNotes(); };
+
+    // Snap (the grid notes land on).
+    theme::setIcon (snapButton, theme::Icon::magnet);
+    theme::setStyle (snapButton, "toggle");
+    snapButton.setClickingTogglesState (false);
+    snapButton.setWantsKeyboardFocus (false);
+    snapButton.setMouseClickGrabsKeyboardFocus (false);
+    snapButton.onClick = [this] { showSnapMenu(); };
+    addAndMakeVisible (snapButton);
 
     // Scale helper (off by default: notes go anywhere).
     theme::setIcon (scaleButton, theme::Icon::note);
@@ -529,7 +1368,6 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     scaleButton.setClickingTogglesState (false);
     scaleButton.onClick = [this] { showScaleMenu(); };
     addAndMakeVisible (scaleButton);
-    updateScaleButton();
 
     // Own window / full screen (icon buttons).
     for (auto* b : { &detachButton, &fullScreenButton })
@@ -542,7 +1380,16 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     fullScreenButton.onClick = [this] { if (onFullScreenToggle) onFullScreenToggle(); };
     setDetached (false);
     setFullScreenState (false);
+    updateTools();
+    updateSnapButton();
+    updateScaleButton();
     startTimerHz (30);
+}
+
+void PianoRoll::focusNotes()
+{
+    if (grid->isShowing())
+        grid->grabKeyboardFocus();
 }
 
 void PianoRoll::setDetached (bool isDetached)
@@ -563,6 +1410,72 @@ void PianoRoll::setFullScreenState (bool isFullScreen)
     fullScreenButton.repaint();
 }
 
+void PianoRoll::updateTools()
+{
+    pencilButton.setToggleState (state.pianoTool == EditorState::PianoTool::pencil, juce::dontSendNotification);
+    selectButton.setToggleState (state.pianoTool == EditorState::PianoTool::select, juce::dontSendNotification);
+    sliceButton.setToggleState (state.pianoTool == EditorState::PianoTool::slice, juce::dontSendNotification);
+    grid->action = Grid::Action::none;
+    grid->setMouseCursor (state.pianoTool == EditorState::PianoTool::slice ? grid->sliceCursor
+                            : state.pianoTool == EditorState::PianoTool::pencil ? grid->pencilCursor
+                                                                                : juce::MouseCursor (juce::MouseCursor::NormalCursor));
+    updateHint();
+}
+
+void PianoRoll::updateHint()
+{
+    auto* channel = state.getSelectedChannel();
+
+    if (channel != nullptr && song::isAudioChannel (*channel))
+    {
+        title.setText (TRANS ("is an audio channel: move and trim its clips in the playlist"), juce::dontSendNotification);
+        return;
+    }
+
+    const auto hint = state.pianoTool == EditorState::PianoTool::select ? TRANS ("drag: select, drag a note: move them, Del: delete")
+                    : state.pianoTool == EditorState::PianoTool::slice  ? TRANS ("click or drag down across notes: cut them there")
+                                                                        : TRANS ("click: add note, drag: move, edge: length, right-click: delete");
+    title.setText (TRANS ("in") + " " + state.getPattern()[ids::name].toString() + juce::String::fromUTF8 ("  \xc2\xb7  ") + hint,
+                   juce::dontSendNotification);
+}
+
+void PianoRoll::updateSnapButton()
+{
+    snapButton.setButtonText (snapName (state.pianoSnapBeats));
+    snapButton.setToggleState (state.pianoSnapBeats > 0.0, juce::dontSendNotification);
+    snapButton.setTooltip (TRANS ("Snap: the grid notes land on (hold Alt to place freely)"));
+    resized();
+}
+
+void PianoRoll::showSnapMenu()
+{
+    juce::PopupMenu m;
+    m.addSectionHeader (TRANS ("Snap notes to (Alt held: free)"));
+
+    for (int i = 0; i < (int) std::size (snapChoices); ++i)
+    {
+        if (snapChoices[i].beats == 0.0)
+            m.addSeparator();
+
+        m.addItem (1 + i, TRANS (snapChoices[i].name), true, std::abs (snapChoices[i].beats - state.pianoSnapBeats) < 1.0e-9);
+    }
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (snapButton),
+                     [safe = juce::Component::SafePointer<PianoRoll> (this)] (int r)
+    {
+        if (safe == nullptr || r <= 0)
+            return;
+
+        safe->state.pianoSnapBeats = snapChoices[r - 1].beats;
+        safe->updateSnapButton();
+        safe->grid->repaint();
+        safe->focusNotes();
+
+        if (safe->onScaleChanged)
+            safe->onScaleChanged();
+    });
+}
+
 void PianoRoll::updateScaleButton()
 {
     scaleButton.setButtonText (state.scaleSnap ? scales::describe (state.scaleKey, state.scaleType) : TRANS ("Scale"));
@@ -576,10 +1489,10 @@ void PianoRoll::updateScaleButton()
 
 void PianoRoll::showScaleMenu()
 {
-    juce::PopupMenu m, keys, types;
+    juce::PopupMenu m, keyMenu, types;
 
     for (int k = 0; k < 12; ++k)
-        keys.addItem (100 + k, scales::keyName (k), true, k == state.scaleKey);
+        keyMenu.addItem (100 + k, scales::keyName (k), true, k == state.scaleKey);
 
     for (int t = 0; t < scales::numTypes; ++t)
     {
@@ -593,7 +1506,7 @@ void PianoRoll::showScaleMenu()
     m.addItem (1, TRANS ("Off - place notes anywhere"), true, ! state.scaleSnap);
     m.addItem (2, TRANS ("On - keep notes in") + " " + scales::describe (state.scaleKey, state.scaleType), true, state.scaleSnap);
     m.addSeparator();
-    m.addSubMenu (TRANS ("Key") + ": " + scales::keyName (state.scaleKey), keys);
+    m.addSubMenu (TRANS ("Key") + ": " + scales::keyName (state.scaleKey), keyMenu);
     m.addSubMenu (TRANS ("Scale") + ": " + TRANS (scales::type (state.scaleType).name), types);
     m.addSeparator();
 
@@ -644,6 +1557,7 @@ void PianoRoll::showScaleMenu()
 
         safe->updateScaleButton();
         safe->grid->repaint();
+        safe->keys->repaint();
 
         if (safe->onScaleChanged)
             safe->onScaleChanged();
@@ -658,24 +1572,20 @@ PianoRoll::~PianoRoll()
 void PianoRoll::refresh()
 {
     auto* channel = state.getSelectedChannel();
-    auto pattern = state.getPattern();
 
     heading = channel != nullptr ? channel->getName() : TRANS ("no channel");
     headingColour = channel != nullptr && state.getEdit() != nullptr
                       ? EditorState::channelColour (song::getChannels (*state.getEdit()).indexOf (channel))
                       : theme::colours::muted;
 
-    if (channel != nullptr && song::isAudioChannel (*channel))
-        title.setText (TRANS ("is an audio channel: move and trim its clips in the playlist"), juce::dontSendNotification);
-    else
-        title.setText (TRANS ("in") + " " + pattern[ids::name].toString() + juce::String::fromUTF8 ("  \xc2\xb7  ")
-                         + TRANS ("click: add note, drag: move/longer, right-click: delete, ruler: set play start"),
-                       juce::dontSendNotification);
-
+    grid->checkContext();
+    updateHint();
     updateScaleButton();   // (also lays out: the scale may have been set from your settings)
+    updateSnapButton();
     repaint (getLocalBounds().removeFromTop (titleHeight));
     grid->repaint();
     ruler->repaint();
+    keys->repaint();
 }
 
 void PianoRoll::paint (juce::Graphics& g)
@@ -695,7 +1605,7 @@ void PianoRoll::resized()
     auto r = getLocalBounds();
     auto top = r.removeFromTop (titleHeight).reduced (12, 0);
 
-    // Right side of the title row: Scale, own window, full screen.
+    // Right side of the title row: tools, snap, scale, own window, full screen.
     auto buttons = top.reduced (0, 3);
     fullScreenButton.setBounds (buttons.removeFromRight (30));
     buttons.removeFromRight (4);
@@ -703,13 +1613,23 @@ void PianoRoll::resized()
     buttons.removeFromRight (8);
     const int scaleWidth = (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), scaleButton.getButtonText()) + 15 + 6 + 26;
     scaleButton.setBounds (buttons.removeFromRight (juce::jmin (220, scaleWidth)));
-    top.setRight (scaleButton.getX() - 8);
+    buttons.removeFromRight (6);
+    const int snapWidth = (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), snapButton.getButtonText()) + 15 + 6 + 26;
+    snapButton.setBounds (buttons.removeFromRight (juce::jmin (140, snapWidth)));
+    buttons.removeFromRight (10);
+    sliceButton.setBounds (buttons.removeFromRight (30));
+    buttons.removeFromRight (2);
+    selectButton.setBounds (buttons.removeFromRight (30));
+    buttons.removeFromRight (2);
+    pencilButton.setBounds (buttons.removeFromRight (30));
+    top.setRight (pencilButton.getX() - 10);
 
     const int headingWidth = 18 + (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), heading) + 8;
     title.setBounds (top.withTrimmedLeft (headingWidth));
     ruler->setBounds (r.removeFromTop (20).withTrimmedRight (viewport.getScrollBarThickness()));
+    keysHolder.setBounds (r.removeFromLeft (keyboardWidth));
     viewport.setBounds (r);
-    grid->setSize (viewport.getWidth() - viewport.getScrollBarThickness(), grid->getHeight());
+    updateGridSize();
 
     if (! scrolledOnce && viewport.getHeight() > 0)
     {
@@ -717,16 +1637,68 @@ void PianoRoll::resized()
         scrolledOnce = true;
         viewport.setViewPosition (0, juce::jmax (0, (int) grid->yForPitch (60) - viewport.getHeight() / 2));
     }
+
+    viewMoved();
+}
+
+void PianoRoll::updateGridSize()
+{
+    const int visibleWidth = juce::jmax (50, viewport.getWidth() - viewport.getScrollBarThickness());
+    const double length = juce::jmax (1.0, song::getLengthBeats (state.getPattern()));
+    const double fit = visibleWidth / length;
+
+    // 1 = the pattern fits; zoomed in up to 400 pixels a beat (a step = 100).
+    zoom = juce::jlimit (1.0, juce::jmax (1.0, 400.0 / fit), zoom);
+    grid->pixelsPerBeat = fit * zoom;
+    sizedForLength = length;
+    grid->setSize (juce::jmax (visibleWidth, (int) std::ceil (length * grid->pixelsPerBeat)), grid->getHeight());
+    grid->repaint();
+    ruler->repaint();
+}
+
+void PianoRoll::zoomAround (float factor, float gridX)
+{
+    // Keep the beat under the mouse where it is.
+    const double beat = gridX / grid->pixelsPerBeat;
+    const int inView = juce::roundToInt (gridX) - viewport.getViewPositionX();
+    zoom *= factor;
+    updateGridSize();
+    viewport.setViewPosition (juce::jmax (0, juce::roundToInt (beat * grid->pixelsPerBeat) - inView), viewport.getViewPositionY());
+    viewMoved();
+}
+
+void PianoRoll::viewMoved()
+{
+    // The keyboard follows the notes up and down; the ruler follows them sideways.
+    keys->setTopLeftPosition (0, -viewport.getViewPositionY());
+    keysHolder.setSize (keyboardWidth, juce::jmin (viewport.getHeight(), viewport.getViewHeight()));
+    ruler->repaint();
 }
 
 void PianoRoll::timerCallback()
 {
+    // The pattern got longer or shorter (here or from someone else): re-size the grid.
+    if (std::abs (song::getLengthBeats (state.getPattern()) - sizedForLength) > 1.0e-9)
+        updateGridSize();
+
     // Smooth playhead while playing; one last repaint when it stops.
     const int playhead = state.getPlayheadStep();
+    const double playBeat = state.getPlayheadBeat();
 
     if (playhead >= 0 || playhead != lastPlayhead)
     {
         lastPlayhead = playhead;
+
+        // Zoomed in: the view turns the page when the playhead leaves it (not while you drag).
+        if (playBeat >= 0.0 && grid->getWidth() > viewport.getViewWidth()
+             && ! juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown())
+        {
+            const int x = juce::roundToInt (grid->xForBeat (playBeat));
+
+            if (x < viewport.getViewPositionX() || x > viewport.getViewPositionX() + viewport.getViewWidth() - 8)
+                viewport.setViewPosition (juce::jmax (0, x - 16), viewport.getViewPositionY());
+        }
+
         grid->repaint (viewport.getViewArea());
         ruler->repaint();
     }

@@ -612,6 +612,7 @@ MainComponent::MainComponent (te::Engine& e)
             // The menu came from the rack, which is hidden now: take the keyboard back so
             // Esc (leave full screen), Space and the other shortcuts work straight away.
             grabKeyboardFocus();
+            pianoRoll.focusNotes();   // (the notes pass Esc, Space... on to here)
         }
     };
     playlist.onFullScreenToggle = [this]
@@ -623,8 +624,10 @@ MainComponent::MainComponent (te::Engine& e)
     state.scaleSnap = prefs->getBoolValue ("scaleSnap", false);
     state.scaleKey = juce::jlimit (0, 11, prefs->getIntValue ("scaleKey", 0));
     state.scaleType = prefs->getIntValue ("scaleType", 1);
+    state.pianoSnapBeats = juce::jlimit (0.0, 4.0, prefs->getDoubleValue ("pianoSnap", song::stepBeats));
     pianoRoll.onScaleChanged = [this]
     {
+        settings()->setValue ("pianoSnap", state.pianoSnapBeats);
         settings()->setValue ("scaleSnap", state.scaleSnap);
         settings()->setValue ("scaleKey", state.scaleKey);
         settings()->setValue ("scaleType", state.scaleType);

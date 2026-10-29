@@ -27,6 +27,11 @@ struct EditorState
     int scaleKey = 0;      // 0 = C ... 11 = B
     int scaleType = 1;     // index in scales::types (1 = minor)
 
+    // Piano roll tool and snap (this PC only), like FL: Pencil (P), Select (E), Slice (C).
+    enum class PianoTool { pencil, select, slice };
+    PianoTool pianoTool = PianoTool::pencil;
+    double pianoSnapBeats = song::stepBeats;   // the grid notes land on, 0 = none (Alt held = none too)
+
     std::function<void()> onSelectionChanged;
 
     // Automation
@@ -123,17 +128,50 @@ struct EditorState
             edit->getUndoManager().beginNewTransaction();
     }
 
-    /** The beat currently playing in the viewed pattern, or -1. */
+    /** The beat currently playing in the viewed pattern, or -1.
+        PAT mode: the pattern loops. SONG mode: the beat inside whichever playlist clip of
+        the viewed pattern is under the song position (a clip plays its pattern once, cut
+        at the clip's end, like PatternCompiler), -1 between clips. */
     double getPlayheadBeat() const
     {
         auto* edit = getEdit();
 
-        if (edit == nullptr || ! edit->getTransport().isPlaying() || session.isSongMode()
-             || session.getPlayingPattern() != getPattern()[song::ids::sid].toString())
+        if (edit == nullptr || ! edit->getTransport().isPlaying())
             return -1.0;
 
-        auto beat = edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats();
-        return std::fmod (juce::jmax (0.0, beat), song::getLengthBeats (getPattern()));
+        const auto pattern = getPattern();
+        const auto sid = pattern[song::ids::sid].toString();
+        const double length = song::getLengthBeats (pattern);
+        const double beat = juce::jmax (0.0, edit->tempoSequence.toBeats (edit->getTransport().getPosition()).inBeats());
+
+        if (sid.isEmpty() || length <= 0.0)
+            return -1.0;
+
+        if (! session.isSongMode())
+            return session.getPlayingPattern() == sid ? std::fmod (beat, length) : -1.0;
+
+        return beatInPattern (*edit, pattern, beat);
+    }
+
+    /** SONG mode: the beat inside a pattern at this song beat (the playlist clip of that
+        pattern under it), or -1 if none of its clips is there. */
+    static double beatInPattern (te::Edit& edit, const juce::ValueTree& pattern, double songBeat)
+    {
+        const auto sid = pattern[song::ids::sid].toString();
+        const double length = song::getLengthBeats (pattern);
+
+        for (auto& c : song::getClips (edit))
+        {
+            if (sid.isEmpty() || c[song::ids::pattern].toString() != sid)
+                continue;
+
+            const double inClip = songBeat - (double) c[song::ids::start];
+
+            if (inClip >= 0.0 && inClip < juce::jmin (song::getClipLength (edit, c), length))
+                return inClip;
+        }
+
+        return -1.0;
     }
 
     /** The step currently playing in the viewed pattern, or -1. */

@@ -177,6 +177,11 @@ static IconShape shapeOf (Icon icon)
         case Icon::check:         return { "M3 8.5 L6.5 12 L13 4.5", nullptr };
         case Icon::menu:          return { nullptr, "M3 6.6 A1.4 1.4 0 1 1 2.99 6.6 Z M8 6.6 A1.4 1.4 0 1 1 7.99 6.6 Z M13 6.6 A1.4 1.4 0 1 1 12.99 6.6 Z" };
         case Icon::link:          return { "M6.5 9.5 L9.5 6.5 M7 4.5 L8.5 3 A2.8 2.8 0 0 1 13 7.5 L11.5 9 M9 11.5 L7.5 13 A2.8 2.8 0 0 1 3 8.5 L4.5 7", nullptr };
+        case Icon::pencil:        return { "M2.5 13.5 L3.2 10.3 L10.8 2.7 L13.3 5.2 L5.7 12.8 Z M9.2 4.3 L11.7 6.8", nullptr };
+        case Icon::select:        return { "M2 5.5 V2 H5.5 M8 2 H9.5 M2 8 V9.5 M2 12 V13.5 H3.5 M12 2 H13.5 V3.5",
+                                           "M6.5 6.5 L14.5 9.6 L11.3 10.9 L13.9 13.6 L12.6 14.9 L10 12.2 L8.7 15.2 Z" };
+        case Icon::slice:         return { "M4.5 10.5 A2 2 0 1 1 4.49 10.5 Z M11.5 10.5 A2 2 0 1 1 11.49 10.5 Z M5.9 11 L11.5 1.8 M10.1 11 L4.5 1.8", nullptr };
+        case Icon::magnet:        return { "M3 2.5 V8.5 A5 5 0 0 0 13 8.5 V2.5 H10 V8.5 A2 2 0 0 1 6 8.5 V2.5 Z M3 5.5 H6 M10 5.5 H13", nullptr };
         case Icon::none:
         default:                  return { nullptr, nullptr };
     }

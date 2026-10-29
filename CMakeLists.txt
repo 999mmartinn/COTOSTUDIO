@@ -63,6 +63,7 @@ target_sources(COTOSTUDIO PRIVATE
     Source/DelayEditor.cpp
     Source/ReverbPlugin.cpp
     Source/ReverbEditor.cpp
+    Source/SamplerEditor.cpp
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
     Source/FlpImport.cpp
