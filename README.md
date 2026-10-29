@@ -26,6 +26,30 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.7
+
+* **Play / stop from a plugin window**: Space works while a plugin's window has the
+  keyboard (ours and VST3 editors on Windows), so you can cut the lows while you
+  listen. Typing in a plugin's text field still types.
+* **Playlist tracks like in your FL template**: an imported FL template brings its
+  track colours too. Right-click a track header for its name, colour and the insert
+  that **takes dropped on it play through**. A track named like an insert (CHORUS 1,
+  VERSO 1...) uses that insert automatically. Drag a vocal take onto it and the take
+  plays through that insert; a small "→ n" badge on the header shows where. New takes
+  land on a free track of the insert they were recorded through.
+* **Right-click a clip's name** in the playlist: a pattern can be renamed, recoloured or
+  made unique (its own copy); a take shows the insert it plays through (change it
+  there) and can be renamed. Right-clicking the rest of a clip still deletes it.
+* **Pick the instrument inside the piano roll**: its name in the title row opens the
+  list of instruments (a dot = has notes in this pattern); < > or Alt+Up / Alt+Down
+  go to the previous / next one; the mouse wheel over the name too.
+* **Delete unused takes** (Browser → Audio): every recorded take that has no clip in
+  the playlist leaves the song and this PC, after asking.
+* **No leftovers in the Cache**: audio recorded or imported into a song you close
+  without saving (new song, open, quit...) is deleted from the Cache folder; audio the
+  saved project keeps, or the next song uses, stays. The save question says how many
+  files that is.
+
 ## What's new in 1.6
 
 Things that were missing compared with FL, found while playing online:

@@ -64,8 +64,26 @@ public:
     /** Called on the message thread when a new asset becomes available. */
     std::function<void (const juce::String& hash)> onAssetAdded;
 
+    //==============================================================================
+    // Clean-up: files that arrived while a song was open (recorded, imported, received,
+    // restored) can be deleted when that song is closed without being saved.
+
+    /** Starts a new list of arrivals (a new song is open). */
+    void markNewSong();
+    /** Files that arrived since the last markNewSong(). Thread-safe. */
+    juce::StringArray getAddedSinceMark() const;
+    /** Deletes these files from the store. Files that can't be deleted yet (still open,
+        e.g. on Windows) are listed in pending-deletes.txt and retried later. */
+    void deleteFiles (const juce::StringArray& hashes);
+    /** Retries the files listed in a store folder's pending-deletes.txt (e.g. at start-up,
+        or after the audio engine has let go of them). */
+    static void retryPendingDeletes (const juce::File& storeFolder);
+
 private:
     juce::File folder;
+    juce::StringArray addedSinceMark;
+    juce::CriticalSection addedLock;
+    void noteAdded (const juce::String& hash);
 
     struct Download
     {

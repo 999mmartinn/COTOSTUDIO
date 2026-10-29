@@ -13,6 +13,88 @@ void AssetStore::setFolder (juce::File newFolder)
     downloads.clear();
     folder = newFolder;
     folder.createDirectory();
+    retryPendingDeletes (folder);   // left from last time (files that were still open then)
+    markNewSong();
+}
+
+//==============================================================================
+void AssetStore::noteAdded (const juce::String& hash)
+{
+    const juce::ScopedLock sl (addedLock);
+    addedSinceMark.addIfNotAlreadyThere (hash);
+}
+
+void AssetStore::markNewSong()
+{
+    const juce::ScopedLock sl (addedLock);
+    addedSinceMark.clear();
+}
+
+juce::StringArray AssetStore::getAddedSinceMark() const
+{
+    const juce::ScopedLock sl (addedLock);
+    return addedSinceMark;
+}
+
+static juce::File pendingListIn (const juce::File& storeFolder)   { return storeFolder.getChildFile ("pending-deletes.txt"); }
+
+static bool isAssetHash (const juce::String& h)   { return h.length() == 32 && h.containsOnly ("0123456789abcdef"); }
+
+void AssetStore::deleteFiles (const juce::StringArray& hashes)
+{
+    juce::StringArray stillThere;
+
+    for (auto& h : hashes)
+    {
+        if (! isAssetHash (h))
+            continue;
+
+        auto f = getFile (h);
+
+        if (f.existsAsFile() && ! f.deleteFile())
+            stillThere.add (h);   // open somewhere: try again later
+
+        const juce::ScopedLock sl (addedLock);
+        addedSinceMark.removeString (h);
+    }
+
+    if (! stillThere.isEmpty())
+    {
+        auto list = pendingListIn (folder);
+        juce::StringArray pending;
+        pending.addLines (list.loadFileAsString());
+        pending.addArray (stillThere);
+        pending.removeEmptyStrings();
+        pending.removeDuplicates (false);
+        list.replaceWithText (pending.joinIntoString ("\n"));
+    }
+}
+
+void AssetStore::retryPendingDeletes (const juce::File& storeFolder)
+{
+    auto list = pendingListIn (storeFolder);
+
+    if (! list.existsAsFile())
+        return;
+
+    juce::StringArray pending, left;
+    pending.addLines (list.loadFileAsString());
+
+    for (auto& h : pending)
+    {
+        if (! isAssetHash (h.trim()))
+            continue;
+
+        auto f = storeFolder.getChildFile (h.trim() + ".flac");
+
+        if (f.existsAsFile() && ! f.deleteFile())
+            left.add (h.trim());
+    }
+
+    if (left.isEmpty())
+        list.deleteFile();
+    else
+        list.replaceWithText (left.joinIntoString ("\n"));
 }
 
 juce::File AssetStore::getFile (const juce::String& hash) const       { return folder.getChildFile (hash + ".flac"); }
@@ -96,6 +178,8 @@ AssetStore::ImportResult AssetStore::importAudioFile (const juce::File& source)
         result.error = "Can't store " + source.getFileName();
         return result;
     }
+    else
+        noteAdded (result.hash);
 
     result.sampleRate = reader->sampleRate;
     result.numChannels = channels;
@@ -121,6 +205,7 @@ bool AssetStore::adoptFile (const juce::File& file, const juce::String& hash)
         return false;
     }
 
+    noteAdded (hash);
     return true;
 }
 
@@ -188,6 +273,8 @@ AssetStore::ChunkResult AssetStore::receiveChunk (const juce::String& hash, juce
         part.deleteFile();
         return ChunkResult::failed;
     }
+
+    noteAdded (hash);
 
     if (onAssetAdded)
         onAssetAdded (hash);

@@ -756,39 +756,45 @@ juce::StringArray getAutomatedPlugins (te::Edit& edit)
 }
 
 //==============================================================================
-juce::String getLaneName (te::Edit& edit, int lane)
+static juce::ValueTree findLaneNode (te::Edit& edit, int lane)
 {
     for (auto l : getModel (edit).getChildWithName (ids::LANES))
         if (l.hasType (ids::LANE) && (int) l[ids::lane] == lane)
-            return l[ids::name].toString();
+            return l;
 
     return {};
 }
 
-void setLaneName (te::Edit& edit, int lane, const juce::String& nameIn)
+/** Sets one setting of a playlist track; the track's entry goes when it has none left. */
+static void setLaneProperty (te::Edit& edit, int lane, const juce::Identifier& id, const juce::String& value)
 {
     if (! juce::isPositiveAndBelow (lane, numLanes))
         return;
 
-    const auto name = nameIn.trim().substring (0, 60);
-    auto model = getModel (edit);
-    auto list = model.getChildWithName (ids::LANES);
+    auto l = findLaneNode (edit, lane);
 
-    for (auto l : list)
+    if (l.isValid())
     {
-        if (l.hasType (ids::LANE) && (int) l[ids::lane] == lane)
-        {
-            if (name.isEmpty())
-                list.removeChild (l, um (edit));
-            else if (l[ids::name].toString() != name)
-                l.setProperty (ids::name, name, um (edit));
-
+        if (l[id].toString() == value)
             return;
-        }
+
+        if (value.isEmpty())
+            l.removeProperty (id, um (edit));
+        else
+            l.setProperty (id, value, um (edit));
+
+        // Nothing left to remember about this track: drop its entry.
+        if (l[ids::name].toString().isEmpty() && l[ids::colour].toString().isEmpty() && l[ids::insert].toString().isEmpty())
+            l.getParent().removeChild (l, um (edit));
+
+        return;
     }
 
-    if (name.isEmpty())
+    if (value.isEmpty())
         return;
+
+    auto model = getModel (edit);
+    auto list = model.getChildWithName (ids::LANES);
 
     if (! list.isValid())
     {
@@ -796,11 +802,95 @@ void setLaneName (te::Edit& edit, int lane, const juce::String& nameIn)
         model.appendChild (list, um (edit));
     }
 
-    juce::ValueTree l (ids::LANE);
-    l.setProperty (ids::sid, newSyncID(), nullptr);
-    l.setProperty (ids::lane, lane, nullptr);
-    l.setProperty (ids::name, name, nullptr);
-    list.appendChild (l, um (edit));
+    juce::ValueTree node (ids::LANE);
+    node.setProperty (ids::sid, newSyncID(), nullptr);
+    node.setProperty (ids::lane, lane, nullptr);
+    node.setProperty (id, value, nullptr);
+    list.appendChild (node, um (edit));
+}
+
+juce::String getLaneName (te::Edit& edit, int lane)
+{
+    return findLaneNode (edit, lane)[ids::name].toString();
+}
+
+void setLaneName (te::Edit& edit, int lane, const juce::String& nameIn)
+{
+    setLaneProperty (edit, lane, ids::name, nameIn.trim().substring (0, 60));
+}
+
+juce::Colour getLaneColour (te::Edit& edit, int lane)
+{
+    const auto c = findLaneNode (edit, lane)[ids::colour].toString();
+    return c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack;
+}
+
+void setLaneColour (te::Edit& edit, int lane, juce::Colour colour)
+{
+    setLaneProperty (edit, lane, ids::colour, colour.isTransparent() ? juce::String() : colour.withAlpha (1.0f).toString());
+}
+
+juce::String getLaneInsertSetting (te::Edit& edit, int lane)
+{
+    return findLaneNode (edit, lane)[ids::insert].toString();
+}
+
+void setLaneInsertSetting (te::Edit& edit, int lane, const juce::String& setting)
+{
+    setLaneProperty (edit, lane, ids::insert, setting);
+}
+
+te::AudioTrack* findInsertNamed (te::Edit& edit, const juce::String& name)
+{
+    const auto wanted = name.trim();
+
+    if (wanted.isEmpty())
+        return nullptr;
+
+    for (auto* t : getInserts (edit))
+        if (t->getName().trim().equalsIgnoreCase (wanted))
+            return t;
+
+    return nullptr;
+}
+
+LaneTarget getLaneTarget (te::Edit& edit, int lane)
+{
+    const auto setting = getLaneInsertSetting (edit, lane);
+
+    if (setting == laneKeepsInsert)
+        return {};
+
+    if (setting == laneToMaster)
+        return { true, {} };
+
+    if (setting.isNotEmpty())
+    {
+        if (auto* t = findInsert (edit, setting))
+            return { true, t->itemID.toString() };
+
+        return {};   // that insert was deleted
+    }
+
+    // Not set: the insert with the track's name, if there is one (FL templates name them alike).
+    if (auto* t = findInsertNamed (edit, getLaneName (edit, lane)))
+        return { true, t->itemID.toString() };
+
+    return {};
+}
+
+bool routeTakeToLane (te::Edit& edit, const juce::ValueTree& clip)
+{
+    if (! isAudioClip (clip))
+        return false;
+
+    const auto target = getLaneTarget (edit, clip[ids::lane]);
+    auto* channel = findChannel (edit, clip[ids::ch].toString());
+
+    if (! target.routes || channel == nullptr || getRoute (*channel) == target.insertID)
+        return false;
+
+    return setRoute (edit, *channel, target.insertID);
 }
 
 //==============================================================================
@@ -1234,24 +1324,46 @@ juce::StringArray getSamplerChannelsUsing (te::Edit& edit, const juce::String& h
     return names;
 }
 
+static bool isLaneFree (te::Edit& edit, const juce::Array<juce::ValueTree>& clips, int lane, double startBeat, double endBeat)
+{
+    for (auto& c : clips)
+        if ((int) c[ids::lane] == lane && (double) c[ids::start] < endBeat
+             && (double) c[ids::start] + getClipLength (edit, c) > startBeat)
+            return false;
+
+    return true;
+}
+
 int findFreeLane (te::Edit& edit, double startBeat, double endBeat)
 {
     const auto clips = getClips (edit);
 
     for (int lane = 0; lane < numLanes; ++lane)
+        if (isLaneFree (edit, clips, lane, startBeat, endBeat))
+            return lane;
+
+    return numLanes - 1;
+}
+
+int findLaneForTake (te::Edit& edit, const juce::String& insertID, double startBeat, double endBeat)
+{
+    const auto clips = getClips (edit);
+
+    // A free track that sends its takes to this insert...
+    for (int lane = 0; lane < numLanes; ++lane)
     {
-        bool busy = false;
+        const auto target = getLaneTarget (edit, lane);
 
-        for (auto& c : clips)
-            if ((int) c[ids::lane] == lane && (double) c[ids::start] < endBeat
-                 && (double) c[ids::start] + getClipLength (edit, c) > startBeat)
-                busy = true;
-
-        if (! busy)
+        if (target.routes && target.insertID == insertID && isLaneFree (edit, clips, lane, startBeat, endBeat))
             return lane;
     }
 
-    return numLanes - 1;
+    // ...otherwise a free one that doesn't send takes elsewhere.
+    for (int lane = 0; lane < numLanes; ++lane)
+        if (! getLaneTarget (edit, lane).routes && isLaneFree (edit, clips, lane, startBeat, endBeat))
+            return lane;
+
+    return findFreeLane (edit, startBeat, endBeat);
 }
 
 juce::ValueTree addRecordedTake (te::Edit& edit, const AssetStore::ImportResult& r, const juce::String& insertID,
@@ -1283,7 +1395,8 @@ juce::ValueTree addRecordedTake (te::Edit& edit, const AssetStore::ImportResult&
 
     const double startBeat = secondsToBeats (edit, startSeconds);
     const double endBeat = secondsToBeats (edit, startSeconds + durationSeconds);
-    return addAudioClip (edit, r.hash, getChannelID (*channel), findFreeLane (edit, startBeat, endBeat),
+    return addAudioClip (edit, r.hash, getChannelID (*channel),
+                         findLaneForTake (edit, insert != nullptr ? insertID : juce::String(), startBeat, endBeat),
                          startBeat, offsetSeconds, durationSeconds);
 }
 
@@ -1386,6 +1499,21 @@ void removeAsset (te::Edit& edit, const juce::String& hash)
 
     if (asset.isValid())
         asset.getParent().removeChild (asset, um (edit));
+}
+
+juce::StringArray findUnusedTakes (te::Edit& edit)
+{
+    juce::StringArray result;
+
+    for (auto& a : getAssets (edit))
+    {
+        const auto hash = a[ids::sid].toString();
+
+        if (isTakeAsset (edit, hash) && getAssetUseCount (edit, hash) == 0 && getSamplerChannelsUsing (edit, hash).isEmpty())
+            result.add (hash);
+    }
+
+    return result;
 }
 
 juce::StringArray getPatternChannels (te::Edit& edit, const juce::ValueTree& pattern)

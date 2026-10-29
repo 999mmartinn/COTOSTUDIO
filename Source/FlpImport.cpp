@@ -317,7 +317,21 @@ juce::String parse (const juce::MemoryBlock& file, Project& project)
             case 17:  project.numerator = juce::jmax (1, (int) e.u32()); break;
             case 18:  project.denominator = juce::jmax (1, (int) e.u32()); break;
 
-            case 238: lastTrack = e.size >= 4 ? (int) e.u32() - 1 : -1; break;
+            case 238:   // playlist track data: u32 track number (1-based), u32 colour (R, G, B, 0), ...
+                lastTrack = e.size >= 4 ? (int) e.u32() - 1 : -1;
+
+                if (e.size >= 8 && juce::isPositiveAndBelow (lastTrack, 1000))
+                {
+                    const auto* rgb = e.data + 4;
+                    const bool flDefault = rgb[0] == 0x48 && rgb[1] == 0x51 && rgb[2] == 0x56;   // FL's grey #485156
+
+                    while (project.trackColours.size() <= lastTrack)
+                        project.trackColours.add (juce::Colours::transparentBlack);
+
+                    project.trackColours.set (lastTrack, flDefault ? juce::Colours::transparentBlack
+                                                                   : juce::Colour (rgb[0], rgb[1], rgb[2]));
+                }
+                break;
             case 239:
                 if (juce::isPositiveAndBelow (lastTrack, 1000))
                 {
@@ -956,6 +970,15 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
                                     .replace ("{N}", juce::String (i + 1)).replace ("{NAME}", name));
             else
                 song::setLaneName (edit, i, name);
+        }
+
+        // Track colours (only for tracks that came in): the tracks look like they did in FL.
+        for (int i = 0; i < juce::jmin (project.trackColours.size(), song::numLanes); ++i)
+        {
+            const auto& name = i < project.trackNames.size() ? project.trackNames[i] : juce::String();
+
+            if (! project.trackColours[i].isTransparent() && ! leftOut.contains (name, true))
+                song::setLaneColour (edit, i, project.trackColours[i]);
         }
     }
 

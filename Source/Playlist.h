@@ -7,7 +7,11 @@
       - Click empty space: place the selected pattern (drag to position it).
       - Drag a clip: move it (time and lane), snapping to bar / beat / step.
       - Drag a clip's right edge: shorten or lengthen it.
-      - Right-click a clip: delete it.
+      - Right-click a clip: delete it. Right-click its name strip: its menu (pattern: rename,
+        colour, make unique; audio take: the insert it plays through, rename).
+      - Tracks (lane headers) have a name, a colour and the insert that takes dropped on
+        them play through (right-click the header); dropping or moving a take onto such a
+        track routes it there.
       - Click a clip: open its pattern in the channel rack and piano roll.
       - Ctrl + mouse wheel: zoom.  Ruler: set where SONG mode starts.
       - Drop audio files (or "Import audio...") to add audio clips; each file gets

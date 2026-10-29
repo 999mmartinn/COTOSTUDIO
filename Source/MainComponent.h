@@ -69,6 +69,8 @@ private:
     void writeSong (const juce::File&, std::function<void (bool saved)> then);
     void askToSaveChanges (std::function<void()> proceed);
     void autosave();
+    /** Browser > Audio > "Delete unused takes...": takes with no clip, out of the song and off this PC (asks first). */
+    void deleteUnusedTakes();
     void updateTitle();
     juce::int64 currentHash() const;
     static juce::File songsFolder();

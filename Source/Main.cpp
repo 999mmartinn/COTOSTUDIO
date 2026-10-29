@@ -234,6 +234,11 @@ public:
         selfTest.reset();
         mainWindow.reset();
         engine.reset();
+
+        // Unsaved audio of the song just closed that was still open a moment ago (Windows
+        // can't delete open files): the engine has let go of it now.
+        for (auto& folder : appdata::cacheFolder().findChildFiles (juce::File::findDirectories, false, "Audio*"))
+            AssetStore::retryPendingDeletes (folder);
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
         juce::LocalisedStrings::setCurrentMappings (nullptr);
     }

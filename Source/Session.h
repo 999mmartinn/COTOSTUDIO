@@ -247,6 +247,17 @@ public:
     AssetStore& getAssetStore() noexcept           { return assets; }
     void setAssetFolder (const juce::File& folder) { assets.setFolder (folder); }
 
+    /** The file the song was last saved to or opened from (none = never saved). The audio
+        it keeps in its project folder is never cleaned up. Set by the main window. */
+    void setSongFile (const juce::File& f)         { songFile = f; }
+    /** The song is about to be closed (new / open / template / join / quit): the audio files
+        that came into this PC's cache while it was open and that its saved project doesn't
+        keep (recorded, imported, received - never saved) are deleted once it is gone,
+        unless the next song uses them. */
+    void forgetUnsavedAudio();
+    /** What forgetUnsavedAudio() would delete right now (for tests and the log). */
+    juce::StringArray getUnsavedAudio() const;
+
     /** Caps how fast each link uploads audio files (bytes per second, 0 = no limit).
         The self-test uses it to imitate a home internet upload. */
     void setUploadLimit (int bytesPerSecond)       { uploadLimit = juce::jmax (0, bytesPerSecond); }
@@ -289,6 +300,10 @@ private:
 
     te::Engine& engine;
     AssetStore assets;
+    juce::File songFile;
+    juce::StringArray audioToForget;   // set when the song is being closed
+    bool songClosing = false;
+    void forgetAudioNow (te::Edit* nextSong);
     std::unique_ptr<Recorder> recorder;
     juce::ValueTree deferredSnapshot;   // a fresh copy that arrived while recording
     std::atomic<int> uploadLimit { 0 };

@@ -3,6 +3,7 @@
 #include "ProjectFile.h"
 #include "AppData.h"
 #include "FlpImportDialog.h"
+#include "PluginWindow.h"
 
 static const juce::Colour background = theme::colours::bg, accent = theme::colours::accent;
 
@@ -439,6 +440,7 @@ MainComponent::MainComponent (te::Engine& e)
     browser.onPatternChosen = [this] (const juce::String& sid) { selectPattern (sid); };
     browser.onCollapse = [this] { setBrowserVisible (false); };
     browser.onImportAudio = [this] { playlist.showImportDialog(); };
+    browser.onDeleteUnusedTakes = [this] { deleteUnusedTakes(); };
     browser.onUserNameChanged = [this] (const juce::String& name) { settings()->setValue ("userName", name); };
     showBrowserButton.setTooltip (TRANS ("Show the browser (F8)"));
     showBrowserButton.onClick = [this] { setBrowserVisible (true); };
@@ -703,6 +705,9 @@ MainComponent::MainComponent (te::Engine& e)
 
     setWantsKeyboardFocus (true);
 
+    // Space (and the other shortcuts) work while a plugin's window has the keyboard.
+    pluginwindows::forwardKey = [this] (const juce::KeyPress& key) { return keyPressed (key); };
+
     // Two copies on one PC (testing alone) each get their own folder of audio
     // files, so the second copy really receives files like a second PC would.
     {
@@ -793,6 +798,7 @@ MainComponent::MainComponent (te::Engine& e)
 
 MainComponent::~MainComponent()
 {
+    pluginwindows::forwardKey = nullptr;
     stopTimer();
     saveSoundsState();
     settings()->setValue ("recordInputs", session.getRecorder().saveChoices());
@@ -1976,16 +1982,34 @@ void MainComponent::chooseDataFolder()
     });
 }
 
-void MainComponent::askToSaveChanges (std::function<void()> proceed)
+void MainComponent::askToSaveChanges (std::function<void()> proceedIn)
 {
+    // Whatever closes the song next: the audio it got while open and never saved leaves
+    // this PC's cache with it (unless the next song uses it).
+    auto proceed = [this, proceedIn]
+    {
+        session.setSongFile (currentFile);
+        session.forgetUnsavedAudio();
+        proceedIn();
+    };
+
     if (! dirty || session.getMode() == collab::Session::Mode::joined)
     {
         proceed();   // (a joiner's copy is the host's song: nothing of theirs to lose)
         return;
     }
 
+    // Say what "Don't save" throws away besides the changes: recordings and imports not in the saved project.
+    session.setSongFile (currentFile);
+    const int unsavedAudio = session.getUnsavedAudio().size();
+    auto question = TRANS ("Save the changes to \"{NAME}\" first?").replace ("{NAME}", session.getSongTitle());
+
+    if (unsavedAudio > 0)
+        question << "\n\n" << TRANS ("If you don't save, the {N} audio file(s) recorded or imported since the last save are deleted from this PC.")
+                                  .replace ("{N}", juce::String (unsavedAudio));
+
     auto options = juce::MessageBoxOptions::makeOptionsYesNoCancel (juce::MessageBoxIconType::QuestionIcon, TRANS ("Save changes?"),
-                                                                    TRANS ("Save the changes to \"{NAME}\" first?").replace ("{NAME}", session.getSongTitle()),
+                                                                    question,
                                                                     TRANS ("Save"), TRANS ("Don't save"), TRANS ("Cancel"), this);
     juce::AlertWindow::showAsync (options, [safe = juce::Component::SafePointer<MainComponent> (this), proceed] (int result)
     {
@@ -2444,6 +2468,72 @@ void MainComponent::autosave()
 
         for (int i = 10; i < backups.size(); ++i)
             backups.getReference (i).deleteFile();
+    });
+}
+
+void MainComponent::deleteUnusedTakes()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    if (session.isRecording() || session.getRecorder().isBusy())
+    {
+        appendLog (TRANS ("Stop recording first"));
+        return;
+    }
+
+    const auto unused = song::findUnusedTakes (*edit);
+
+    if (unused.isEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, TRANS ("Delete unused takes"),
+                                                TRANS ("There are no unused takes: every recorded take has a clip in the playlist."));
+        return;
+    }
+
+    double seconds = 0.0;
+
+    for (auto& h : unused)
+        seconds += song::getAssetSeconds (*edit, h);
+
+    const auto text = TRANS ("Delete {N} take(s) that have no clip in the playlist ({TIME} of audio)? They leave the song (for everyone in the session) and their files are deleted from this PC. This can't be undone.")
+                        .replace ("{N}", juce::String (unused.size()))
+                        .replace ("{TIME}", seconds < 60.0 ? juce::String (juce::roundToInt (seconds)) + " s"
+                                                           : juce::String (seconds / 60.0, 1) + " min");
+    auto options = juce::MessageBoxOptions::makeOptionsOkCancel (juce::MessageBoxIconType::WarningIcon, TRANS ("Delete unused takes"),
+                                                                 text, TRANS ("Delete"), TRANS ("Cancel"), this);
+
+    juce::AlertWindow::showAsync (options, [safe = juce::Component::SafePointer<MainComponent> (this), unused] (int result)
+    {
+        if (safe == nullptr || result != 1)
+            return;
+
+        auto* e = safe->state.getEdit();
+
+        if (e == nullptr)
+            return;
+
+        // (Still unused? Someone may have placed one meanwhile.)
+        juce::StringArray gone;
+
+        for (auto& h : song::findUnusedTakes (*e))
+            if (unused.contains (h))
+                gone.add (h);
+
+        e->getUndoManager().beginNewTransaction();
+
+        for (auto& h : gone)
+            song::removeAsset (*e, h);
+
+        // For good: Undo can't bring back files that are deleted (the rest of Undo goes too).
+        e->getUndoManager().clearUndoHistory();
+
+        safe->engine.getAudioFileManager().releaseAllFiles();
+        safe->session.getAssetStore().deleteFiles (gone);
+        safe->appendLog (TRANS ("Deleted {N} unused take(s)").replace ("{N}", juce::String (gone.size())));
+        safe->refresh();
     });
 }
 

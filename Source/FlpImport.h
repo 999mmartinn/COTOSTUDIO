@@ -80,6 +80,7 @@ namespace flimport
         int numerator = 4, denominator = 4;
         juce::Array<Insert> inserts;   // index = FL insert number (0 = master)
         juce::StringArray trackNames;  // playlist track names, index = track - 1 ("" = unnamed)
+        juce::Array<juce::Colour> trackColours;   // same index; transparent = FL's default grey
 
         /** True if the insert has a name, effects, or routing other than straight to the master. */
         bool isUsed (int insertNumber) const;

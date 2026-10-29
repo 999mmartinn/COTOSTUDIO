@@ -338,7 +338,7 @@ private:
     bool emptySongHadInput = false, scaleCheck = false;
 
     // FL Studio template import
-    bool flpCheck = false;
+    bool flpCheck = false, cleanupCheck = false;
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -2768,6 +2768,10 @@ private:
                 {
                     juce::MemoryBlock info (70, true);
                     info.copyFrom (&track, 0, 4);
+
+                    // Track colours (R, G, B, 0): track 1 keeps FL's default grey, track 3 is pink.
+                    const juce::uint8 grey[] = { 0x48, 0x51, 0x56, 0 }, pink[] = { 200, 40, 90, 0 };
+                    info.copyFrom (track == 1 ? grey : pink, 4, 4);
                     w.dataEvent (238, info);
                     w.textEvent (239, name);
                 }
@@ -2925,7 +2929,8 @@ private:
                           << ", our Reverb for Reeverb 2: " << (reverbIn ? "yes" : "NO")
                           << ", our Limiter on the master: " << (limiterOnMaster ? "yes" : "NO")
                           << ", not available: " << report.notAvailable.joinIntoString ("; ")
-                          << ", track 1 \"" << song::getLaneName (*edit, 0) << "\", track 3 \"" << song::getLaneName (*edit, 2) << "\"" << std::endl;
+                          << ", track 1 \"" << song::getLaneName (*edit, 0) << "\", track 3 \"" << song::getLaneName (*edit, 2) << "\""
+                          << " colours " << song::getLaneColour (*edit, 0).toString() << " / " << song::getLaneColour (*edit, 2).toString() << std::endl;
 
                 flpCheck = error.isEmpty() && std::abs (project.bpm - 140.0) < 1.0e-6
                         && used == juce::Array<int> { 1, 2, 4 } && report.insertsMade == 3
@@ -2941,7 +2946,8 @@ private:
                         && report.notAvailable.isEmpty()   // Fruity Limiter and Reeverb 2 now have ours
                         && edit->tempoSequence.getTempo (0)->getBpm() == 140.0
                         && song::getLaneName (*edit, 0) == "GRABAR VOCALES" && song::getLaneName (*edit, 2) == "CHORUS 1"
-                        && song::getLaneName (*edit, 1).isEmpty();
+                        && song::getLaneName (*edit, 1).isEmpty()
+                        && song::getLaneColour (*edit, 0).isTransparent() && song::getLaneColour (*edit, 2) == juce::Colour (200, 40, 90);
             },
             [this] { return flpCheck; },
             30000 });
@@ -2953,6 +2959,95 @@ private:
         steps.push_back ({ "Playlist track names: clearing the name removes it on every PC",
             [this] { song::setLaneName (H(), 5, {}); },
             [this] { return everywhere ([] (te::Edit& e) { return song::getLaneName (e, 5).isEmpty(); }); } });
+
+        steps.push_back ({ "Playlist tracks: the host colours track 6 and sends its takes to the master -> every PC has both",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::setLaneColour (H(), 5, juce::Colour (0xff3fa2db));
+                song::setLaneInsertSetting (H(), 5, song::laneToMaster);
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return song::getLaneColour (e, 5) == juce::Colour (0xff3fa2db) && song::getLaneInsertSetting (e, 5) == song::laneToMaster;
+                });
+            } });
+
+        steps.push_back ({ "Playlist tracks: clearing the colour and the setting removes the track's entry on every PC",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::setLaneColour (H(), 5, juce::Colours::transparentBlack);
+                song::setLaneInsertSetting (H(), 5, {});
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    int entries = 0;
+
+                    for (auto l : song::getModel (e).getChildWithName (song::ids::LANES))
+                        if ((int) l[song::ids::lane] == 5)
+                            ++entries;
+
+                    return entries == 0 && song::getLaneColour (e, 5).isTransparent();
+                });
+            } });
+
+        steps.push_back ({ "Takes follow their track: dropped on a track named like an insert (or set to one) they play through it; 'leave as is' keeps it; new takes go to their insert's track",
+            [] {},
+            [this]
+            {
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                auto* chorus = song::addInsert (*edit, "CHORUS 1");
+                auto* verse = song::addInsert (*edit, "VERSO 1");
+                auto* vocals = song::addInsert (*edit, "GRABAR VOCALES");
+
+                if (chorus == nullptr || verse == nullptr || vocals == nullptr)
+                    return false;
+
+                const auto chorusID = chorus->itemID.toString(), verseID = verse->itemID.toString(), vocalsID = vocals->itemID.toString();
+                song::setLaneName (*edit, 1, "GRABAR VOCALES");
+                song::setLaneName (*edit, 2, "chorus 1");                 // same name, other case: linked
+                song::setLaneInsertSetting (*edit, 3, verseID);           // set by hand
+                song::setLaneName (*edit, 4, "VERSO 1");
+                song::setLaneInsertSetting (*edit, 4, song::laneKeepsInsert);   // named like one, but told to leave takes alone
+                song::setLaneInsertSetting (*edit, 5, song::laneToMaster);
+
+                auto* take = song::addAudioChannel (*edit, "GRABAR VOCALES take 1");
+                song::setRoute (*edit, *take, vocalsID);
+                auto clip = song::addAudioClip (*edit, "0123456789abcdef0123456789abcdef", song::getChannelID (*take), 0, 0.0, 0.0, 2.0);
+
+                auto routeAfterMoveTo = [&] (int lane)
+                {
+                    clip.setProperty (song::ids::lane, lane, nullptr);
+                    song::routeTakeToLane (*edit, clip);
+                    return song::getRoute (*take);
+                };
+
+                const auto onChorus = routeAfterMoveTo (2);
+                const auto onKeep = routeAfterMoveTo (4);
+                const auto onVerse = routeAfterMoveTo (3);
+                const auto onPlain = routeAfterMoveTo (8);   // a track with no setting and no matching insert
+                const auto onMaster = routeAfterMoveTo (5);
+
+                // A new take recorded through GRABAR VOCALES lands on the free track linked to it (track 2).
+                AssetStore::ImportResult r;
+                r.hash = "fedcba9876543210fedcba9876543210";
+                r.lengthSeconds = 1.0;
+                r.sampleRate = 44100.0;
+                r.numChannels = 1;
+                auto recorded = song::addRecordedTake (*edit, r, vocalsID, 0.0, 0.0, 1.0);
+                const int recordedLane = recorded[song::ids::lane];
+
+                std::cout << "    chorus " << (onChorus == chorusID) << ", keep " << (onKeep == chorusID) << ", verse " << (onVerse == verseID)
+                          << ", plain track " << (onPlain == verseID) << ", master " << onMaster.isEmpty() << ", new take on track " << (recordedLane + 1) << std::endl;
+                edit = nullptr;
+                return onChorus == chorusID && onKeep == chorusID && onVerse == verseID && onPlain == verseID
+                    && onMaster.isEmpty() && recordedLane == 1;
+            } });
 
         steps.push_back ({ "Scale helper: notes snap to the scale (C major, A minor, C minor pentatonic), off-scale ties go down unless dragging up",
             [this]
@@ -4226,6 +4321,79 @@ private:
                 });
             },
             8000, 600 });
+
+        steps.push_back ({ "Cache clean-up: audio of a song closed without saving leaves this PC's cache; audio the saved project keeps, or the next song uses, stays",
+            [this]
+            {
+                fourth.newProject();
+                auto folder = testRoot.getChildFile ("fourth-cleanup-assets");
+                folder.deleteRecursively();
+                fourth.setAssetFolder (folder);
+                auto& store = fourth.getAssetStore();
+                auto* e = fourth.getEdit();
+
+                // Two files come in: one gets saved in the project, the other never does.
+                const auto unsavedTake = store.importAudioFile (toneFile);
+                const auto savedTake = store.importAudioFile (voiceFile);
+                song::addImportedAudio (*e, unsavedTake, "tone.wav", 0, 0.0);
+                song::addImportedAudio (*e, savedTake, "voice.wav", 1, 0.0);
+
+                const auto projectFile = testRoot.getChildFile ("cleanup").getChildFile ("cleanup.cotosong");
+                std::vector<project::AudioFile> audio { { savedTake.hash, "voice.wav", false } };
+                const auto saved = project::save (projectFile, e->state, store, audio, true, "test");
+                fourth.setSongFile (projectFile);
+
+                const auto unsaved = fourth.getUnsavedAudio();
+                fourth.forgetUnsavedAudio();
+                fourth.newProject();   // closes it ("don't save")
+
+                const bool firstOK = saved.ok() && unsaved.contains (unsavedTake.hash) && ! unsaved.contains (savedTake.hash)
+                                      && ! store.has (unsavedTake.hash) && store.has (savedTake.hash)
+                                      && projectFile.getSiblingFile ("Audio").getChildFile ("voice.flac").existsAsFile()
+                                      && store.getAddedSinceMark().isEmpty();
+
+                // A file the next song also uses stays.
+                const auto shared = store.importAudioFile (writeTestWav (testRoot.getChildFile ("shared.wav"), 0.5, 330.0, false));
+                song::addImportedAudio (*fourth.getEdit(), shared, "shared.wav", 0, 0.0);
+                fourth.setSongFile ({});
+                fourth.forgetUnsavedAudio();
+                fourth.newProject ([shared] (te::Edit& ed) { song::addImportedAudio (ed, shared, "shared.wav", 0, 0.0); }, "next");
+                const bool secondOK = store.has (shared.hash);
+
+                std::cout << "    unsaved file gone: " << ! store.has (unsavedTake.hash) << ", saved one kept: " << store.has (savedTake.hash)
+                          << ", used by the next song kept: " << secondOK << std::endl;
+                cleanupCheck = firstOK && secondOK;
+            },
+            [this] { return cleanupCheck; } });
+
+        steps.push_back ({ "Delete unused takes: finds the takes with no clip (not imported files, not used ones)",
+            [] {},
+            [this]
+            {
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                auto* insert = song::addInsert (*edit, "Vocals");
+
+                auto result = [] (const char* hash)
+                {
+                    AssetStore::ImportResult r;
+                    r.hash = hash;
+                    r.lengthSeconds = 1.0;
+                    r.sampleRate = 44100.0;
+                    r.numChannels = 1;
+                    return r;
+                };
+
+                const auto kept = result ("11111111111111111111111111111111"), unused = result ("22222222222222222222222222222222");
+                song::addRecordedTake (*edit, kept, insert->itemID.toString(), 0.0, 0.0, 1.0);
+                auto clip = song::addRecordedTake (*edit, unused, insert->itemID.toString(), 4.0, 0.0, 1.0);
+                song::removeClip (*edit, clip);
+                song::addAsset (*edit, result ("33333333333333333333333333333333"), "imported.wav");   // not a take
+
+                const auto found = song::findUnusedTakes (*edit);
+                std::cout << "    found: " << found.joinIntoString (", ") << std::endl;
+                edit = nullptr;
+                return found.size() == 1 && found[0] == unused.hash;
+            } });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

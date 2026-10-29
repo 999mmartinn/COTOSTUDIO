@@ -9,6 +9,68 @@ static juce::Colour patternColour (const juce::ValueTree& pattern)
     return c.isNotEmpty() ? juce::Colour::fromString (c) : theme::colours::mint;
 }
 
+/** Colours offered for patterns and playlist tracks (FL-style palette in our look). */
+struct NamedColour { juce::Colour colour; const char* name; };
+
+static const NamedColour palette[] =
+{
+    { theme::colours::red,    NEEDS_TRANS ("Red") },
+    { theme::colours::orange, NEEDS_TRANS ("Orange") },
+    { theme::colours::amber,  NEEDS_TRANS ("Yellow") },
+    { theme::colours::mint,   NEEDS_TRANS ("Green") },
+    { theme::colours::teal,   NEEDS_TRANS ("Teal") },
+    { theme::colours::sky,    NEEDS_TRANS ("Blue") },
+    { theme::colours::violet, NEEDS_TRANS ("Violet") },
+    { theme::colours::lilac,  NEEDS_TRANS ("Lilac") },
+    { theme::colours::pink,   NEEDS_TRANS ("Pink") },
+    { juce::Colour (0xff8a8f98), NEEDS_TRANS ("Grey") },
+};
+
+/** A colour submenu: items firstID + index; noneID = "no colour / default". */
+static juce::PopupMenu colourMenu (int firstID, int noneID, const juce::String& noneText, juce::Colour current)
+{
+    juce::PopupMenu m;
+
+    for (int i = 0; i < (int) std::size (palette); ++i)
+        m.addColouredItem (firstID + i, juce::String::fromUTF8 ("\xe2\x96\xa0  ") + TRANS (palette[i].name), palette[i].colour,
+                           true, current.withAlpha (1.0f) == palette[i].colour.withAlpha (1.0f));
+
+    m.addSeparator();
+    m.addItem (noneID, noneText, true, current.isTransparent());
+    return m;
+}
+
+static void askForText (const juce::String& title, const juce::String& message, const juce::String& initial,
+                        std::function<void (juce::String)> onOK)
+{
+    auto* w = new juce::AlertWindow (title, message, juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("text", initial);
+    w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([w, onOK] (int result)
+    {
+        if (result == 1)
+            onOK (w->getTextEditorContents ("text").trim());
+    }), true);
+}
+
+/** A take was put on a playlist track that sends takes to an insert: route it there, and say so. */
+static void routeTakeAndTell (EditorState& state, const juce::ValueTree& clip)
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr || ! routeTakeToLane (*edit, clip))
+        return;
+
+    if (auto* channel = findChannel (*edit, clip[ids::ch].toString()))
+    {
+        auto* insert = resolveRoute (*edit, *channel);
+        state.session.logMessage (TRANS ("{TAKE} now plays through {INSERT} (the track it is on)")
+                                    .replace ("{TAKE}", channel->getName())
+                                    .replace ("{INSERT}", insert != nullptr ? insert->getName() : TRANS ("Master")));
+    }
+}
+
 //==============================================================================
 class Playlist::ScrollViewport  : public juce::Viewport
 {
@@ -150,7 +212,7 @@ public:
 
             if (channel != nullptr)
             {
-                placeAudioChannel (*edit, *channel, lane, beat);
+                routeTakeAndTell (state, placeAudioChannel (*edit, *channel, lane, beat));
                 state.selectedChannel = state.placeAudioChannel = getChannelID (*channel);
             }
         }
@@ -233,6 +295,15 @@ public:
         {
             g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
+
+            // A coloured track (e.g. from an FL template) is tinted all along.
+            const auto tint = getLaneColour (*edit, lane);
+
+            if (! tint.isTransparent())
+            {
+                g.setColour (tint.withAlpha (0.07f));
+                g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
+            }
         }
 
         // Beat and bar lines
@@ -415,7 +486,9 @@ public:
             if (getChannelID (*channels[i]) == channelID)
                 index = i;
 
-        const auto colour = EditorState::channelColour (index);
+        // The track's colour if it has one (takes on a "CHORUS" track look like it), else the channel's.
+        const auto laneColour = getLaneColour (edit, clip[ids::lane]);
+        const auto colour = laneColour.isTransparent() ? EditorState::channelColour (index) : laneColour;
         const bool selected = state.selectedChannel == channelID;
 
         g.setColour (colour.withAlpha (0.22f));
@@ -482,6 +555,13 @@ public:
 
         if (e.mods.isPopupMenu())
         {
+            // On a clip's name strip: its menu (rename, colour, insert...). Elsewhere: delete, like FL.
+            if (hit.isValid() && ! isAutomationClip (hit) && e.position.y < clipBounds (hit).getY() + 16.0f)
+            {
+                showClipMenu (hit);
+                return;
+            }
+
             if (hit.isValid())
                 removeClip (*edit, hit);
 
@@ -497,6 +577,7 @@ public:
                      : (isAudioClip (hit) && e.position.x < bounds.getX() + 6.0f) ? DragMode::trimStart
                      : DragMode::move;
             grabStart = hit[ids::start];
+            grabLane = hit[ids::lane];
             grabBeat = beatAtX (e.position.x);
             grabOffset = hit[ids::offset];
             grabDuration = hit[ids::duration];
@@ -524,6 +605,7 @@ public:
 
             dragMode = DragMode::move;
             grabStart = dragClip[ids::start];
+            grabLane = -1;   // new: its track decides its insert in any case
             grabBeat = beatAtX (e.position.x);
             clickedExisting = false;
         }
@@ -598,6 +680,10 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        // A take put on (or moved to) a track that sends takes to an insert plays through it.
+        if (dragClip.isValid() && isAudioClip (dragClip) && (int) dragClip[ids::lane] != grabLane)
+            routeTakeAndTell (state, dragClip);
+
         // A click (no drag) on a clip opens its pattern for editing, or selects
         // an audio clip's channel.
         if (dragClip.isValid() && clickedExisting && ! moved)
@@ -631,6 +717,152 @@ public:
         dragClip = {};
     }
 
+    /** Right-click on a clip's name: pattern (rename, colour, make unique, delete) or
+        audio take (insert, rename, delete). */
+    void showClipMenu (juce::ValueTree clip)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        juce::PopupMenu m;
+        const auto clipSid = clip[ids::sid].toString();
+
+        if (isAudioClip (clip))
+        {
+            auto* channel = findChannel (*edit, clip[ids::ch].toString());
+            const auto hash = clip[ids::asset].toString();
+            m.addSectionHeader (getAssetName (*edit, hash));
+
+            if (channel != nullptr)
+            {
+                // The insert this take plays through (its channel's route).
+                juce::PopupMenu inserts;
+                inserts.addItem (10, TRANS ("Master"), true, resolveRoute (*edit, *channel) == nullptr);
+                auto list = getInserts (*edit);
+
+                for (int i = 0; i < list.size(); ++i)
+                    inserts.addItem (100 + i, juce::String (i + 1) + "  " + list[i]->getName(),
+                                     canRouteTo (*edit, *channel, list[i]->itemID.toString()),
+                                     getRoute (*channel) == list[i]->itemID.toString());
+
+                auto* now = resolveRoute (*edit, *channel);
+                m.addSubMenu (TRANS ("Insert") + ": " + (now != nullptr ? now->getName() : TRANS ("Master")), inserts);
+            }
+
+            m.addItem (2, TRANS ("Rename..."));
+            m.addSeparator();
+            m.addItem (3, TRANS ("Delete this clip"));
+        }
+        else
+        {
+            auto pattern = findPattern (*edit, clip[ids::pattern].toString());
+
+            if (! pattern.isValid())
+                return;
+
+            m.addSectionHeader (pattern[ids::name].toString());
+            m.addItem (1, TRANS ("Rename..."));
+            const auto c = pattern[ids::colour].toString();
+            m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("Default colour"),
+                                                        c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack));
+            m.addItem (4, TRANS ("Make unique (a copy of the pattern for this clip only)"));
+            m.addSeparator();
+            m.addItem (3, TRANS ("Delete this clip"));
+        }
+
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                         [safe = juce::Component::SafePointer<Lanes> (this), clipSid] (int r)
+        {
+            if (safe == nullptr || r == 0)
+                return;
+
+            auto& st = safe->state;
+            auto* e = st.getEdit();
+            juce::ValueTree target;
+
+            if (e != nullptr)
+                for (auto& cl : getClips (*e))
+                    if (cl[ids::sid].toString() == clipSid)
+                        target = cl;
+
+            if (! target.isValid())
+                return;   // deleted meanwhile (by you or someone else)
+
+            auto* um = &e->getUndoManager();
+            auto pattern = findPattern (*e, target[ids::pattern].toString());
+            auto* channel = findChannel (*e, target[ids::ch].toString());
+
+            if (r == 3)
+            {
+                st.beginAction();
+                removeClip (*e, target);
+            }
+            else if (r == 1 && pattern.isValid())
+            {
+                askForText (TRANS ("Rename pattern"), TRANS ("New name:"), pattern[ids::name].toString(), [safe, pattern] (juce::String name) mutable
+                {
+                    if (safe == nullptr || name.isEmpty() || ! pattern.getParent().isValid())
+                        return;
+
+                    if (auto* ed = safe->state.getEdit())
+                    {
+                        safe->state.beginAction();
+                        pattern.setProperty (ids::name, name.substring (0, 40), &ed->getUndoManager());
+                    }
+                });
+            }
+            else if (r == 2 && isAudioClip (target))
+            {
+                const auto hash = target[ids::asset].toString();
+                askForText (TRANS ("Rename audio"), TRANS ("New name:"), getAssetName (*e, hash).upToLastOccurrenceOf (".", false, false),
+                            [safe, hash] (juce::String name)
+                {
+                    if (safe == nullptr || name.isEmpty())
+                        return;
+
+                    if (auto* ed = safe->state.getEdit())
+                    {
+                        safe->state.beginAction();
+                        renameAsset (*ed, hash, name);
+                    }
+                });
+            }
+            else if (r == 4 && pattern.isValid())
+            {
+                st.beginAction();
+                auto copy = clonePattern (*e, pattern);
+
+                if (copy.isValid())
+                {
+                    target.setProperty (ids::pattern, copy[ids::sid].toString(), um);
+                    st.viewedPattern = copy[ids::sid].toString();
+                }
+            }
+            else if (r >= 200 && r <= 299 && pattern.isValid())
+            {
+                st.beginAction();
+
+                if (r == 299)
+                    pattern.removeProperty (ids::colour, um);
+                else if (r - 200 < (int) std::size (palette))
+                    pattern.setProperty (ids::colour, palette[r - 200].colour.toString(), um);
+            }
+            else if ((r == 10 || r >= 100) && channel != nullptr)
+            {
+                st.beginAction();
+                auto* insert = r == 10 ? nullptr : getInserts (*e)[r - 100];
+                setRoute (*e, *channel, insert != nullptr ? insert->itemID.toString() : juce::String());
+            }
+
+            if (st.onSelectionChanged)
+                st.onSelectionChanged();
+
+            safe->repaint();
+        });
+    }
+
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
     {
         if (e.mods.isCommandDown())
@@ -646,6 +878,7 @@ private:
     struct DropPreview { int lane = -1; double beat = 0.0; juce::String kind, id; } dropPreview;
     enum class DragMode { move, resize, trimStart } dragMode = DragMode::move;
     double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0;
+    int grabLane = -1;
     bool moved = false, clickedExisting = false;
 };
 
@@ -871,8 +1104,10 @@ class Playlist::LaneHeader  : public juce::Component,
 public:
     LaneHeader (Playlist& p) : owner (p)
     {
-        setTooltip (TRANS ("Double-click a track to name it (everyone sees the name)"));
+        setTooltip (TRANS ("Double-click a track to name it. Right-click: name, colour, and the insert that takes dropped on it play through (everyone sees them)"));
     }
+
+    int laneAt (int y) const     { return (y + owner.viewport->getViewPositionY()) / laneHeight; }
 
     void paint (juce::Graphics& g) override
     {
@@ -888,6 +1123,35 @@ public:
             const int y = lane * laneHeight - scrollY;
             g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, y, getWidth() - 1, laneHeight);
+
+            if (edit != nullptr)
+            {
+                // The track's colour: a strip on the left and a light tint.
+                const auto colour = getLaneColour (*edit, lane);
+
+                if (! colour.isTransparent())
+                {
+                    g.setColour (colour.withAlpha (0.14f));
+                    g.fillRect (0, y, getWidth() - 1, laneHeight);
+                    g.setColour (colour);
+                    g.fillRect (0, y + 1, 4, laneHeight - 2);
+                }
+
+                // Where takes dropped here play: the insert's number (M = master).
+                const auto target = getLaneTarget (*edit, lane);
+
+                if (target.routes)
+                {
+                    auto* ins = findInsert (*edit, target.insertID);
+                    const auto badge = ins != nullptr ? juce::String (getInsertNumber (*edit, *ins)) : juce::String ("M");
+                    auto box = juce::Rectangle<float> ((float) getWidth() - 25.0f, (float) y + 3.0f, 21.0f, 11.0f);
+                    g.setColour (theme::colours::accentSoft);
+                    g.fillRoundedRectangle (box, 3.0f);
+                    g.setColour (theme::colours::lilac);
+                    g.setFont (theme::mono (8.5f, true));
+                    g.drawText (juce::String::fromUTF8 ("\xe2\x86\x92") + badge, box.toNearestInt(), juce::Justification::centred, false);
+                }
+            }
 
             const auto name = edit != nullptr ? getLaneName (*edit, lane) : juce::String();
 
@@ -913,10 +1177,84 @@ public:
         g.fillRect (getWidth() - 1, 0, 1, getHeight());
     }
 
-    void mouseDoubleClick (const juce::MouseEvent& e) override
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+            showLaneMenu (laneAt (e.y));
+    }
+
+    void showLaneMenu (int lane)
     {
         auto* edit = owner.state.getEdit();
-        const int lane = (e.y + owner.viewport->getViewPositionY()) / laneHeight;
+
+        if (edit == nullptr || ! juce::isPositiveAndBelow (lane, numLanes))
+            return;
+
+        const auto name = getLaneName (*edit, lane);
+        const auto setting = getLaneInsertSetting (*edit, lane);
+        juce::PopupMenu m, takes;
+        m.addSectionHeader (TRANS ("Track") + " " + juce::String (lane + 1) + (name.isNotEmpty() ? ": " + name : juce::String()));
+        m.addItem (1, TRANS ("Rename..."));
+        m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("No colour"), getLaneColour (*edit, lane)));
+
+        // Where takes (audio clips) dropped on this track play.
+        auto* named = findInsertNamed (*edit, name);
+        takes.addItem (300, TRANS ("Automatic: the insert with the track's name") + " ("
+                              + (named != nullptr ? named->getName() : TRANS ("none")) + ")", true, setting.isEmpty());
+        takes.addItem (301, TRANS ("Leave their insert as it is"), true, setting == laneKeepsInsert);
+        takes.addSeparator();
+        takes.addItem (302, TRANS ("Master"), true, setting == laneToMaster);
+        auto inserts = getInserts (*edit);
+
+        for (int i = 0; i < inserts.size(); ++i)
+            takes.addItem (400 + i, juce::String (i + 1) + "  " + inserts[i]->getName(), true, setting == inserts[i]->itemID.toString());
+
+        m.addSubMenu (TRANS ("Takes dropped here play through"), takes);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                         [safe = juce::Component::SafePointer<LaneHeader> (this), lane] (int r)
+        {
+            if (safe == nullptr || r == 0)
+                return;
+
+            auto& st = safe->owner.state;
+            auto* e = st.getEdit();
+
+            if (e == nullptr)
+                return;
+
+            if (r == 1)
+            {
+                safe->askName (lane);
+                return;
+            }
+
+            st.beginAction();
+
+            if (r >= 200 && r <= 299)
+                setLaneColour (*e, lane, r == 299 || r - 200 >= (int) std::size (palette) ? juce::Colours::transparentBlack
+                                                                                          : palette[r - 200].colour);
+            else if (r == 300)  setLaneInsertSetting (*e, lane, {});
+            else if (r == 301)  setLaneInsertSetting (*e, lane, laneKeepsInsert);
+            else if (r == 302)  setLaneInsertSetting (*e, lane, laneToMaster);
+            else if (auto* ins = getInserts (*e)[r - 400])
+                setLaneInsertSetting (*e, lane, ins->itemID.toString());
+
+            safe->owner.repaint();
+            safe->owner.lanes->repaint();
+            safe->repaint();
+        });
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (! e.mods.isPopupMenu())
+            askName (laneAt (e.y));
+    }
+
+    void askName (int lane)
+    {
+        auto* edit = owner.state.getEdit();
 
         if (edit == nullptr || ! juce::isPositiveAndBelow (lane, numLanes))
             return;
@@ -1190,6 +1528,7 @@ void Playlist::importFiles (const juce::Array<juce::File>& files, int lane, doub
 
                 if (clip.isValid())
                 {
+                    routeTakeAndTell (safe->state, clip);
                     safe->state.selectedChannel = clip[ids::ch].toString();
                     safe->state.placeAudioChannel = safe->state.selectedChannel;
                     safe->state.session.logMessage ("Added " + file.getFileName() + " ("
@@ -1208,7 +1547,7 @@ void Playlist::refresh()
     auto* audio = state.getPlaceAudioChannel();
     const auto placing = audio != nullptr ? audio->getName() : state.getPattern()[ids::name].toString();
     title.setText (juce::String::fromUTF8 ("\xc2\xb7 ") + TRANS ("click to place") + " \"" + placing + "\"", juce::dontSendNotification);
-    title.setTooltip (TRANS ("Click to place") + " \"" + placing + "\". " + TRANS ("Drag to move, drag the edges to resize, right-click to delete, Alt: no snap. Drop audio files here"));
+    title.setTooltip (TRANS ("Click to place") + " \"" + placing + "\". " + TRANS ("Drag to move, drag the edges to resize, right-click to delete (right-click a clip's name: rename, colour, insert), Alt: no snap. Drop audio files here"));
     layoutContent();
     lanes->repaint();
     ruler->repaint();

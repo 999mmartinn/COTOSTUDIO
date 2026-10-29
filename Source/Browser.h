@@ -10,7 +10,8 @@
       - Audio: every audio file in the song (recorded takes and imported files)
         with its length and whether it has arrived here yet; click to select it
         for placing, drag it onto the playlist, right-click to rename or delete it
-        from the project for good.
+        from the project for good; "Delete unused takes" clears out every take that
+        has no clip in the playlist.
       - Session: your name, who is connected (and what they're doing), and chat.
 */
 class Browser  : public juce::Component,
@@ -30,6 +31,7 @@ public:
     std::function<void (const juce::String& patternSid)> onPatternChosen;
     std::function<void()> onCollapse;
     std::function<void()> onImportAudio;
+    std::function<void()> onDeleteUnusedTakes;
     std::function<void (const juce::String& name)> onUserNameChanged;
 
     void paint (juce::Graphics&) override;

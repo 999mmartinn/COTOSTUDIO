@@ -9,7 +9,18 @@
 #include "ReverbEditor.h"
 #include "SamplerEditor.h"
 
+#if JUCE_WINDOWS
+ #include "PluginKeysWin.h"
+#endif
+
 namespace te = tracktion;
+
+namespace pluginwindows
+{
+    /** Keys a plugin window doesn't use (Space = play / stop, Ctrl+S...) go to the main
+        window, so the song can be started and stopped while you tweak a plugin (set by it). */
+    inline std::function<bool (const juce::KeyPress&)> forwardKey;
+}
 
 //==============================================================================
 /** Simple sliders for a built-in Tracktion plugin (they have no GUI of their own). */
@@ -142,10 +153,37 @@ public:
         setTopLeftPosition (plugin.windowState->choosePositionForPluginWindow());
         setVisible (true);
         toFront (true);
+
+       #if JUCE_WINDOWS
+        // A plugin's own editor (VST3) gets the keys before us: Space there plays / stops too.
+        nativeHandle = getWindowHandle();
+        pluginkeys::onSpace = []
+        {
+            juce::MessageManager::callAsync ([]
+            {
+                if (pluginwindows::forwardKey)
+                    pluginwindows::forwardKey (juce::KeyPress (juce::KeyPress::spaceKey));
+            });
+        };
+        pluginkeys::watch (nativeHandle);
+       #endif
+    }
+
+    /** Keys this window's controls don't use go to the main window (Space plays / stops). */
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (pluginwindows::forwardKey && pluginwindows::forwardKey (key))
+            return true;
+
+        return DocumentWindow::keyPressed (key);
     }
 
     ~PluginEditorWindow() override
     {
+       #if JUCE_WINDOWS
+        pluginkeys::unwatch (nativeHandle);
+       #endif
+
         // Writes the plugin's full state (preset etc.) into the song and sends it
         // to the other peers.
         collab::EditSync::ScopedPluginStateCommit commit;
@@ -162,6 +200,7 @@ public:
 private:
     te::Plugin& plugin;
     std::unique_ptr<juce::Component> content;
+    void* nativeHandle = nullptr;
 };
 
 //==============================================================================

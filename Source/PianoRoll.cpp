@@ -71,6 +71,7 @@ public:
     std::function<void (float factor, float x)> onZoom;     // Ctrl+wheel at x (in this component)
     std::function<void()> onToolKey;                        // P / E / C changed the tool
     std::function<void()> onPreviewChanged;                 // (the keyboard shows the key)
+    std::function<void (int)> onStepChannel;                // Alt+Up / Alt+Down: another instrument
 
     int pitchAtY (float y) const       { return juce::jlimit (lowestPitch, highestPitch, highestPitch - (int) std::floor (y / rowHeight)); }
     float yForPitch (int pitch) const   { return (float) ((highestPitch - pitch) * rowHeight); }
@@ -751,6 +752,16 @@ public:
         if (is ('e'))   return setTool (EditorState::PianoTool::select);
         if (is ('c'))   return setTool (EditorState::PianoTool::slice);
 
+        const int alt = juce::ModifierKeys::altModifier;
+
+        if (is (juce::KeyPress::upKey, alt) || is (juce::KeyPress::downKey, alt))
+        {
+            if (onStepChannel)
+                onStepChannel (is (juce::KeyPress::upKey, alt) ? -1 : 1);
+
+            return true;
+        }
+
         if (is ('a', cmd))   { selected.clear(); for (auto& n : currentNotes()) selected.add (n[ids::sid].toString()); repaint(); return true; }
         if (is ('d', cmd))   { selected.clear(); repaint(); return true; }
         if (is ('c', cmd))   return copyNotes (false);
@@ -1294,6 +1305,61 @@ private:
 };
 
 //==============================================================================
+/** The instrument whose notes you edit: its colour and name; click for the list of
+    instruments, the mouse wheel steps through them. */
+class PianoRoll::ChannelPicker  : public juce::Component,
+                                 public juce::SettableTooltipClient
+{
+public:
+    explicit ChannelPicker (PianoRoll& o) : owner (o)
+    {
+        setTooltip (TRANS ("The instrument whose notes you edit here: click for the list (a dot = it has notes in this pattern). "
+                           "< > or Alt+Up / Alt+Down go to the previous / next one"));
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+
+    juce::String name;
+    juce::Colour colour { theme::colours::muted };
+
+    int idealWidth() const
+    {
+        return juce::jmin (230, 10 + 10 + 8 + (int) std::ceil (juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), name)) + 6 + 12 + 10 + 6);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (0.0f, 3.0f);
+        g.setColour (isMouseOver() ? theme::colours::raised : theme::colours::well);
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (theme::colours::line);
+        g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+
+        auto inner = r.reduced (10.0f, 0.0f);
+        g.setColour (colour);
+        g.fillRoundedRectangle (inner.removeFromLeft (10.0f).withSizeKeepingCentre (10.0f, 10.0f), 3.0f);
+        inner.removeFromLeft (8.0f);
+        theme::drawIcon (g, theme::Icon::chevronDown, inner.removeFromRight (12.0f).withSizeKeepingCentre (12.0f, 12.0f), theme::colours::muted);
+        inner.removeFromRight (6.0f);
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (12.5f, theme::Weight::bold));
+        g.drawText (name, inner, juce::Justification::centredLeft, true);
+    }
+
+    void mouseEnter (const juce::MouseEvent&) override   { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override    { repaint(); }
+    void mouseDown (const juce::MouseEvent&) override    { owner.showChannelMenu(); }
+
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        if (w.deltaY != 0.0f)
+            owner.stepChannel (w.deltaY > 0.0f ? -1 : 1);
+    }
+
+private:
+    PianoRoll& owner;
+};
+
+//==============================================================================
 PianoRoll::PianoRoll (EditorState& s) : state (s)
 {
     grid = std::make_unique<Grid> (state);
@@ -1312,6 +1378,27 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     ruler->onZoom = [this] (float factor, float x) { zoomAround (factor, x); };
     ruler->getViewX = [this] { return viewport.getViewPositionX(); };
     grid->onToolKey = [this] { updateTools(); };
+    grid->onStepChannel = [this] (int d) { stepChannel (d); };
+
+    // Which instrument: its name (a menu of all of them) between < and >.
+    picker = std::make_unique<ChannelPicker> (*this);
+    addAndMakeVisible (*picker);
+    theme::setIcon (prevChannelButton, theme::Icon::chevronLeft);
+    theme::setIcon (nextChannelButton, theme::Icon::chevronRight);
+    prevChannelButton.setTooltip (TRANS ("Previous instrument (Alt+Up)"));
+    nextChannelButton.setTooltip (TRANS ("Next instrument (Alt+Down)"));
+
+    for (auto* b : { &prevChannelButton, &nextChannelButton })
+    {
+        b->getProperties().set ("iconOnly", true);
+        theme::setStyle (*b, "flat");
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+        addAndMakeVisible (b);
+    }
+
+    prevChannelButton.onClick = [this] { stepChannel (-1); };
+    nextChannelButton.onClick = [this] { stepChannel (1); };
     grid->onPreviewChanged = [this] { keys->repaint(); };
 
     // The wheel over the keyboard or the ruler scrolls the notes.
@@ -1564,6 +1651,92 @@ void PianoRoll::showScaleMenu()
     });
 }
 
+/** The instruments (not audio channels), in rack order. */
+static juce::Array<te::AudioTrack*> instrumentChannels (te::Edit& edit)
+{
+    juce::Array<te::AudioTrack*> result;
+
+    for (auto* t : song::getChannels (edit))
+        if (! song::isAudioChannel (*t))
+            result.add (t);
+
+    return result;
+}
+
+void PianoRoll::stepChannel (int direction)
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    auto list = instrumentChannels (*edit);
+
+    if (list.isEmpty())
+        return;
+
+    const int now = list.indexOf (state.getSelectedChannel());
+    const int next = now < 0 ? 0 : juce::jlimit (0, list.size() - 1, now + direction);
+
+    if (next == now)
+        return;
+
+    state.selectedChannel = song::getChannelID (*list[next]);
+    state.placeAudioChannel = {};
+
+    if (state.onSelectionChanged)
+        state.onSelectionChanged();
+
+    focusNotes();
+}
+
+void PianoRoll::showChannelMenu()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    auto list = instrumentChannels (*edit);
+    auto all = song::getChannels (*edit);
+    auto pattern = state.getPattern();
+    juce::PopupMenu m;
+    m.addSectionHeader (TRANS ("Edit the notes of") + " (" + pattern[ids::name].toString() + ")");
+
+    for (int i = 0; i < list.size(); ++i)
+    {
+        auto* t = list[i];
+        const bool hasNotes = ! getNotes (pattern, getChannelID (*t)).isEmpty();
+        m.addColouredItem (1 + i, juce::String::fromUTF8 ("\xe2\x96\xa0  ") + t->getName()
+                                    + (hasNotes ? juce::String::fromUTF8 ("  \xe2\x80\xa2") : juce::String()),
+                           EditorState::channelColour (all.indexOf (t)), true, t == state.getSelectedChannel());
+    }
+
+    if (list.isEmpty())
+        m.addItem (-1, TRANS ("(no instruments in the rack)"), false);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (picker.get()),
+                     [safe = juce::Component::SafePointer<PianoRoll> (this), list] (int r)
+    {
+        if (safe == nullptr || r <= 0 || r > list.size())
+            return;
+
+        auto* e = safe->state.getEdit();
+
+        // (Still there? It may have been deleted while the menu was open.)
+        if (e == nullptr || ! song::getChannels (*e).contains (list[r - 1]))
+            return;
+
+        safe->state.selectedChannel = song::getChannelID (*list[r - 1]);
+        safe->state.placeAudioChannel = {};
+
+        if (safe->state.onSelectionChanged)
+            safe->state.onSelectionChanged();
+
+        safe->focusNotes();
+    });
+}
+
 PianoRoll::~PianoRoll()
 {
     stopTimer();
@@ -1577,6 +1750,9 @@ void PianoRoll::refresh()
     headingColour = channel != nullptr && state.getEdit() != nullptr
                       ? EditorState::channelColour (song::getChannels (*state.getEdit()).indexOf (channel))
                       : theme::colours::muted;
+    picker->name = heading;
+    picker->colour = headingColour;
+    picker->repaint();
 
     grid->checkContext();
     updateHint();
@@ -1592,12 +1768,7 @@ void PianoRoll::paint (juce::Graphics& g)
 {
     g.fillAll (theme::colours::wellAlt);
 
-    // Which channel: a colour chip and its name, then the hint.
-    auto top = getLocalBounds().removeFromTop (titleHeight).reduced (12, 0);
-    g.setColour (headingColour);
-    g.fillRoundedRectangle (top.removeFromLeft (10).toFloat().withSizeKeepingCentre (10.0f, 10.0f), 3.0f);
-    top.removeFromLeft (8);
-    theme::drawPanelTitle (g, top, heading);
+    // (The instrument's name and colour are on the picker in the title row.)
 }
 
 void PianoRoll::resized()
@@ -1624,8 +1795,14 @@ void PianoRoll::resized()
     pencilButton.setBounds (buttons.removeFromRight (30));
     top.setRight (pencilButton.getX() - 10);
 
-    const int headingWidth = 18 + (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), heading) + 8;
-    title.setBounds (top.withTrimmedLeft (headingWidth));
+    // Left: < [instrument] > then the hint.
+    auto left = top.reduced (0, 2);
+    prevChannelButton.setBounds (left.removeFromLeft (24));
+    left.removeFromLeft (2);
+    picker->setBounds (left.removeFromLeft (picker->idealWidth()));
+    left.removeFromLeft (2);
+    nextChannelButton.setBounds (left.removeFromLeft (24));
+    title.setBounds (top.withLeft (nextChannelButton.getRight() + 10));
     ruler->setBounds (r.removeFromTop (20).withTrimmedRight (viewport.getScrollBarThickness()));
     keysHolder.setBounds (r.removeFromLeft (keyboardWidth));
     viewport.setBounds (r);

@@ -3,6 +3,7 @@
 #include "PatternCompiler.h"
 #include "AppData.h"
 #include "MixerRouter.h"
+#include "ProjectFile.h"
 
 namespace collab
 {
@@ -237,6 +238,62 @@ Session::~Session()
     compiler.reset();
     editSync.reset();
     edit.reset();
+
+    // Closing the app without saving: audio that only this unsaved song used goes.
+    if (songClosing)
+        forgetAudioNow (nullptr);
+}
+
+//==============================================================================
+juce::StringArray Session::getUnsavedAudio() const
+{
+    // Kept: what the saved project has in its folder. An old-format song (audio inside the
+    // file) or a song file that can't be read keeps everything, to be safe.
+    std::set<juce::String> kept;
+
+    if (songFile.existsAsFile())
+    {
+        if (! songFile.hasFileExtension (appdata::songExtension))
+            return {};
+
+        for (auto& [path, hash] : project::readAudioList (songFile))
+            kept.insert (hash);
+    }
+
+    juce::StringArray result;
+
+    for (auto& h : assets.getAddedSinceMark())
+        if (kept.count (h) == 0)
+            result.add (h);
+
+    return result;
+}
+
+void Session::forgetUnsavedAudio()
+{
+    audioToForget = getUnsavedAudio();
+    songClosing = true;
+}
+
+void Session::forgetAudioNow (te::Edit* nextSong)
+{
+    songClosing = false;
+    auto list = audioToForget;
+    audioToForget.clear();
+
+    // Never what the next song uses (e.g. a file both songs have).
+    if (nextSong != nullptr)
+        for (auto& h : song::getAssetHashes (*nextSong))
+            list.removeString (h);
+
+    if (! list.isEmpty())
+    {
+        engine.getAudioFileManager().releaseAllFiles();   // (Windows can't delete open files)
+        assets.deleteFiles (list);
+        log ("Removed " + juce::String (list.size()) + " unsaved audio file(s) of the closed song from this PC's cache");
+    }
+
+    assets.markNewSong();
 }
 
 void Session::log (const juce::String& s)
@@ -332,6 +389,10 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit, bool assignSyncIDs
     // fingerprint (otherwise an untouched new song would look changed).
     if (assignSyncIDs)
         editSync->assignMissingSyncIDs();
+
+    // The old song was closed on purpose (not a resync): its unsaved audio goes now.
+    if (songClosing)
+        forgetAudioNow (edit.get());
 
     if (onEditReplaced)
         onEditReplaced();

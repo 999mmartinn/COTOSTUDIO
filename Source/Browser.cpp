@@ -269,6 +269,12 @@ public:
         theme::setIcon (importButton, theme::Icon::plus);
         importButton.onClick = [this] { if (owner.onImportAudio) owner.onImportAudio(); };
         addAndMakeVisible (importButton);
+
+        cleanButton.setButtonText (TRANS ("Delete unused takes..."));
+        cleanButton.setTooltip (TRANS ("Deletes every recorded take that has no clip in the playlist, for good (asks first)"));
+        theme::setIcon (cleanButton, theme::Icon::close);
+        cleanButton.onClick = [this] { if (owner.onDeleteUnusedTakes) owner.onDeleteUnusedTakes(); };
+        addAndMakeVisible (cleanButton);
     }
 
     void refresh()
@@ -292,6 +298,8 @@ public:
     void resized() override
     {
         auto r = getLocalBounds();
+        cleanButton.setBounds (r.removeFromBottom (28).reduced (6, 0));
+        r.removeFromBottom (4);
         importButton.setBounds (r.removeFromBottom (28).reduced (6, 0));
         r.removeFromBottom (6);
         r.removeFromTop (headingHeight);
@@ -424,7 +432,7 @@ private:
     Browser& owner;
     EditorState& state;
     juce::ListBox list;
-    juce::TextButton importButton { "Import audio..." };
+    juce::TextButton importButton { "Import audio..." }, cleanButton;
     juce::Array<juce::ValueTree> assets;
 
     void rename (const juce::String& hash)

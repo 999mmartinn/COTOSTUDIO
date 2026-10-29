@@ -97,7 +97,7 @@ target_link_libraries(COTOSTUDIO PRIVATE COTOSTUDIOData)
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)
-    target_sources(COTOSTUDIO PRIVATE Source/Mp3WriterWin.cpp Source/HardLinkWin.cpp)
+    target_sources(COTOSTUDIO PRIVATE Source/Mp3WriterWin.cpp Source/HardLinkWin.cpp Source/PluginKeysWin.cpp)
     target_link_libraries(COTOSTUDIO PRIVATE mfplat mfreadwrite mfuuid)
 endif()
 

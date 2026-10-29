@@ -162,6 +162,29 @@ namespace song
     juce::String getLaneName (te::Edit&, int lane);
     void setLaneName (te::Edit&, int lane, const juce::String& name);
 
+    /** A playlist track's colour (LANE colour), transparent = none. Shared. */
+    juce::Colour getLaneColour (te::Edit&, int lane);
+    void setLaneColour (te::Edit&, int lane, juce::Colour);
+
+    /** Where audio clips (takes) dropped on a track play: LANE insert = an insert's ID,
+        laneToMaster, laneKeepsInsert (leave them as they are) or "" (not set: the insert
+        with the track's name, if any - so an FL template's tracks work straight away). */
+    inline const juce::String laneToMaster { "master" }, laneKeepsInsert { "-" };
+    juce::String getLaneInsertSetting (te::Edit&, int lane);
+    void setLaneInsertSetting (te::Edit&, int lane, const juce::String& setting);
+    /** The insert with this name (any case), or nullptr. */
+    te::AudioTrack* findInsertNamed (te::Edit&, const juce::String& name);
+
+    struct LaneTarget
+    {
+        bool routes = false;      // false: takes put on this track keep their insert
+        juce::String insertID;    // "" = master
+    };
+    LaneTarget getLaneTarget (te::Edit&, int lane);
+    /** An audio clip was put on a track: its channel now plays through that track's insert.
+        True if the route changed. */
+    bool routeTakeToLane (te::Edit&, const juce::ValueTree& clip);
+
     //==============================================================================
     // Mixer. Routing is stored as the destination insert's ID ("" = master) in our
     // own property; each PC applies it to the engine locally (see MixerRouter).
@@ -280,6 +303,9 @@ namespace song
 
     /** First playlist lane with nothing between these beats (the last lane if all are busy). */
     int findFreeLane (te::Edit&, double startBeat, double endBeat);
+    /** Where a new take recorded through an insert goes: a free track that sends takes to
+        that insert, else a free one that sends them nowhere, else any free one. */
+    int findLaneForTake (te::Edit&, const juce::String& insertID, double startBeat, double endBeat);
 
     /** A finished recording: its file, a new audio channel ("<insert> take N") routed to
         that insert, and a playlist clip exactly where it was recorded. */
@@ -304,6 +330,8 @@ namespace song
     te::AudioTrack* findOrCreateChannelForAsset (te::Edit&, const juce::String& hash);
     /** Deletes a file from the song for good: its clips, its audio and sampler channel(s) and its entry. */
     void removeAsset (te::Edit&, const juce::String& hash);
+    /** Recorded takes nothing plays: no clip in the playlist and no sampler channel. */
+    juce::StringArray findUnusedTakes (te::Edit&);
 
     /** Channels that have notes in a pattern, in channel-rack order. */
     juce::StringArray getPatternChannels (te::Edit&, const juce::ValueTree& pattern);
