@@ -26,6 +26,35 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.5
+
+Three more of our own effects, in the spirit of FL's Fruity Limiter, Fruity Delay 3
+and Fruity Reeverb 2 (written from scratch from FL's public manual, no FL code). Mixer
+slot → *Built-in* → *Limiter*, *Delay* or *Reverb*; click the slot to open one. Every
+knob syncs to the session and can be automated.
+
+* **Limiter**: compressor (gain, threshold, ratio, knee, attack, release, curve,
+  RMS sustain) → limiter with look-ahead (gain, ceiling, attack = look-ahead,
+  release, curve, sustain/hold) and a noise gate → saturation. Nothing ever passes
+  the ceiling. The look-ahead adds that much latency, compensated by the mixer.
+  The display scrolls the input peaks, output peaks, gain envelope, threshold and
+  ceiling (click it to pause).
+* **Delay**: mono, stereo, ping pong or off; time in ms or in note values that
+  follow the tempo (1/64 to 1/1, triplets, dotted); keep pitch; smoothing;
+  offset / pan; stereo spread. Each repeat goes through a filter (LP / HP / BP with
+  resonance), sample-rate and bit reduction, diffusion and a limit / saturation
+  stage; modulation of time and cutoff; tone, wet and dry. The echo map shows
+  where every repeat lands on each side.
+* **Reverb**: low and high cut, pre-delay (ms or note values), room size,
+  diffusion, modulation, decay up to 20 s with a bass multiplier and crossover,
+  high damping, dry / early reflections / wet, stereo separation, mid or side.
+  The picture shows the decay: pre-delay, early reflections, how long the tail,
+  the bass and the highs last.
+* **FL template import**: Fruity Limiter, Fruity Delay 3 and Fruity Reeverb 2
+  now come in as ours (with their default settings; the report says which).
+* The old built-in Delay and Reverb are still there as *Delay (simple)* and
+  *Reverb (simple)*, so older songs keep working.
+
 ## What's new in 1.4
 
 * **Import an FL Studio template**: *File → Templates → Import an FL Studio

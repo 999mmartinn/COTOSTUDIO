@@ -4,6 +4,9 @@
 #include "DrumSynthPlugin.h"
 #include "SamplerPlugin.h"
 #include "ParametricEQPlugin.h"
+#include "LimiterPlugin.h"
+#include "DelayPlugin.h"
+#include "ReverbPlugin.h"
 #include "AppData.h"
 #include "Recorder.h"
 #include "Theme.h"
@@ -17,6 +20,17 @@ struct AppEngineBehaviour  : public te::EngineBehaviour
     juce::File getFileForNewAudioRecording (te::Track& track, const juce::String& extension) override
     {
         return Recorder::newRecordingFile (track.edit, extension);
+    }
+
+    /** The engine's defaults allow only 4 plugins on the master and 16 on a track. A mixer
+        strip has 10 effect slots, plus volume, meter, one plugin per send and the returns,
+        so give plenty of room (more than this never happens through the interface). */
+    te::EditLimits getEditLimits() override
+    {
+        te::EditLimits limits;
+        limits.maxPluginsOnTrack = 64;
+        limits.maxNumMasterPlugins = 64;
+        return limits;
     }
 };
 
@@ -323,6 +337,9 @@ private:
         engine->getPluginManager().createBuiltInType<DrumSynthPlugin>();
         engine->getPluginManager().createBuiltInType<SamplerPlugin>();
         engine->getPluginManager().createBuiltInType<ParametricEQPlugin>();
+        engine->getPluginManager().createBuiltInType<LimiterPlugin>();
+        engine->getPluginManager().createBuiltInType<DelayPlugin>();
+        engine->getPluginManager().createBuiltInType<ReverbPlugin>();
 
         // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
         engine->getDeviceManager().setAllWaveInputsToNumChannels (1);

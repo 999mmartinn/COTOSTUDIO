@@ -57,6 +57,12 @@ target_sources(COTOSTUDIO PRIVATE
     Source/SamplerPlugin.cpp
     Source/ParametricEQPlugin.cpp
     Source/ParametricEQEditor.cpp
+    Source/LimiterPlugin.cpp
+    Source/LimiterEditor.cpp
+    Source/DelayPlugin.cpp
+    Source/DelayEditor.cpp
+    Source/ReverbPlugin.cpp
+    Source/ReverbEditor.cpp
     Source/SamplePreviewer.cpp
     Source/FileImport.cpp
     Source/FlpImport.cpp

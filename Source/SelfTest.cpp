@@ -11,6 +11,9 @@
 #include "PatternCompiler.h"
 #include "DrumSynthPlugin.h"
 #include "ParametricEQPlugin.h"
+#include "LimiterPlugin.h"
+#include "DelayPlugin.h"
+#include "ReverbPlugin.h"
 #include "MixerRouter.h"
 #include "ProjectFile.h"
 #include "Scales.h"
@@ -240,6 +243,7 @@ public:
         {
             if (a.startsWith ("--plugin="))   pluginFile = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
             if (a.startsWith ("--dump="))     dumpDir = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
+            if (a.startsWith ("--only="))     onlySteps = a.fromFirstOccurrenceOf ("=", false, false).unquoted();
         }
 
         // Each simulated PC gets its own folder of audio files, like separate computers.
@@ -263,6 +267,14 @@ public:
         bigFile   = writeTestWav (testRoot.getChildFile ("big.wav"), 60.0, 0.0, true);   // ~10 MB as FLAC
 
         buildSteps();
+
+        // Developer: --only=<text> runs just the steps whose name contains it (for the
+        // measurement steps, which need no network).
+        if (onlySteps.isNotEmpty())
+            steps.erase (std::remove_if (steps.begin(), steps.end(),
+                                         [this] (const Step& st) { return ! st.name.contains (onlySteps); }),
+                         steps.end());
+
         startTimer (20);
     }
 
@@ -270,6 +282,7 @@ private:
     te::Engine& engine;
     std::function<void (int)> finished;
     juce::File pluginFile, dumpDir;
+    juce::String onlySteps;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     std::unique_ptr<SamplePreviewer> previewer;       // the sound browser's preview (on the simulated card)
     collab::Session host { engine }, peer1 { engine }, peer2 { engine };
@@ -299,7 +312,7 @@ private:
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
     int resyncsBefore = 0, channelsBefore = 0, clipsBefore = 0, insertsBefore = 0;
-    bool eqEdited = false;
+    bool eqEdited = false, limiterEdited = false, delayEdited = false, reverbEdited = false;
 
     // Tempo approval, sharing playback
     std::map<collab::Session*, juce::Array<collab::Session::TempoQuestion>> tempoAsked;
@@ -2890,8 +2903,17 @@ private:
                 };
 
                 const float gain = gainOf (0), gainByClass = gainOf (1);
-                const bool eqOff = effects.size() == (havePlugin ? 3 : 1) && ! effects.getLast()->isEnabled()
-                                && effects.getLast()->getPluginType() == juce::String (ParametricEQPlugin::xmlTypeName);
+                // Vocals: [gain, brighter,] the EQ (off, as in FL), then our Reverb for Fruity Reeverb 2.
+                const int eqIndex = effects.size() - 2;
+                const bool eqOff = effects.size() == (havePlugin ? 4 : 2) && eqIndex >= 0
+                                && ! effects[eqIndex]->isEnabled()
+                                && effects[eqIndex]->getPluginType() == juce::String (ParametricEQPlugin::xmlTypeName);
+                const bool reverbIn = ! effects.isEmpty() && effects.getLast()->isEnabled()
+                                && effects.getLast()->getPluginType() == juce::String (ReverbPlugin::xmlTypeName);
+                bool limiterOnMaster = false;
+
+                for (auto* mp : edit->getMasterPluginList())
+                    limiterOnMaster = limiterOnMaster || dynamic_cast<LimiterPlugin*> (mp) != nullptr;
 
                 std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << ", " << project.bpm << " BPM, used inserts "
                           << juce::String (used.size()) << ", inserts made " << report.insertsMade
@@ -2899,6 +2921,8 @@ private:
                           << ", sends " << vocalSends.size() << (vocalSends.size() == 1 ? " at " + juce::String (song::getSendLevel (vocalSends[0])) + " dB" : juce::String())
                           << ", Bus fader " << busDb << " dB, gain knob " << gain << " / found by class ID " << gainByClass
                           << " (want 0.3), EQ in and off: " << (eqOff ? "yes" : "NO")
+                          << ", our Reverb for Reeverb 2: " << (reverbIn ? "yes" : "NO")
+                          << ", our Limiter on the master: " << (limiterOnMaster ? "yes" : "NO")
                           << ", not available: " << report.notAvailable.joinIntoString ("; ")
                           << ", track 1 \"" << song::getLaneName (*edit, 0) << "\", track 3 \"" << song::getLaneName (*edit, 2) << "\"" << std::endl;
 
@@ -2912,7 +2936,8 @@ private:
                         && eqOff
                         && (! havePlugin || (std::abs (gain - 0.3f) < 1.0e-3f && std::abs (gainByClass - 0.3f) < 1.0e-3f))
                         && (! havePlugin || report.effectsWithSettings == 2)
-                        && report.notAvailable.size() == 2   // Fruity Limiter (master), Fruity Reeverb 2
+                        && reverbIn && limiterOnMaster
+                        && report.notAvailable.isEmpty()   // Fruity Limiter and Reeverb 2 now have ours
                         && edit->tempoSequence.getTempo (0)->getBpm() == 140.0
                         && song::getLaneName (*edit, 0) == "GRABAR VOCALES" && song::getLaneName (*edit, 2) == "CHORUS 1"
                         && song::getLaneName (*edit, 1).isEmpty();
@@ -3487,6 +3512,490 @@ private:
                     auto b = eq->getBands();
                     return b[3].type == peq::peak && std::abs (b[3].gain - 6.0) < 1.0e-3 && std::abs (b[3].freq - 1200.0) < 0.5
                         && b[0].type == peq::highPass && b[0].order == 3 && std::abs (b[0].freq - 80.0) < 0.5;
+                });
+            },
+            8000, 600 });
+
+        //==============================================================================
+        // Limiter (our own built-in effect)
+        steps.push_back ({ "Limiter: measured (brickwall ceiling, look-ahead delay, compressor 4:1, gate, saturation)",
+            [] {},
+            []
+            {
+                const double sr = 48000.0;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi;
+                    std::cout << "    " << what << ": " << juce::String (got, 3) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                // Runs a signal through a limiter with these settings (look-ahead in samples).
+                juce::int64 clamps = 0;
+                auto run = [sr, &clamps] (const lim::Settings& s, int lookahead, std::function<float (int, int)> signal, int n)
+                {
+                    lim::Processor proc;
+                    proc.prepare (sr, 512);
+                    proc.setSettings (s);
+                    proc.setLookaheadSamples (lookahead);
+                    juce::AudioBuffer<float> buf (2, n);
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < n; ++i)
+                            buf.setSample (ch, i, signal (ch, i));
+
+                    for (int pos = 0; pos < n; pos += 512)   // in blocks, like the engine
+                    {
+                        float* chans[2] = { buf.getWritePointer (0, pos), buf.getWritePointer (1, pos) };
+                        proc.process (chans, 2, juce::jmin (512, n - pos));
+                    }
+
+                    clamps = proc.safetyClamps;
+                    return buf;
+                };
+
+                auto sine = [sr] (double hz, double amp) { return [=] (int, int i) { return (float) (amp * std::sin (juce::MathConstants<double>::twoPi * hz * i / sr)); }; };
+                auto dbOf = [] (float v) { return (double) juce::Decibels::gainToDecibels (v, -200.0f); };
+                const int n = (int) sr;
+
+                // 1. Brickwall: +6 dBFS sine plus single-sample spikes of +12 dBFS; ceiling -1 dB, 2 ms look-ahead.
+                lim::Settings s;
+                s.ceilingDb = -1.0;
+                s.limReleaseMs = 50.0;
+                auto spiky = [sr] (int ch, int i)
+                {
+                    double v = 2.0 * std::sin (juce::MathConstants<double>::twoPi * 997.0 * i / sr);
+                    if (i % 4801 == 100 + ch) v = (i / 4801) % 2 == 0 ? 4.0 : -4.0;
+                    return (float) v;
+                };
+                auto out = run (s, 96, spiky, n);
+                check ("brickwall: loudest output sample (dBFS, ceiling -1)", dbOf (out.getMagnitude (0, n)), -200.0, -1.0 + 1.0e-4);
+                check ("brickwall: steady sine level after limiting (dBFS peak)", dbOf (out.getMagnitude (0, n / 2, n / 2 - 2000)), -1.6, -1.0 + 1.0e-4);
+                check ("brickwall: samples the safety clamp had to catch (want 0)", (double) clamps, 0.0, 0.0);
+
+                // 2. Look-ahead: a quiet click comes out exactly 96 samples later.
+                lim::Settings quiet;
+                auto click = run (quiet, 96, [] (int, int i) { return i == 1000 ? 0.1f : 0.0f; }, 4096);
+                int at = 0;
+                for (int i = 0; i < 4096; ++i) if (std::abs (click.getSample (0, i)) > 0.05f) at = i;
+                check ("look-ahead: click comes out at sample (want 1096)", at, 1096, 1096);
+
+                // 3. Compressor: -10 dB RMS in, threshold -20 dB, 4:1, hard knee -> -17.5 dB RMS out.
+                lim::Settings c;
+                c.compThreshDb = -20.0;  c.compRatio = 4.0;  c.compKneeDb = 0.0;
+                c.compAttackMs = 1.0;    c.compReleaseMs = 50.0;  c.compSustainMs = 50.0;
+                c.ceilingDb = 12.0;   // limiter out of the way
+                const double amp = std::sqrt (2.0) * juce::Decibels::decibelsToGain (-10.0);
+                auto comp = run (c, 0, sine (1000.0, amp), n);
+                check ("compressor: output RMS (dB, want -17.5)", dbOf (comp.getRMSLevel (0, n / 2, n / 2)), -18.0, -17.0);
+
+                // 4. Gate: closes on -60 dB, passes -20 dB.
+                lim::Settings gt;
+                gt.gateGain = 0.0;  gt.gateThreshDb = -40.0;  gt.gateReleaseMs = 20.0;  gt.ceilingDb = 12.0;
+                auto low = run (gt, 0, sine (440.0, juce::Decibels::decibelsToGain (-60.0)), n);
+                auto high = run (gt, 0, sine (440.0, juce::Decibels::decibelsToGain (-20.0)), n);
+                check ("gate: -60 dB in -> out (dB)", dbOf (low.getMagnitude (0, n / 2, n / 2)), -200.0, -100.0);
+                check ("gate: -20 dB in -> out (dB)", dbOf (high.getMagnitude (0, n / 2, n / 2)), -20.1, -19.9);
+
+                // 5. Saturation (12 dB below a 0 dB ceiling): never over, quiet audio untouched.
+                lim::Settings st;
+                st.satDb = 12.0;  st.limReleaseMs = 50.0;
+                auto loud = run (st, 0, sine (200.0, 2.0), n);
+                auto soft = run (st, 0, sine (200.0, juce::Decibels::decibelsToGain (-30.0)), n);
+                check ("saturation: loudest sample (dBFS)", dbOf (loud.getMagnitude (0, n)), -200.0, 1.0e-4);
+                check ("saturation: -30 dB passes (dB)", dbOf (soft.getMagnitude (0, n / 2, n / 2)), -30.05, -29.95);
+                return ok;
+            } });
+
+        steps.push_back ({ "Limiter: host puts one on the master, peer 2 sets the ceiling to -3 dB and look-ahead to 5 ms -> same everywhere, latency reported",
+            [this]
+            {
+                song::putEffect (H(), nullptr, song::createEffect (H(), LimiterPlugin::xmlTypeName, nullptr), -1);
+            },
+            [this]
+            {
+                auto find = [] (te::Edit& e) -> LimiterPlugin*
+                {
+                    for (auto* p : e.getMasterPluginList())
+                        if (auto* l = dynamic_cast<LimiterPlugin*> (p))
+                            return l;
+                    return nullptr;
+                };
+
+                if (auto* l = find (P2()); l != nullptr && ! limiterEdited)
+                {
+                    P2().getUndoManager().beginNewTransaction();
+                    l->ceiling->setParameter (-3.0f, juce::sendNotification);
+                    l->limAttack->setParameter (5.0f, juce::sendNotification);
+                    limiterEdited = true;
+                    return false;
+                }
+
+                return limiterEdited && hashesEqual() && everywhere ([&find] (te::Edit& e)
+                {
+                    auto* l = find (e);
+                    return l != nullptr && std::abs (l->ceiling->getCurrentValue() + 3.0f) < 1.0e-4f
+                        && std::abs (l->limAttack->getCurrentValue() - 5.0f) < 1.0e-4f
+                        && std::abs (l->getLatencySeconds() - 0.005) < 0.0002;   // after the knob settles
+                });
+            },
+            8000, 1200 });
+
+        //==============================================================================
+        // Delay (our own built-in effect)
+        steps.push_back ({ "Delay: measured (echo times and levels, ping pong, tempo sync, offset, feedback filter, 120% feedback stays bounded, model off)",
+            [] {},
+            []
+            {
+                const double sr = 48000.0;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi && ! std::isnan (got);
+                    std::cout << "    " << what << ": " << juce::String (got, 4) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                auto run = [sr] (const dly::Settings& s, std::function<float (int, int)> signal, int n)
+                {
+                    dly::Processor proc;
+                    proc.prepare (sr);
+                    proc.setSettings (s);
+                    juce::AudioBuffer<float> buf (2, n);
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < n; ++i)
+                            buf.setSample (ch, i, signal (ch, i));
+
+                    for (int pos = 0; pos < n; pos += 480)
+                    {
+                        float* chans[2] = { buf.getWritePointer (0, pos), buf.getWritePointer (1, pos) };
+                        proc.process (chans, 2, juce::jmin (480, n - pos));
+                    }
+
+                    return buf;
+                };
+
+                // Plain echoes: wet only, no filter, limiter out of the way.
+                dly::Settings base;
+                base.tempoSync = false;  base.timeMs = 100.0;  base.feedback = 0.5;
+                base.filterType = dly::filterOff;  base.wet = 1.0;  base.dry = 0.0;  base.offset = 0.0;
+                auto click = [] (int, int i) { return i == 1000 ? 0.5f : 0.0f; };
+                auto peakAt = [] (const juce::AudioBuffer<float>& b, int ch, int at) { return (double) b.getSample (ch, at); };
+                auto loudestOutside = [] (const juce::AudioBuffer<float>& b, int ch, std::initializer_list<int> expected)
+                {
+                    float m = 0.0f;
+                    for (int i = 0; i < b.getNumSamples(); ++i)
+                    {
+                        bool near = false;
+                        for (auto e : expected) near = near || std::abs (i - e) <= 2;
+                        if (! near) m = juce::jmax (m, std::abs (b.getSample (ch, i)));
+                    }
+                    return (double) m;
+                };
+
+                auto st = run (base, click, 20000);
+                check ("stereo: 1st echo at 100 ms (level)", peakAt (st, 0, 5800), 0.495, 0.505);
+                check ("stereo: 2nd echo at 200 ms", peakAt (st, 0, 10600), 0.245, 0.255);
+                check ("stereo: 3rd echo at 300 ms", peakAt (st, 1, 15400), 0.12, 0.13);
+                check ("stereo: anything between the echoes", loudestOutside (st, 0, { 5800, 10600, 15400 }), 0.0, 1.0e-4);
+
+                // Ping pong: a click on the left only -> L, R, L.
+                auto pp = base;
+                pp.model = dly::pingPong;
+                auto ping = run (pp, [] (int ch, int i) { return ch == 0 && i == 1000 ? 0.5f : 0.0f; }, 20000);
+                check ("ping pong: 1st echo left", peakAt (ping, 0, 5800), 0.495, 0.505);
+                check ("ping pong: 1st echo not on the right", std::abs (peakAt (ping, 1, 5800)), 0.0, 1.0e-4);
+                check ("ping pong: 2nd echo right", peakAt (ping, 1, 10600), 0.245, 0.255);
+                check ("ping pong: 3rd echo left", peakAt (ping, 0, 15400), 0.12, 0.13);
+
+                // Tempo sync: a 1/4 note at 120 BPM = 0.5 s.
+                auto ts = base;
+                ts.tempoSync = true;  ts.division = 10;  ts.bpm = 120.0;  ts.feedback = 0.0;
+                auto sync = run (ts, click, 30000);
+                check ("tempo sync: 1/4 at 120 BPM lands at sample 25000", peakAt (sync, 0, 25000), 0.495, 0.505);
+
+                // Offset +50% (stereo): the right side's echoes come half an echo later.
+                auto of = base;
+                of.offset = 0.5;  of.feedback = 0.0;
+                auto offs = run (of, click, 20000);
+                check ("offset: left echo at 100 ms", peakAt (offs, 0, 5800), 0.495, 0.505);
+                check ("offset: right echo at 150 ms", peakAt (offs, 1, 8200), 0.495, 0.505);
+
+                // Feedback filter (low pass 1 kHz): 200 Hz passes, 8 kHz is cut about 36 dB.
+                auto lp = base;
+                lp.feedback = 0.0;  lp.filterType = dly::lowPass;  lp.cutoffHz = 1000.0;
+                auto tone = [sr] (double hz) { return [=] (int, int i) { return (float) (0.5 * std::sin (juce::MathConstants<double>::twoPi * hz * i / sr)); }; };
+                auto low = run (lp, tone (200.0), 48000), high = run (lp, tone (8000.0), 48000);
+                const float inRms = 0.5f / std::sqrt (2.0f);
+                check ("filter LP 1 kHz: 200 Hz (dB)", juce::Decibels::gainToDecibels (low.getRMSLevel (0, 24000, 24000) / inRms), -0.5, 0.1);
+                check ("filter LP 1 kHz: 8 kHz (dB)", juce::Decibels::gainToDecibels (high.getRMSLevel (0, 24000, 24000) / inRms), -45.0, -30.0);
+
+                // 120% feedback with the limit at 0 dB: grows but stays bounded, never NaN.
+                auto hot = base;
+                hot.feedback = 1.2;  hot.distType = dly::limit;  hot.distLevelDb = 0.0;
+                juce::Random rnd (7);
+                auto noise = [&rnd] (int, int i) { return i < 4800 ? rnd.nextFloat() - 0.5f : 0.0f; };
+                auto runaway = run (hot, noise, 48000 * 4);
+                const double hotPeak = juce::jmax (runaway.getMagnitude (0, 0, runaway.getNumSamples()), runaway.getMagnitude (1, 0, runaway.getNumSamples()));
+                check ("120% feedback: loudest sample after 4 s (bounded by the limit)", hotPeak, 0.2, 1.0 + 1.0e-6);
+
+                // Model off, filter off: the audio passes untouched.
+                auto offModel = base;
+                offModel.model = dly::off;
+                auto passed = run (offModel, tone (440.0), 9600);
+                double maxDiff = 0.0;
+                for (int i = 0; i < 9600; ++i)
+                    maxDiff = juce::jmax (maxDiff, (double) std::abs (passed.getSample (0, i) - tone (440.0) (0, i)));
+                check ("model off: difference from the input", maxDiff, 0.0, 1.0e-6);
+                return ok;
+            } });
+
+        steps.push_back ({ "Delay: host puts one on the master, peer 1 sets ping pong and 65% feedback -> same everywhere",
+            [this]
+            {
+                song::putEffect (H(), nullptr, song::createEffect (H(), DelayPlugin::xmlTypeName, nullptr), -1);
+            },
+            [this]
+            {
+                auto find = [] (te::Edit& e) -> DelayPlugin*
+                {
+                    for (auto* p : e.getMasterPluginList())
+                        if (auto* d = dynamic_cast<DelayPlugin*> (p))
+                            return d;
+                    return nullptr;
+                };
+
+                if (auto* d = find (P1()); d != nullptr && ! delayEdited)
+                {
+                    P1().getUndoManager().beginNewTransaction();
+                    d->model->setParameter ((float) dly::pingPong, juce::sendNotification);
+                    d->feedback->setParameter (0.65f, juce::sendNotification);
+                    delayEdited = true;
+                    return false;
+                }
+
+                return delayEdited && hashesEqual() && everywhere ([&find] (te::Edit& e)
+                {
+                    auto* d = find (e);
+                    return d != nullptr && d->getSettings().model == dly::pingPong
+                        && std::abs (d->feedback->getCurrentValue() - 0.65f) < 1.0e-4f;
+                });
+            },
+            8000, 600 });
+
+        //==============================================================================
+        // Reverb (our own built-in effect)
+        steps.push_back ({ "Reverb: measured (RT60 = the decay knob, bass multiplier, damping, pre-delay, dry / side exact, 20 s decay stays bounded)",
+            [] {},
+            []
+            {
+                const double sr = 48000.0;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi && ! std::isnan (got);
+                    std::cout << "    " << what << ": " << juce::String (got, 3) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                auto run = [sr] (const rvb::Settings& s, std::function<float (int, int)> signal, int n)
+                {
+                    rvb::Processor proc;
+                    proc.prepare (sr);
+                    proc.setSettings (s);
+                    juce::AudioBuffer<float> buf (2, n);
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < n; ++i)
+                            buf.setSample (ch, i, signal (ch, i));
+
+                    for (int pos = 0; pos < n; pos += 512)
+                    {
+                        float* chans[2] = { buf.getWritePointer (0, pos), buf.getWritePointer (1, pos) };
+                        proc.process (chans, 2, juce::jmin (512, n - pos));
+                    }
+
+                    return buf;
+                };
+
+                // RT60 from an impulse response: Schroeder backward integration, T30 (-5 to -35 dB) x 2.
+                // `band`: 0 = whole, 1 = lows (2 x one-pole low pass at 150 Hz), 2 = highs (2 x high pass at 5 kHz).
+                auto rt60 = [sr] (const juce::AudioBuffer<float>& ir, int band)
+                {
+                    const int n = ir.getNumSamples();
+                    std::vector<double> e ((size_t) n);
+                    const double c150 = rvb::onePoleCoef (150.0, sr), c5k = rvb::onePoleCoef (5000.0, sr);
+                    double a = 0, b = 0;
+
+                    for (int i = 0; i < n; ++i)
+                    {
+                        double x = ir.getSample (0, i);
+
+                        if (band == 1) { a += (x - a) * c150; b += (a - b) * c150; x = b; }
+                        if (band == 2) { a += (x - a) * c5k; x -= a; b += (x - b) * c5k; x -= b; }
+
+                        e[(size_t) i] = x * x;
+                    }
+
+                    for (int i = n - 2; i >= 0; --i)
+                        e[(size_t) i] += e[(size_t) i + 1];
+
+                    const double total = e[0];
+                    double t5 = -1.0, t35 = -1.0;
+
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double db = 10.0 * std::log10 (juce::jmax (1.0e-30, e[(size_t) i] / total));
+                        if (t5 < 0.0 && db <= -5.0)  t5 = i / sr;
+                        if (t35 < 0.0 && db <= -35.0) { t35 = i / sr; break; }
+                    }
+
+                    return t5 >= 0.0 && t35 > t5 ? 2.0 * (t35 - t5) : -1.0;
+                };
+
+                rvb::Settings late;   // only the late reverb
+                late.dry = 0.0;  late.early = 0.0;  late.wet = 1.0;  late.predelayMs = 0.0;
+                late.lowCutHz = 10.0;  late.highCutHz = 20000.0;  late.dampHz = 20000.0;
+                late.modDepth = 0.0;  late.bassMultiplier = 1.0;
+                auto impulse = [] (int, int i) { return i == 0 ? 1.0f : 0.0f; };
+
+                for (double rt : { 0.5, 2.0, 6.0 })
+                {
+                    auto s = late;
+                    s.decaySeconds = rt;
+                    auto ir = run (s, impulse, (int) (sr * (rt * 1.2 + 0.5)));
+                    check ("RT60 measured, decay " + juce::String (rt, 1) + " s", rt60 (ir, 0), rt * 0.9, rt * 1.1);
+                }
+
+                {
+                    auto s = late;
+                    s.decaySeconds = 2.0;  s.modDepth = 0.2;  s.modSpeedHz = 0.6;   // the default modulation
+                    auto ir = run (s, impulse, (int) (sr * 2.9));
+                    check ("RT60 measured, decay 2.0 s with modulation", rt60 (ir, 0), 1.8, 2.2);
+                }
+
+                {
+                    auto s = late;
+                    s.decaySeconds = 1.0;  s.bassMultiplier = 3.0;  s.crossoverHz = 300.0;
+                    auto ir = run (s, impulse, (int) (sr * 4.5));
+                    const double lows = rt60 (ir, 1), highs = rt60 (ir, 2);
+                    check ("bass x3: lows last this many times longer than highs", lows / juce::jmax (1.0e-6, highs), 2.0, 4.0);
+                }
+
+                {
+                    auto s = late;
+                    s.decaySeconds = 2.0;  s.dampHz = 2000.0;
+                    auto ir = run (s, impulse, (int) (sr * 3.0));
+                    const double lows = rt60 (ir, 1), highs = rt60 (ir, 2);
+                    check ("damping 2 kHz: highs / lows decay time", highs / juce::jmax (1.0e-6, lows), 0.0, 0.6);
+                }
+
+                {
+                    auto s = late;
+                    s.early = 1.0;  s.wet = 0.0;  s.predelayMs = 100.0;
+                    auto ir = run (s, [] (int, int i) { return i == 0 ? 1.0f : 0.0f; }, 24000);
+                    int first = -1;
+                    for (int i = 0; i < 24000 && first < 0; ++i) if (std::abs (ir.getSample (0, i)) > 1.0e-6f) first = i;
+                    check ("pre-delay 100 ms: first sound at sample", first, 4800, 4800 + 0.08 * sr);
+                }
+
+                auto tone = [sr] (int ch, int i) { return (float) (0.3 * std::sin (juce::MathConstants<double>::twoPi * (ch == 0 ? 440.0 : 550.0) * i / sr)); };
+                auto maxDiff = [] (const juce::AudioBuffer<float>& b, std::function<float (int, int)> f)
+                {
+                    double m = 0.0;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < b.getNumSamples(); ++i)
+                            m = juce::jmax (m, (double) std::abs (b.getSample (ch, i) - f (ch, i)));
+                    return m;
+                };
+
+                {
+                    auto s = late;
+                    s.dry = 1.0;  s.wet = 0.0;  s.early = 0.0;
+                    check ("dry only: difference from the input", maxDiff (run (s, tone, 9600), tone), 0.0, 1.0e-7);
+                }
+
+                {
+                    auto s = late;
+                    s.dry = 1.0;  s.wet = 1.0;  s.early = 1.0;  s.side = true;
+                    auto mono = [sr] (int, int i) { return (float) (0.3 * std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / sr)); };
+                    check ("side mode, mono input: no reverb added", maxDiff (run (s, mono, 9600), mono), 0.0, 1.0e-7);
+                }
+
+                {
+                    auto s = late;
+                    s.decaySeconds = 20.0;  s.bassMultiplier = 4.0;  s.modDepth = 1.0;  s.size = 1.0;
+                    juce::Random rnd (3);
+                    auto noise = [&rnd] (int, int i) { return i < 96000 ? 0.25f * (rnd.nextFloat() * 2.0f - 1.0f) : 0.0f; };
+                    auto out = run (s, noise, 48000 * 10);
+                    const double peak = juce::jmax (out.getMagnitude (0, 0, out.getNumSamples()), out.getMagnitude (1, 0, out.getNumSamples()));
+                    const double during = out.getRMSLevel (0, 48000, 48000), end = out.getRMSLevel (0, 9 * 48000, 48000);
+                    check ("20 s decay, bass x4: loudest sample (bounded)", peak, 0.0, 2.0);
+                    check ("20 s decay, bass x4: last second vs noise second (dB, decays)", juce::Decibels::gainToDecibels (end / juce::jmax (1.0e-9, during)), -60.0, -6.0);
+                }
+
+                return ok;
+            } });
+
+        steps.push_back ({ "Reverb: host puts one on the master, peer 2 sets a 4 s decay and 40% wet -> same everywhere",
+            [this]
+            {
+                song::putEffect (H(), nullptr, song::createEffect (H(), ReverbPlugin::xmlTypeName, nullptr), -1);
+            },
+            [this]
+            {
+                auto find = [] (te::Edit& e) -> ReverbPlugin*
+                {
+                    for (auto* p : e.getMasterPluginList())
+                        if (auto* r = dynamic_cast<ReverbPlugin*> (p))
+                            return r;
+                    return nullptr;
+                };
+
+                if (auto* r = find (P2()); r != nullptr && ! reverbEdited)
+                {
+                    P2().getUndoManager().beginNewTransaction();
+                    r->decay->setParameter (4.0f, juce::sendNotification);
+                    r->wet->setParameter (0.4f, juce::sendNotification);
+                    reverbEdited = true;
+                    return false;
+                }
+
+                return reverbEdited && hashesEqual() && everywhere ([&find] (te::Edit& e)
+                {
+                    auto* r = find (e);
+                    return r != nullptr && std::abs (r->decay->getCurrentValue() - 4.0f) < 1.0e-4f
+                        && std::abs (r->wet->getCurrentValue() - 0.4f) < 1.0e-4f;
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "Mixer: the master and an insert take all 10 effect slots (the insert with 6 sends too) -> on every PC",
+            [this]
+            {
+                // The engine's own default allowed only 4 plugins on the master and 16 on a track.
+                while (song::getMasterEffects (H()).size() < 10)
+                    song::putEffect (H(), nullptr, song::createEffect (H(), ParametricEQPlugin::xmlTypeName, nullptr), -1);
+
+                auto* full = song::addInsert (H(), "Full");
+
+                for (int i = 0; i < 6; ++i)
+                    if (auto* target = song::addInsert (H(), "Send " + juce::String (i + 1)))
+                        song::addSend (H(), full->itemID.toString(), target->itemID.toString(), -6.0);
+
+                for (int i = 0; i < 10; ++i)
+                    song::putEffect (H(), full, song::createEffect (H(), ParametricEQPlugin::xmlTypeName, nullptr), -1);
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([] (te::Edit& e)
+                {
+                    auto* full = insert (e, "Full");
+                    return full != nullptr && song::getMasterEffects (e).size() == 10
+                        && song::getInsertEffects (*full).size() == 10
+                        && song::getSendsFrom (e, full->itemID.toString()).size() == 6;
                 });
             },
             8000, 600 });

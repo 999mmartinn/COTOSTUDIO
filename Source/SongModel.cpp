@@ -2,6 +2,9 @@
 #include "DrumSynthPlugin.h"
 #include "SamplerPlugin.h"
 #include "ParametricEQPlugin.h"
+#include "LimiterPlugin.h"
+#include "DelayPlugin.h"
+#include "ReverbPlugin.h"
 
 namespace song
 {
@@ -950,10 +953,13 @@ juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
 {
     juce::Array<std::pair<juce::String, juce::String>> list;
     list.add ({ ParametricEQPlugin::xmlTypeName,   "Parametric EQ (7 band)" });
+    list.add ({ LimiterPlugin::xmlTypeName,        "Limiter" });
+    list.add ({ DelayPlugin::xmlTypeName,          "Delay" });
+    list.add ({ ReverbPlugin::xmlTypeName,         "Reverb" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
     list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor" });
-    list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb" });
-    list.add ({ te::DelayPlugin::xmlTypeName,      "Delay" });
+    list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb (simple)" });
+    list.add ({ te::DelayPlugin::xmlTypeName,      "Delay (simple)" });
     list.add ({ te::ChorusPlugin::xmlTypeName,     "Chorus" });
     list.add ({ te::PhaserPlugin::xmlTypeName,     "Phaser" });
     list.add ({ te::LowPassPlugin::xmlTypeName,    "Low / high pass filter" });

@@ -1,6 +1,9 @@
 #include "FlpImport.h"
 #include "SongModel.h"
 #include "ParametricEQPlugin.h"
+#include "LimiterPlugin.h"
+#include "DelayPlugin.h"
+#include "ReverbPlugin.h"
 #include <cmath>
 #include <map>
 #include <set>
@@ -867,6 +870,25 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
 
                 if (plugin != nullptr)
                     report.defaultSettings.add (TRANS ("Parametric EQ (ours) in place of Fruity Parametric EQ 2 - set its bands again") + " (" + ins.displayName() + ")");
+            }
+            else if (fx.kind == "Fruity Limiter" || fx.kind == "Fruity Delay 3" || fx.kind == "Fruity Reeverb 2")
+            {
+                // Our own versions; FL's settings for its own effects aren't readable, so they
+                // start from their defaults.
+                const bool limiter = fx.kind == "Fruity Limiter", delay = fx.kind == "Fruity Delay 3";
+                const juce::String ours = limiter ? TRANS ("Limiter") : delay ? TRANS ("Delay") : TRANS ("Reverb");
+                plugin = song::createEffect (edit, limiter ? LimiterPlugin::xmlTypeName
+                                                           : delay ? DelayPlugin::xmlTypeName : ReverbPlugin::xmlTypeName, nullptr);
+
+                if (plugin != nullptr)
+                {
+                    report.defaultSettings.add (TRANS ("{OURS} (ours) in place of {FL} - set it again")
+                                                  .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+
+                    if (fx.mix < 0.995)
+                        report.notes.add (TRANS ("{WHAT}: FL mixed it in at {P}% - here it is at 100%")
+                                            .replace ("{WHAT}", where).replace ("{P}", juce::String (juce::roundToInt (fx.mix * 100.0))));
+                }
             }
             else
             {

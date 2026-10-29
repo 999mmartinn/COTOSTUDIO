@@ -4,6 +4,9 @@
 #include "EditSync.h"
 #include "Look.h"
 #include "ParametricEQEditor.h"
+#include "LimiterEditor.h"
+#include "DelayEditor.h"
+#include "ReverbEditor.h"
 
 namespace te = tracktion;
 
@@ -121,6 +124,12 @@ public:
 
         if (auto* eq = dynamic_cast<ParametricEQPlugin*> (&plugin))
             content = std::make_unique<ParametricEQEditor> (*eq);
+        else if (auto* limiter = dynamic_cast<LimiterPlugin*> (&plugin))
+            content = std::make_unique<LimiterEditor> (*limiter);
+        else if (auto* delay = dynamic_cast<DelayPlugin*> (&plugin))
+            content = std::make_unique<DelayEditor> (*delay);
+        else if (auto* reverb = dynamic_cast<ReverbPlugin*> (&plugin))
+            content = std::make_unique<ReverbEditor> (*reverb);
 
         if (content == nullptr)
             content = std::make_unique<GenericPluginPanel> (plugin);
