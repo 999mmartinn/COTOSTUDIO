@@ -71,7 +71,7 @@ void DrumSynthPlugin::restorePluginStateFromValueTree (const juce::ValueTree& v)
         p->updateFromAttachedValue();
 }
 
-void DrumSynthPlugin::startVoice (int noteNumber, float velocity)
+void DrumSynthPlugin::startVoice (int noteNumber, float velocity, float pan, float fineCents)
 {
     auto& v = voices[(size_t) nextVoice];
     nextVoice = (nextVoice + 1) % maxVoices;
@@ -82,7 +82,9 @@ void DrumSynthPlugin::startVoice (int noteNumber, float velocity)
     v.hp = 0.0f;
     v.lastNoise = 0.0f;
     v.velocity = velocity;
-    v.pitchRatio = std::pow (2.0f, (noteNumber - 60) / 12.0f);
+    v.pitchRatio = std::pow (2.0f, (noteNumber - 60 + fineCents / 100.0f) / 12.0f);
+    v.gainL = juce::jlimit (0.0f, 1.0f, 1.0f - pan);   // the note's pan: the far side turned down
+    v.gainR = juce::jlimit (0.0f, 1.0f, 1.0f + pan);
 }
 
 float DrumSynthPlugin::renderVoiceSample (Voice& v, int sound, float tune, float decay)
@@ -171,16 +173,30 @@ void DrumSynthPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     const float decay = juce::jmax (0.05f, decayParam->getCurrentValue());
     const float level = levelParam->getCurrentValue();
 
-    // Collect note-ons with their sample position inside this block.
-    struct Hit { int pos; int note; float vel; };
+    // Collect note-ons with their sample position inside this block, with the note's own pan
+    // and fine pitch if it has them (key pressure on channel 16 / 15 for its key at the same
+    // moment, see PatternCompiler::notePropertiesInto).
+    struct Hit { int pos; int note; float vel, pan, fine; };
     juce::Array<Hit> hits;
+    auto posOf = [&] (const juce::MidiMessage& m) { return juce::jlimit (start, start + num - 1, juce::roundToInt (m.getTimeStamp() * sampleRate)); };
 
     if (fc.bufferForMidiMessages != nullptr)
         for (auto& m : *fc.bufferForMidiMessages)
             if (m.isNoteOn())
-                hits.add ({ juce::jlimit (start, start + num - 1, juce::roundToInt (m.getTimeStamp() * sampleRate)),
-                            m.getNoteNumber(), m.getFloatVelocity() });
+            {
+                Hit h { posOf (m), m.getNoteNumber(), m.getFloatVelocity(), 0.0f, 0.0f };
 
+                for (auto& p : *fc.bufferForMidiMessages)
+                    if (p.isAftertouch() && p.getNoteNumber() == h.note && posOf (p) == h.pos && (p.getChannel() == 16 || p.getChannel() == 15))
+                    {
+                        const float amount = juce::jlimit (-1.0f, 1.0f, (float) (p.getAfterTouchValue() - 64) / 63.0f);
+                        (p.getChannel() == 16 ? h.pan : h.fine) = p.getChannel() == 16 ? amount : amount * 100.0f;
+                    }
+
+                hits.add (h);
+            }
+
+    std::sort (hits.begin(), hits.end(), [] (const Hit& a, const Hit& b) { return a.pos < b.pos; });
     int hitIndex = 0;
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -190,19 +206,30 @@ void DrumSynthPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         while (hitIndex < hits.size() && hits.getReference (hitIndex).pos <= i)
         {
             auto& h = hits.getReference (hitIndex++);
-            startVoice (h.note, h.vel);
+            startVoice (h.note, h.vel, h.pan, h.fine);
         }
 
-        float sample = 0.0f;
+        float sampleL = 0.0f, sampleR = 0.0f;
 
         for (auto& v : voices)
             if (v.active)
-                sample += renderVoiceSample (v, sound, tune, decay);
+            {
+                const float x = renderVoiceSample (v, sound, tune, decay);
+                sampleL += x * v.gainL;
+                sampleR += x * v.gainR;
+            }
 
-        sample = std::tanh (sample * level);   // gentle safety limiter
-        left[i] += sample;
+        sampleL = std::tanh (sampleL * level);   // gentle safety limiter
+        sampleR = std::tanh (sampleR * level);
 
         if (right != nullptr)
-            right[i] += sample;
+        {
+            left[i] += sampleL;
+            right[i] += sampleR;
+        }
+        else
+        {
+            left[i] += 0.5f * (sampleL + sampleR);
+        }
     }
 }

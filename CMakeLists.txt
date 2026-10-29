@@ -52,6 +52,8 @@ target_sources(COTOSTUDIO PRIVATE
     Source/Browser.cpp
     Source/ProjectFile.cpp
     Source/Exporter.cpp
+    Source/Bouncer.cpp
+    Source/Backups.cpp
     Source/Mp3Encoder.cpp
     Source/AutomationEditor.cpp
     Source/SamplerPlugin.cpp
@@ -110,7 +112,10 @@ target_compile_definitions(COTOSTUDIO PRIVATE
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
     JUCE_USE_MP3AUDIOFORMAT=1
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    # Time-stretching and pitch-shifting of audio clips: Signalsmith Stretch (MIT licence,
+    # header-only, shipped inside Tracktion Engine).
+    TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH=1)
 
 # ASIO: the low-latency Windows driver of most audio interfaces. Steinberg's ASIO
 # SDK is GPLv3 (dual-licensed) since October 2025; the Windows build downloads it

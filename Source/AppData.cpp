@@ -129,7 +129,9 @@ juce::File projectSongFile (const juce::File& chosen)
 
 bool isBackup (const juce::File& songFile)
 {
-    return songFile.getParentDirectory().getFileName() == "Backups";
+    // <project>\Backups\x, <data>\Backups\x, or <data>\Backups\<song> (started ...)\x
+    return songFile.getParentDirectory().getFileName() == "Backups"
+        || songFile.getParentDirectory().getParentDirectory() == backupsFolder();
 }
 
 bool linkOrCopy (const juce::File& source, const juce::File& target)

@@ -35,6 +35,13 @@ public:
 
     static te::MidiClip* findGeneratedClip (te::AudioTrack&);
 
+    /** Note pan and fine pitch (song::NoteProperty) for our own instruments: adds them to the
+        MIDI the engine plays from a generated clip (called by the app's EngineBehaviour) as
+        key-pressure messages for the note's key, channel 16 = pan, 15 = fine pitch, value 64
+        = none (-100..100 maps to 1..127). SamplerPlugin and DrumSynthPlugin read them. */
+    static void notePropertiesInto (juce::MidiMessageSequence&, const te::MidiList&, te::MidiClip&, te::MidiList::TimeBase);
+    static const juce::Identifier notePanID, noteFineID;
+
     /** The sound a sampler channel has loaded on this PC ("" = none yet), for tests. */
     static juce::String describeLoadedSample (te::AudioTrack&);
 

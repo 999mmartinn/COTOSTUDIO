@@ -53,7 +53,7 @@ private:
     {
         bool active = false;
         double time = 0.0;          // seconds since the hit
-        float velocity = 1.0f, pitchRatio = 1.0f;
+        float velocity = 1.0f, pitchRatio = 1.0f, gainL = 1.0f, gainR = 1.0f;
         double phase = 0.0;
         float hp = 0.0f, lastNoise = 0.0f;
         juce::Random random;
@@ -64,7 +64,7 @@ private:
     double sampleRate = 44100.0;
     int nextVoice = 0;
 
-    void startVoice (int noteNumber, float velocity);
+    void startVoice (int noteNumber, float velocity, float pan = 0.0f, float fineCents = 0.0f);
     float renderVoiceSample (Voice&, int sound, float tune, float decay);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DrumSynthPlugin)

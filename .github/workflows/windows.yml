@@ -91,7 +91,7 @@ jobs:
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # dist/ holds the release files; the zip has the program with its README and
-      # every licence (AGPLv3, the fonts' OFL, ASIO's GPLv3 source when used).
+      # every licence (AGPLv3, the fonts' OFL, Signalsmith's MIT, ASIO's GPLv3 source when used).
       - name: Package
         shell: pwsh
         run: |
@@ -108,6 +108,9 @@ jobs:
           Copy-Item LICENSE pkg/LICENSE.txt
           Copy-Item Resources/Fonts/Inter-LICENSE.txt pkg/licences/Inter-OFL.txt
           Copy-Item Resources/Fonts/JetBrainsMono-LICENSE.txt pkg/licences/JetBrainsMono-OFL.txt
+          # Time-stretching (audio clips' speed and pitch): Signalsmith Stretch, MIT licence.
+          Copy-Item external/tracktion_engine/modules/tracktion_engine/3rd_party/signalsmith-stretch/LICENSE.txt pkg/licences/Signalsmith-Stretch-MIT.txt
+          Copy-Item external/tracktion_engine/modules/tracktion_engine/3rd_party/signalsmith-stretch/signalsmith-linear/LICENSE.txt pkg/licences/Signalsmith-Linear-MIT.txt
           if ($env:ASIO_SDK) {
             Copy-Item asiosdk.zip pkg/licences/ASIO-SDK-source-GPLv3.zip
             "ASIO is a trademark and software of Steinberg Media Technologies GmbH." | Out-File pkg/licences/ASIO.txt -Encoding utf8
@@ -131,7 +134,7 @@ jobs:
           body: |
             COTOSTUDIO, the multiplayer DAW. Download **COTOSTUDIO.exe** below (or the zip, which also has the README and the licences); README.md explains what's new, where your files go and how to play with friends.
             Self-test on Windows: passed (3 peers over TCP).
-            Free software under the GNU AGPLv3. Fonts: Inter and JetBrains Mono (SIL Open Font License).
+            Free software under the GNU AGPLv3. Fonts: Inter and JetBrains Mono (SIL Open Font License). Time-stretching: Signalsmith Stretch (MIT).
             ASIO is a trademark and software of Steinberg Media Technologies GmbH.
           files: |
             dist/COTOSTUDIO.exe

@@ -15,6 +15,8 @@
         backwards (the trim and the fades then apply to the reversed sound).
       - A filter (low / high / band pass) with cutoff and resonance.
       - "Cut itself" stops the previous hit when a new one starts (for 808s).
+      - Each note's own pan, fine pitch and release velocity (FL's note properties, set
+        in the piano roll) change that note only.
     All of it is in the "Edit sound" window (right-click the channel in the rack); the
     knobs are stored in the song, so they sync and can be automated.
 
@@ -116,6 +118,7 @@ private:
         int note = -1;
         double position = 0.0, startPosition = 0.0, step = 1.0;   // in the file's samples (step < 0 = backwards)
         float gain = 1.0f, fade = 1.0f, fadeStep = 0.0f;           // velocity; the "cut itself" fade
+        float gainL = 1.0f, gainR = 1.0f;                           // the note's pan
         Stage stage = Stage::attack;
         float env = 1.0f, releaseStep = 0.0f;
         int holdLeft = 0;
@@ -150,8 +153,9 @@ private:
     void updateFilterCoefficients (float resonance);
 
     Settings readSettings (const Sample&) const;
-    void startVoice (const Sample&, const Settings&, int noteNumber, float velocity, bool cut);
-    void releaseNote (int noteNumber, const Settings&);
+    void startVoice (const Sample&, const Settings&, int noteNumber, float velocity, bool cut,
+                     float pan = 0.0f, float fineCents = 0.0f);
+    void releaseNote (int noteNumber, const Settings&, int releaseVelocity = 0);
     float nextEnvelope (Voice&, const Settings&);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SamplerPlugin)

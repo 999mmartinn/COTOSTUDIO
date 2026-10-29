@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "Backups.h"
 #include "PatternCompiler.h"
 #include "ProjectFile.h"
 #include "AppData.h"
@@ -331,7 +332,7 @@ MainComponent::MainComponent (te::Engine& e)
 
     for (auto* c : std::initializer_list<juce::Component*> {
              logo.get(), &fileButton, &soundsButton, &sessionPill, &lcd, &settingsButton,
-             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoSlider, &patternBox, &newPatternButton, &patternMenuButton,
+             &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoSlider, &timeSigButton, &tapButton, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &undoButton, &redoButton,
              &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &dividerNoRack, dock.get(), &statusBar })
         addAndMakeVisible (c);
@@ -393,6 +394,23 @@ MainComponent::MainComponent (te::Engine& e)
         tempoAskCountdown = 4;
         refreshTempo();
     };
+
+    // Time signature and tap tempo, in the counter's right column.
+    for (auto* b : { &timeSigButton, &tapButton })
+    {
+        theme::setStyle (*b, "flat");
+        b->setColour (juce::TextButton::textColourOffId, theme::colours::lcdText);
+        b->setColour (juce::TextButton::textColourOnId, theme::colours::lcdText);
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+    }
+
+    timeSigButton.setButtonText ("4/4");
+    timeSigButton.setTooltip (TRANS ("Time signature (part of the song): beats in a bar. Patterns, grids, bar numbers and the metronome follow it"));
+    timeSigButton.onClick = [this] { showTimeSignatureMenu(); };
+    tapButton.setTooltip (TRANS ("Tap tempo: click here in time with the music (4 or more times); the tempo is set when you stop"));
+    tapButton.onClick = [this] { tapTempo(); };
+    tapButton.setTriggeredOnMouseDown (true);   // the click lands exactly when you press
 
     lengthBox.addItem (TRANS ("1 bar"), 1);
     lengthBox.addItem (TRANS ("2 bars"), 2);
@@ -551,12 +569,13 @@ MainComponent::MainComponent (te::Engine& e)
         else if (session.startRecording (state.beatsToSeconds (state.songStartBeat)))
         {
             const auto& punch = session.getRecorder().getPunch();
-            auto bar = [] (double beat) { return juce::String (beat / 4.0 + 1.0, std::abs (std::fmod (beat, 4.0)) < 0.001 ? 0 : 2); };
+            const double barBeats = state.getBeatsPerBar();
+            auto bar = [barBeats] (double beat) { return juce::String (beat / barBeats + 1.0, std::abs (std::fmod (beat, barBeats)) < 0.001 ? 0 : 2); };
 
             if (punch.isActive())
                 appendLog (TRANS ("Punch recording bars {FROM} to {TO}: the song plays from bar {START}; recording stops by itself at the punch-out")
                              .replace ("{FROM}", bar (punch.inBeat)).replace ("{TO}", bar (punch.outBeat))
-                             .replace ("{START}", bar (juce::jmax (0.0, punch.inBeat - 4.0 * punch.preRollBars))));
+                             .replace ("{START}", bar (juce::jmax (0.0, punch.inBeat - barBeats * punch.preRollBars))));
             else
                 appendLog (TRANS ("Recording... press Stop or Space to finish"));
         }
@@ -626,9 +645,23 @@ MainComponent::MainComponent (te::Engine& e)
     state.scaleSnap = prefs->getBoolValue ("scaleSnap", false);
     state.scaleKey = juce::jlimit (0, 11, prefs->getIntValue ("scaleKey", 0));
     state.scaleType = prefs->getIntValue ("scaleType", 1);
-    state.pianoSnapBeats = juce::jlimit (0.0, 4.0, prefs->getDoubleValue ("pianoSnap", song::stepBeats));
+    state.pianoSnapBeats = juce::jlimit (EditorState::snapBar, 4.0, prefs->getDoubleValue ("pianoSnap", song::stepBeats));
+
+    if (state.pianoSnapBeats >= 4.0 - 1.0e-9)
+        state.pianoSnapBeats = EditorState::snapBar;   // "Bar" (saved as 4 beats before 1.8)
+
+    // Automatic backups (Settings): how often; old ones of never-saved songs go (in the background).
+    backupMinutes = juce::jlimit (0, 10, prefs->getIntValue ("backupMinutes", 2));
+    juce::Thread::launch ([] { backups::pruneOldUnsaved(); });
+
+    state.ghostNotes = prefs->getBoolValue ("ghostNotes", true);
+    state.laneProperty = (song::NoteProperty) juce::jlimit (0, 3, prefs->getIntValue ("noteLane", 0));
+    pianoRoll.refreshTools();
+
     pianoRoll.onScaleChanged = [this]
     {
+        settings()->setValue ("ghostNotes", state.ghostNotes);
+        settings()->setValue ("noteLane", (int) state.laneProperty);
         settings()->setValue ("pianoSnap", state.pianoSnapBeats);
         settings()->setValue ("scaleSnap", state.scaleSnap);
         settings()->setValue ("scaleKey", state.scaleKey);
@@ -894,6 +927,7 @@ void MainComponent::refresh()
         recordButton.setToggleState (recording, juce::dontSendNotification);   // red while recording
 
         refreshTempo();
+        timeSigButton.setButtonText (song::getTimeSignature (*edit).toString());
 
         undoButton.setEnabled (edit->getUndoManager().canUndo());
         redoButton.setEnabled (edit->getUndoManager().canRedo());
@@ -1257,7 +1291,7 @@ void MainComponent::timerCallback()
     }
 
     // A backup every 3 minutes while there are changes.
-    if (++ticksSinceAutosave >= 5 * 180)
+    if (backupMinutes > 0 && ++ticksSinceAutosave >= 5 * 60 * backupMinutes)
     {
         ticksSinceAutosave = 0;
         autosave();
@@ -1349,6 +1383,72 @@ void MainComponent::closeTempoQuestion (int id)
         w->exitModalState (0);
 }
 
+void MainComponent::showTimeSignatureMenu()
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr)
+        return;
+
+    const auto current = song::getTimeSignature (*edit);
+    const auto choices = song::getTimeSignatureChoices();
+    juce::PopupMenu m;
+    m.addSectionHeader (TRANS ("Time signature"));
+
+    for (int i = 0; i < choices.size(); ++i)
+        m.addItem (i + 1, choices[i].toString() + "   (" + TRANS ("{N} beats a bar").replace ("{N}", juce::String (choices[i].beatsPerBar(), 0)) + ")",
+                   true, choices[i] == current);
+
+    m.addSeparator();
+    m.addItem (-1, TRANS ("Tempo changes: right-click the playlist's ruler"), false);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (timeSigButton),
+                     [safe = juce::Component::SafePointer<MainComponent> (this), choices] (int r)
+    {
+        auto* ed = safe != nullptr ? safe->state.getEdit() : nullptr;
+
+        if (ed == nullptr || ! juce::isPositiveAndBelow (r - 1, choices.size()))
+            return;
+
+        safe->state.beginAction();
+        song::setTimeSignature (*ed, choices[r - 1]);
+        safe->appendLog (TRANS ("Time signature: {SIG} - patterns are now {N} beats a bar")
+                           .replace ("{SIG}", choices[r - 1].toString()).replace ("{N}", juce::String (choices[r - 1].beatsPerBar(), 0)));
+        safe->refresh();
+        safe->playlist.refresh();
+        safe->rack.refresh();
+        safe->pianoRoll.refresh();
+    });
+}
+
+void MainComponent::tapTempo()
+{
+    // The average of the last few taps; a pause of 2 seconds starts over.
+    const double now = juce::Time::getMillisecondCounterHiRes();
+
+    if (! tapTimes.isEmpty() && now - tapTimes.getLast() > 2000.0)
+        tapTimes.clearQuick();
+
+    tapTimes.add (now);
+
+    while (tapTimes.size() > 8)
+        tapTimes.remove (0);
+
+    if (tapTimes.size() < 2)
+    {
+        appendLog (TRANS ("Tap tempo: keep tapping in time..."));
+        return;
+    }
+
+    const double interval = (tapTimes.getLast() - tapTimes.getFirst()) / (tapTimes.size() - 1);
+    const double bpm = juce::jlimit (song::minTempo, song::maxTempo, std::round (60000.0 / interval));
+
+    // Shown at once (amber), asked for / set a moment after the last tap.
+    tempoSlider.setValue (bpm, juce::dontSendNotification);
+    tempoAskCountdown = 8;
+    tempoSlider.setColour (juce::Slider::textBoxTextColourId, theme::colours::amber);
+}
+
 void MainComponent::refreshTempo()
 {
     auto* edit = state.getEdit();
@@ -1401,7 +1501,8 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
     auto& rec = session.getRecorder();
     const auto punch = rec.getPunch();
     const int bars = session.getCountInBars();
-    auto bar = [] (double beat) { return juce::String (beat / 4.0 + 1.0, std::abs (std::fmod (beat, 4.0)) < 0.001 ? 0 : 2); };
+    const double barBeats = state.getBeatsPerBar();
+    auto bar = [barBeats] (double beat) { return juce::String (beat / barBeats + 1.0, std::abs (std::fmod (beat, barBeats)) < 0.001 ? 0 : 2); };
 
     juce::PopupMenu m, countIn, punchFrom, preRoll;
     m.addSectionHeader (TRANS ("Recording options"));
@@ -1414,7 +1515,7 @@ void MainComponent::showRecordOptionsMenu (juce::Component* target)
 
     // Punch in / out
     m.addSeparator();
-    const auto barsLong = juce::String ((punch.outBeat - punch.inBeat) / 4.0, std::abs (std::fmod (punch.outBeat - punch.inBeat, 4.0)) < 0.001 ? 0 : 2);
+    const auto barsLong = juce::String ((punch.outBeat - punch.inBeat) / barBeats, std::abs (std::fmod (punch.outBeat - punch.inBeat, barBeats)) < 0.001 ? 0 : 2);
     m.addItem (10, punch.hasRange() ? TRANS ("Punch in / out: bars {FROM} to {TO}").replace ("{FROM}", bar (punch.inBeat)).replace ("{TO}", bar (punch.outBeat))
                                         + "  (" + TRANS ("{N} bar(s)").replace ("{N}", barsLong) + ")"
                                     : TRANS ("Punch in / out (set the range first)"),
@@ -1513,12 +1614,13 @@ void MainComponent::setPunchFromStartMarker (int bars)
 {
     auto& recorder = session.getRecorder();
     auto p = recorder.getPunch();
-    p.inBeat = std::floor (state.songStartBeat / 4.0 + 1.0e-6) * 4.0;
-    p.outBeat = p.inBeat + 4.0 * bars;
+    const double barBeats = state.getBeatsPerBar();
+    p.inBeat = std::floor (state.songStartBeat / barBeats + 1.0e-6) * barBeats;
+    p.outBeat = p.inBeat + barBeats * bars;
     p.on = true;
     recorder.setPunch (p);
     appendLog (TRANS ("Punch in / out: bars {FROM} to {TO}. Rec plays from a bar before and keeps only this part")
-                 .replace ("{FROM}", juce::String (p.inBeat / 4.0 + 1.0, 0)).replace ("{TO}", juce::String (p.outBeat / 4.0 + 1.0, 0)));
+                 .replace ("{FROM}", juce::String (p.inBeat / barBeats + 1.0, 0)).replace ("{TO}", juce::String (p.outBeat / barBeats + 1.0, 0)));
     playlist.repaint();
 }
 
@@ -1810,11 +1912,12 @@ juce::File MainComponent::songsFolder()
 
 juce::File MainComponent::autosaveFolder() const
 {
-    // A saved song keeps its backups in its own project folder; others go to Backups.
+    // A saved song keeps its backups in its own project folder; a never-saved one in a
+    // folder of its own in the data folder's Backups (by its name and when it started).
     if (currentFile != juce::File() && ! appdata::isBackup (currentFile))
         return appdata::projectFolderOf (currentFile).getChildFile ("Backups");
 
-    return appdata::backupsFolder();
+    return backups::folderForUnsaved (const_cast<collab::Session&> (session).getSongTitle(), songStartedAt);
 }
 
 juce::int64 MainComponent::currentHash() const
@@ -1898,7 +2001,7 @@ void MainComponent::showFileMenu()
     m.addSeparator();
     m.addItem (item (6, TRANS ("Export audio (WAV, FLAC, MP3)..."), ! exporter.isRunning(), "Ctrl+R"));
     m.addSeparator();
-    m.addItem (5, TRANS ("Open an automatic backup..."), canReplace);
+    m.addItem (5, TRANS ("Backups (open one, back up now)..."), canReplace);
     m.addItem (7, currentFile != juce::File() ? TRANS ("Show this project's folder") : TRANS ("Show the Projects folder"));
 
     juce::PopupMenu data;
@@ -1943,17 +2046,7 @@ void MainComponent::showFileMenu()
         else if (r == 9)   chooseDataFolder();
         else if (r == 5)
         {
-            askToSaveChanges ([this]
-            {
-                autosaveFolder().createDirectory();
-                fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Open an automatic backup"), autosaveFolder(), appdata::songWildcards);
-                fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                                          [this] (const juce::FileChooser& fc)
-                {
-                    if (fc.getResult().existsAsFile())
-                        openSongFile (fc.getResult());
-                });
-            });
+            showBackups();
         }
         else if (r >= 100)
         {
@@ -2429,26 +2522,43 @@ void MainComponent::writeSong (const juce::File& file, std::function<void (bool)
     });
 }
 
-void MainComponent::autosave()
+void MainComponent::autosave (bool byHand)
 {
     auto* edit = state.getEdit();
 
     if (edit == nullptr || session.isBusyWithFile() || session.isRecording())
+    {
+        if (byHand)
+            appendLog (TRANS ("Not now: the song is being saved, opened or recorded"));
+
         return;
+    }
+
+    // Another song (new, opened, or a fresh copy from the host): its backups start a new folder.
+    if (edit != backedUpEdit)
+    {
+        backedUpEdit = edit;
+        songStartedAt = juce::Time::getCurrentTime();
+        lastAutosaveHash = 0;
+    }
 
     const auto hash = currentHash();
 
-    if (hash == savedHash || hash == lastAutosaveHash)
+    if (hash == lastAutosaveHash || (hash == savedHash && ! byHand))
+    {
+        if (byHand)
+            appendLog (TRANS ("Nothing changed since the last backup"));
+
         return;   // nothing new since the last save / backup
+    }
 
     auto folder = autosaveFolder();
     folder.createDirectory();
-    const auto file = folder.getChildFile (juce::File::createLegalFileName (session.getSongTitle() + " (backup "
-                                            + juce::Time::getCurrentTime().formatted ("%Y-%m-%d %H-%M-%S") + ")")
-                                            + appdata::songExtension);
+    const auto file = backups::newBackupFile (folder, session.getSongTitle());
 
-    // Song only: its audio files stay in this PC's audio folder anyway.
-    session.saveProject (file, false, [safe = juce::Component::SafePointer<MainComponent> (this), folder] (project::SaveResult result)
+    // With its audio (shared with the other backups of this song, see Backups.h), so it opens
+    // even once this PC's working copies are gone.
+    session.saveProject (file, true, [safe = juce::Component::SafePointer<MainComponent> (this), byHand, file] (project::SaveResult result)
     {
         if (safe == nullptr)
             return;
@@ -2461,14 +2571,168 @@ void MainComponent::autosave()
 
         safe->lastAutosaveHash = result.songHash;
 
-        // Keep the 10 newest backups.
-        auto backups = folder.findChildFiles (juce::File::findFiles, false, appdata::songWildcards);
-        std::sort (backups.begin(), backups.end(), [] (const juce::File& a, const juce::File& b)
-                   { return a.getLastModificationTime() > b.getLastModificationTime(); });
+        if (byHand)
+            safe->appendLog (TRANS ("Backed up: {FILE}").replace ("{FILE}", file.getFileName()));
+    }, true);
+}
 
-        for (int i = 10; i < backups.size(); ++i)
-            backups.getReference (i).deleteFile();
-    });
+void MainComponent::showBackups()
+{
+    // The list of backups, newest first (this song's first), to open one.
+    struct BackupsPanel  : public juce::Component,
+                           private juce::ListBoxModel
+    {
+        BackupsPanel (MainComponent& o) : owner (o)
+        {
+            entries = backups::list (owner.autosaveFolder());
+            list.setModel (this);
+            list.setRowHeight (34);
+            list.setColour (juce::ListBox::backgroundColourId, theme::colours::well);
+            addAndMakeVisible (list);
+
+            for (auto* b : { &openButton, &nowButton, &folderButton })
+                addAndMakeVisible (b);
+
+            openButton.setButtonText (TRANS ("Open"));
+            theme::setStyle (openButton, "accent");
+            openButton.onClick = [this] { openSelected(); };
+            nowButton.setButtonText (TRANS ("Back up now"));
+            nowButton.onClick = [this] { owner.autosave (true); refreshSoon(); };
+            folderButton.setButtonText (TRANS ("Show the folder"));
+            folderButton.onClick = [this]
+            {
+                const auto row = list.getSelectedRow();
+                (juce::isPositiveAndBelow (row, entries.size()) ? entries[row].file.getParentDirectory() : owner.autosaveFolder()).startAsProcess();
+            };
+
+            if (! entries.isEmpty())
+                list.selectRow (0);
+
+            updateButtons();
+            setSize (560, 440);
+        }
+
+        void paint (juce::Graphics& g) override
+        {
+            g.fillAll (theme::colours::panel);
+            auto r = getLocalBounds().reduced (16, 12);
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::ui (12.0f));
+            const auto minutes = owner.backupMinutes;
+            g.drawFittedText (minutes > 0 ? TRANS ("A backup every {N} min while the song changes, with its audio. The last {K} of each song are kept; "
+                                                   "never-saved songs' backups are deleted after {D} days.")
+                                                .replace ("{N}", juce::String (minutes)).replace ("{K}", juce::String (backups::keepPerSong))
+                                                .replace ("{D}", juce::String (backups::unsavedDays))
+                                            : TRANS ("Automatic backups are off (Settings > Automatic backups)."),
+                              r.removeFromTop (36), juce::Justification::topLeft, 2, 1.0f);
+
+            if (entries.isEmpty())
+            {
+                g.setColour (theme::colours::dim);
+                g.drawText (TRANS ("No backups yet"), list.getBounds(), juce::Justification::centred);
+            }
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds().reduced (16, 12);
+            r.removeFromTop (40);
+            auto buttons = r.removeFromBottom (32);
+            r.removeFromBottom (10);
+            list.setBounds (r);
+            openButton.setBounds (buttons.removeFromRight (110));
+            buttons.removeFromRight (8);
+            nowButton.setBounds (buttons.removeFromRight (130));
+            folderButton.setBounds (buttons.removeFromLeft (140));
+        }
+
+        int getNumRows() override   { return entries.size(); }
+
+        void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool selected) override
+        {
+            if (! juce::isPositiveAndBelow (row, entries.size()))
+                return;
+
+            const auto& e = entries.getReference (row);
+            auto r = juce::Rectangle<int> (width, height).reduced (10, 0);
+
+            if (selected)
+            {
+                g.setColour (theme::colours::accent.withAlpha (0.22f));
+                g.fillRect (0, 0, width, height);
+            }
+
+            g.setColour (theme::colours::line);
+            g.fillRect (0, height - 1, width, 1);
+
+            g.setColour (theme::colours::muted);
+            g.setFont (theme::mono (11.5f));
+            g.drawText (backups::describeWhen (e.when), r.removeFromRight (150), juce::Justification::centredRight);
+
+            if (e.thisSong)
+            {
+                auto tag = r.removeFromRight (80).reduced (4, 9).toFloat();
+                g.setColour (theme::colours::accent.withAlpha (0.3f));
+                g.fillRoundedRectangle (tag, 4.0f);
+                g.setColour (theme::colours::text);
+                g.setFont (theme::ui (10.0f, theme::Weight::bold));
+                g.drawText (TRANS ("this song"), tag, juce::Justification::centred);
+            }
+
+            g.setColour (theme::colours::text);
+            g.setFont (theme::ui (13.0f, theme::Weight::semibold));
+            g.drawText (e.song, r, juce::Justification::centredLeft, true);
+        }
+
+        void selectedRowsChanged (int) override       { updateButtons(); }
+        void listBoxItemDoubleClicked (int, const juce::MouseEvent&) override   { openSelected(); }
+
+        void updateButtons()  { openButton.setEnabled (juce::isPositiveAndBelow (list.getSelectedRow(), entries.size())); }
+
+        void refreshSoon()
+        {
+            juce::Timer::callAfterDelay (1500, [safe = juce::Component::SafePointer<BackupsPanel> (this)]
+            {
+                if (safe != nullptr)
+                {
+                    safe->entries = backups::list (safe->owner.autosaveFolder());
+                    safe->list.updateContent();
+                    safe->list.selectRow (0);
+                    safe->repaint();
+                }
+            });
+        }
+
+        void openSelected()
+        {
+            const auto row = list.getSelectedRow();
+
+            if (! juce::isPositiveAndBelow (row, entries.size()))
+                return;
+
+            const auto file = entries[row].file;
+
+            if (auto* window = findParentComponentOfClass<juce::DialogWindow>())
+                window->exitModalState (0);
+
+            auto& o = owner;
+            o.askToSaveChanges ([&o, file] { o.openSongFile (file); });
+        }
+
+        MainComponent& owner;
+        juce::Array<backups::Entry> entries;
+        juce::ListBox list;
+        juce::TextButton openButton, nowButton, folderButton;
+    };
+
+    juce::DialogWindow::LaunchOptions o;
+    o.content.setOwned (new BackupsPanel (*this));
+    o.dialogTitle = TRANS ("Backups");
+    o.dialogBackgroundColour = theme::colours::panel;
+    o.useNativeTitleBar = true;
+    o.resizable = false;
+    o.componentToCentreAround = this;
+    o.launchAsync();
 }
 
 void MainComponent::deleteUnusedTakes()
@@ -2606,6 +2870,18 @@ void MainComponent::showSettingsMenu()
     data.addItem (21, TRANS ("Use another data folder..."));
     m.addSubMenu (TRANS ("Data folder"), data);
 
+    juce::PopupMenu backupEvery;
+    backupEvery.addItem (40, TRANS ("Off"), true, backupMinutes == 0);
+
+    for (int minutes : { 1, 2, 5, 10 })
+        backupEvery.addItem (40 + minutes, TRANS ("Every {N} min").replace ("{N}", juce::String (minutes)), true, backupMinutes == minutes);
+
+    backupEvery.addSeparator();
+    backupEvery.addItem (39, TRANS ("Backups (open one, back up now)..."));
+    m.addSubMenu (backupMinutes == 0 ? TRANS ("Automatic backups: off")
+                                     : TRANS ("Automatic backups: every {N} min").replace ("{N}", juce::String (backupMinutes)),
+                  backupEvery);
+
     m.addSeparator();
     m.addItem (3, TRANS ("Show every message"));
     m.addItem (4, TRANS ("About COTOSTUDIO"));
@@ -2617,6 +2893,15 @@ void MainComponent::showSettingsMenu()
         else if (r == 3)   showLog();
         else if (r == 4)   showAbout();
         else if (r == 20)  appdata::getRoot().startAsProcess();
+        else if (r == 39)  showBackups();
+        else if (r >= 40 && r <= 50)
+        {
+            backupMinutes = r - 40;
+            ticksSinceAutosave = 0;
+            settings()->setValue ("backupMinutes", backupMinutes);
+            appendLog (backupMinutes == 0 ? TRANS ("Automatic backups: off")
+                                          : TRANS ("Automatic backups: every {N} min").replace ("{N}", juce::String (backupMinutes)));
+        }
         else if (r == 21)  chooseDataFolder();
         else if (r == 10 || r == 11)
         {
@@ -2819,6 +3104,11 @@ void MainComponent::resized()
     lcd.setCompact (x.lcd < LcdDisplay::preferredWidth);
     lcd.setBounds (bar.removeFromLeft (x.lcd).withSizeKeepingCentre (x.lcd, 44));
     tempoSlider.setBounds (lcd.getTempoArea() + lcd.getPosition());
+    {
+        auto side = lcd.getSideArea() + lcd.getPosition();
+        timeSigButton.setBounds (side.removeFromTop (side.getHeight() / 2).withTrimmedBottom (1));
+        tapButton.setBounds (side.withTrimmedTop (1));
+    }
     bar.removeFromLeft (10);
 
     place (patternBox, x.pattern, 4);

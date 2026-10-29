@@ -277,6 +277,81 @@ public:
         return {};
     }
 
+    //==============================================================================
+    // Audio clip fades: a small square at the top of the clip where each fade ends.
+    enum class FadeHandle { none, in, out };
+
+    float fadeInX (te::Edit& edit, const juce::ValueTree& clip) const
+    {
+        const double startSeconds = beatsToSeconds (edit, clip[ids::start]);
+        return xForBeat (secondsToBeats (edit, startSeconds + getClipFadeIn (clip)));
+    }
+
+    float fadeOutX (te::Edit& edit, const juce::ValueTree& clip) const
+    {
+        const double endSeconds = beatsToSeconds (edit, clip[ids::start]) + (double) clip[ids::duration];
+        return xForBeat (secondsToBeats (edit, endSeconds - getClipFadeOut (clip)));
+    }
+
+    static juce::Rectangle<float> fadeHandleBox (float x, juce::Rectangle<float> clipArea)
+    {
+        const float size = 7.0f;
+        const float left = juce::jlimit (clipArea.getX() + 1.0f, juce::jmax (clipArea.getX() + 1.0f, clipArea.getRight() - size - 1.0f),
+                                         x - size * 0.5f);
+        return { left, clipArea.getY() + 2.0f, size, size };
+    }
+
+    FadeHandle fadeHandleAt (const juce::ValueTree& clip, juce::Point<float> p) const
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr || ! isAudioClip (clip))
+            return FadeHandle::none;
+
+        const auto area = clipBounds (clip);
+
+        if (p.y > area.getY() + 11.0f || area.getWidth() < 18.0f)
+            return FadeHandle::none;
+
+        const float dIn = std::abs (p.x - fadeHandleBox (fadeInX (*edit, clip), area).getCentreX());
+        const float dOut = std::abs (p.x - fadeHandleBox (fadeOutX (*edit, clip), area).getCentreX());
+
+        if (juce::jmin (dIn, dOut) > 6.0f)
+            return FadeHandle::none;
+
+        return dOut < dIn ? FadeHandle::out : FadeHandle::in;
+    }
+
+    /** The cut the slice tool would make right now (x, top lane, bottom lane). */
+    struct SliceLine { bool active = false; double beat = 0.0; int lane1 = 0, lane2 = 0; } slice;
+
+    double sliceBeatAt (const juce::MouseEvent& e) const
+    {
+        return e.mods.isAltDown() ? beatAtX (e.position.x) : snapNearest (beatAtX (e.position.x));
+    }
+
+    /** Cuts every clip on these tracks that the line crosses. Returns how many were cut. */
+    int cutAcross (double beat, int lane1, int lane2)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return 0;
+
+        int cuts = 0;
+
+        for (auto& c : getClips (*edit))
+        {
+            const int lane = c[ids::lane];
+
+            if (lane >= juce::jmin (lane1, lane2) && lane <= juce::jmax (lane1, lane2)
+                 && splitClip (*edit, c, beat).isValid())
+                ++cuts;
+        }
+
+        return cuts;
+    }
+
     void paint (juce::Graphics& g) override
     {
         auto* edit = state.getEdit();
@@ -310,10 +385,19 @@ public:
         const int firstBeat = juce::jmax (0, (int) beatAtX ((float) visible.getX()) - 1);
         const int lastBeat = (int) beatAtX ((float) visible.getRight()) + 1;
 
+        const int beatsPerBar = juce::roundToInt (getBeatsPerBar (*edit));
+
         for (int b = firstBeat; b <= lastBeat; ++b)
         {
-            g.setColour (b % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
+            g.setColour (b % beatsPerBar == 0 ? theme::colours::gridBar : theme::colours::grid);
             g.drawVerticalLine ((int) xForBeat (b), 0.0f, (float) getHeight());
+        }
+
+        // Tempo changes: a faint amber line down the playlist.
+        for (auto& t : getTempoChanges (*edit))
+        {
+            g.setColour (theme::colours::amber.withAlpha (0.35f));
+            g.drawVerticalLine ((int) xForBeat (t.beat), 0.0f, (float) getHeight());
         }
 
         // Song end
@@ -371,6 +455,7 @@ public:
 
             // Mini preview, FL-style: one thin row per channel that has notes in this pattern.
             const double clipLen = getClipLength (*edit, clip);
+            const double patternOffset = getPatternOffset (clip);
             juce::StringArray rows;
 
             for (auto* t : getChannels (*edit))
@@ -385,7 +470,9 @@ public:
 
                 for (auto n : pattern)
                 {
-                    if (! n.hasType (ids::PNOTE) || (double) n[ids::b] >= clipLen)
+                    const double b = (double) n[ids::b] - patternOffset;   // within the clip
+
+                    if (! n.hasType (ids::PNOTE) || b < -1.0e-6 || b >= clipLen)
                         continue;
 
                     const int row = rows.indexOf (n[ids::ch].toString());
@@ -393,8 +480,8 @@ public:
                     if (row < 0)
                         continue;
 
-                    const float x = r.getX() + xForBeat (n[ids::b]);
-                    const float w = juce::jmax (1.5f, xForBeat (juce::jmin ((double) n[ids::l], clipLen - (double) n[ids::b])) - 1.0f);
+                    const float x = r.getX() + xForBeat (b);
+                    const float w = juce::jmax (1.5f, xForBeat (juce::jmin ((double) n[ids::l], clipLen - b)) - 1.0f);
                     g.fillRect (x, top + row * rowH, w, juce::jmax (1.0f, rowH - 1.0f));
                 }
             }
@@ -420,6 +507,17 @@ public:
                 g.setColour (theme::colours::accent);
                 g.drawRoundedRectangle (r, 5.0f, 1.5f);
             }
+        }
+
+        // The cut the slice tool is about to make
+        if (slice.active)
+        {
+            const float x = xForBeat (slice.beat);
+            const float y1 = (float) (juce::jmin (slice.lane1, slice.lane2) * laneHeight);
+            const float y2 = (float) ((juce::jmax (slice.lane1, slice.lane2) + 1) * laneHeight);
+            g.setColour (theme::colours::amber);
+            const float dashes[] = { 4.0f, 3.0f };
+            g.drawDashedLine ({ x, y1, x, y2 }, dashes, 2, 1.5f);
         }
 
         // Start marker and playhead
@@ -504,9 +602,11 @@ public:
             if (auto* thumb = owner.getThumbnail (hash))
             {
                 // Left channel at full clip height: easier to read than two thin strips.
+                // The part of the file it plays (speed: more or less of it), as loud as the clip's volume.
                 const double offset = clip[ids::offset], duration = clip[ids::duration];
+                const float zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain ((float) getClipGainDb (clip)));
                 g.setColour (colour.brighter (0.4f).withAlpha (0.9f));
-                thumb->drawChannel (g, body.toNearestInt(), offset, offset + duration, 0, 1.0f);
+                thumb->drawChannel (g, body.toNearestInt(), offset, offset + duration * getClipSpeed (clip), 0, zoom);
             }
         }
         else
@@ -519,8 +619,74 @@ public:
                         body.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredLeft, true);
         }
 
-        // Name on a small dark tab so it stays readable over the waveform.
-        const auto name = getAssetName (edit, hash);
+        // Fades: the faded part darkened, with the curve on top.
+        auto drawFade = [&] (float from, float to, bool fadeIn)
+        {
+            if (std::abs (to - from) < 1.0f)
+                return;
+
+            juce::Path curve, shade;
+            const float top = r.getY() + 1.0f, bottom = r.getBottom() - 1.0f;
+            const int steps = juce::jlimit (4, 48, (int) std::abs (to - from) / 3);
+
+            for (int i = 0; i <= steps; ++i)
+            {
+                const float t = (float) i / (float) steps;
+                const float level = fadeIn ? t : 1.0f - t;
+                const float shaped = level * level * (3.0f - 2.0f * level);   // the S-curve the engine uses
+                const auto point = juce::Point<float> (from + (to - from) * t, bottom - (bottom - top) * shaped);
+
+                if (i == 0) curve.startNewSubPath (point);
+                else        curve.lineTo (point);
+            }
+
+            shade = curve;
+            shade.lineTo (to, top);
+            shade.lineTo (from, top);
+            shade.closeSubPath();
+            g.setColour (juce::Colours::black.withAlpha (0.35f));
+            g.fillPath (shade);
+            g.setColour (theme::colours::text.withAlpha (0.7f));
+            g.strokePath (curve, juce::PathStrokeType (1.2f));
+        };
+
+        const float inX = juce::jmin (r.getRight(), fadeInX (edit, clip));
+        const float outX = juce::jmax (r.getX(), fadeOutX (edit, clip));
+        drawFade (r.getX(), inX, true);
+        drawFade (outX, r.getRight(), false);
+
+        // The fade handles, while the mouse is over the clip (or a fade is set).
+        const bool hovered = hoverClip == clip[ids::sid].toString();
+
+        for (auto [x, set] : { std::pair<float, bool> { inX, getClipFadeIn (clip) > 0.0 },
+                               std::pair<float, bool> { outX, getClipFadeOut (clip) > 0.0 } })
+        {
+            if (! hovered && ! set)
+                continue;
+
+            auto box = fadeHandleBox (x, r);
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+            g.fillRect (box.expanded (1.0f));
+            g.setColour (hovered ? theme::colours::text : theme::colours::muted);
+            g.fillRect (box);
+        }
+
+        // Name on a small dark tab so it stays readable over the waveform, with the clip's
+        // settings when they are changed (volume, pitch, speed).
+        auto name = getAssetName (edit, hash);
+        juce::StringArray extras;
+
+        if (std::abs (getClipGainDb (clip)) > 0.05)
+            extras.add ((getClipGainDb (clip) > 0.0 ? "+" : "") + juce::String (getClipGainDb (clip), 1) + " dB");
+
+        if (std::abs (getClipPitch (clip)) > 0.005)
+            extras.add ((getClipPitch (clip) > 0.0 ? "+" : "") + juce::String (getClipPitch (clip), std::abs (std::fmod (getClipPitch (clip), 1.0)) < 0.005 ? 0 : 2) + " st");
+
+        if (std::abs (getClipSpeed (clip) - 1.0) > 1.0e-4)
+            extras.add (juce::String (juce::roundToInt (getClipSpeed (clip) * 100.0)) + "%");
+
+        if (! extras.isEmpty())
+            name << "  " << extras.joinIntoString ("  ");
         juce::Font font (theme::ui (10.5f, theme::Weight::semibold));
         const float tabWidth = juce::jmin (r.getWidth() - 2.0f, juce::GlyphArrangement::getStringWidth (font, name) + 12.0f);
         auto tab = juce::Rectangle<float> (r.getX() + 1.0f, r.getY() + 1.0f, tabWidth, 13.0f);
@@ -534,11 +700,54 @@ public:
     void mouseMove (const juce::MouseEvent& e) override
     {
         auto c = clipAt (e.position);
-        const bool onEdge = c.isValid() && (e.position.x > clipBounds (c).getRight() - 6.0f
-                                             || (isAudioClip (c) && e.position.x < clipBounds (c).getX() + 6.0f));
+        const auto hover = isAudioClip (c) ? c[ids::sid].toString() : juce::String();
+
+        if (hover != hoverClip)
+        {
+            hoverClip = hover;
+            repaint();
+        }
+
+        if (owner.sliceTool)
+        {
+            setMouseCursor (juce::MouseCursor::CrosshairCursor);
+            return;
+        }
+
+        const bool onEdge = c.isValid() && (fadeHandleAt (c, e.position) != FadeHandle::none
+                                             || e.position.x > clipBounds (c).getRight() - 6.0f
+                                             || (! isAutomationClip (c) && e.position.x < clipBounds (c).getX() + 6.0f));
         setMouseCursor (onEdge ? juce::MouseCursor::LeftRightResizeCursor
                                : c.isValid() ? juce::MouseCursor::DraggingHandCursor
                                              : juce::MouseCursor::NormalCursor);
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        if (hoverClip.isNotEmpty())
+        {
+            hoverClip = {};
+            repaint();
+        }
+    }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        // FL's tool keys (only without Ctrl/Alt, so the app's shortcuts still work).
+        if (key.getModifiers().isCommandDown() || key.getModifiers().isAltDown())
+            return false;
+
+        if (key.getTextCharacter() == 'p' || key.getTextCharacter() == 'P')   { owner.setSliceTool (false); return true; }
+        if (key.getTextCharacter() == 'c' || key.getTextCharacter() == 'C')   { owner.setSliceTool (true); return true; }
+        return false;
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        auto hit = clipAt (e.position);
+
+        if (isAudioClip (hit) && ! owner.sliceTool)
+            owner.showClipProperties (hit[ids::sid].toString(), localAreaToGlobal (clipBounds (hit).toNearestInt()));
     }
 
     void mouseDown (const juce::MouseEvent& e) override
@@ -552,13 +761,14 @@ public:
 
         state.beginAction();
         auto hit = clipAt (e.position);
+        grabKeyboardFocus();   // P / C pick the tool
 
         if (e.mods.isPopupMenu())
         {
             // On a clip's name strip: its menu (rename, colour, insert...). Elsewhere: delete, like FL.
             if (hit.isValid() && ! isAutomationClip (hit) && e.position.y < clipBounds (hit).getY() + 16.0f)
             {
-                showClipMenu (hit);
+                showClipMenu (hit, sliceBeatAt (e));
                 return;
             }
 
@@ -569,18 +779,30 @@ public:
             return;
         }
 
+        if (owner.sliceTool)
+        {
+            // Slice: a cut line from here; let go to cut every clip it crosses.
+            slice = { true, sliceBeatAt (e), laneAtY (e.position.y), laneAtY (e.position.y) };
+            repaint();
+            return;
+        }
+
         if (hit.isValid())
         {
             dragClip = hit;
             const auto bounds = clipBounds (hit);
-            dragMode = e.position.x > bounds.getRight() - 6.0f ? DragMode::resize
-                     : (isAudioClip (hit) && e.position.x < bounds.getX() + 6.0f) ? DragMode::trimStart
+            const auto fade = fadeHandleAt (hit, e.position);
+            dragMode = fade == FadeHandle::in ? DragMode::fadeIn
+                     : fade == FadeHandle::out ? DragMode::fadeOut
+                     : e.position.x > bounds.getRight() - 6.0f ? (isAudioClip (hit) && e.mods.isAltDown() ? DragMode::stretch : DragMode::resize)
+                     : (! isAutomationClip (hit) && e.position.x < bounds.getX() + 6.0f) ? DragMode::trimStart
                      : DragMode::move;
             grabStart = hit[ids::start];
             grabLane = hit[ids::lane];
             grabBeat = beatAtX (e.position.x);
-            grabOffset = hit[ids::offset];
-            grabDuration = hit[ids::duration];
+            grabOffset = isAudioClip (hit) ? (double) hit[ids::offset] : getPatternOffset (hit);
+            grabDuration = isAudioClip (hit) ? (double) hit[ids::duration] : getClipLength (*edit, hit);
+            grabSpeed = getClipSpeed (hit);
             clickedExisting = true;
         }
         else
@@ -617,11 +839,62 @@ public:
     {
         auto* edit = state.getEdit();
 
+        if (slice.active)
+        {
+            const int lane = laneAtY (e.position.y);
+
+            if (lane != slice.lane2)
+            {
+                slice.lane2 = lane;
+                repaint();
+            }
+
+            return;
+        }
+
         if (edit == nullptr || ! dragClip.isValid() || e.getDistanceFromDragStart() < 3)
             return;
 
         moved = true;
         auto* um = &edit->getUndoManager();
+
+        if (dragMode == DragMode::fadeIn || dragMode == DragMode::fadeOut)
+        {
+            // Fades follow the mouse freely (no grid), in seconds.
+            const double startSeconds = beatsToSeconds (*edit, dragClip[ids::start]);
+            const double endSeconds = startSeconds + (double) dragClip[ids::duration];
+            const double mouseSeconds = beatsToSeconds (*edit, beatAtX (e.position.x));
+
+            if (dragMode == DragMode::fadeIn)
+                setClipFades (*edit, dragClip, mouseSeconds - startSeconds, getClipFadeOut (dragClip));
+            else
+                setClipFades (*edit, dragClip, getClipFadeIn (dragClip), endSeconds - mouseSeconds);
+
+            repaint();
+            return;
+        }
+
+        if (dragMode == DragMode::stretch)
+        {
+            // Alt + right edge: the same part of the file over a new length (time-stretch).
+            const double startSeconds = beatsToSeconds (*edit, grabStart);
+            const double endBeat = e.mods.isShiftDown() ? beatAtX (e.position.x) : snapNearest (beatAtX (e.position.x));
+            const double newDuration = juce::jmax (0.05, beatsToSeconds (*edit, endBeat) - startSeconds);
+            const double used = grabDuration * grabSpeed;   // seconds of the file
+            const double speed = juce::jlimit (minClipSpeed, maxClipSpeed, used / newDuration);
+
+            if (std::abs (speed - getClipSpeed (dragClip)) > 1.0e-6)
+            {
+                if (std::abs (speed - 1.0) < 1.0e-6) dragClip.removeProperty (ids::speed, um);
+                else                                 dragClip.setProperty (ids::speed, speed, um);
+
+                dragClip.setProperty (ids::duration, used / speed, um);
+                setClipFades (*edit, dragClip, getClipFadeIn (dragClip), getClipFadeOut (dragClip));
+            }
+
+            repaint();
+            return;
+        }
 
         if (dragMode == DragMode::move)
         {
@@ -637,13 +910,15 @@ public:
         else if (isAudioClip (dragClip))
         {
             // Audio clips are trimmed in seconds, so tempo changes never stretch them.
+            // (With a speed change, a second on the timeline is `speed` seconds of the file.)
             const double fileSeconds = juce::jmax (0.05, getAssetSeconds (*edit, dragClip[ids::asset].toString()));
             const double startSeconds = beatsToSeconds (*edit, grabStart);
 
             if (dragMode == DragMode::resize)
             {
                 const double endBeat = snapNearest (beatAtX (e.position.x));
-                const double duration = juce::jlimit (0.05, juce::jmax (0.05, fileSeconds - grabOffset), beatsToSeconds (*edit, endBeat) - startSeconds);
+                const double duration = juce::jlimit (0.05, juce::jmax (0.05, (fileSeconds - grabOffset) / grabSpeed),
+                                                      beatsToSeconds (*edit, endBeat) - startSeconds);
 
                 if (std::abs (duration - (double) dragClip[ids::duration]) > 1.0e-6)
                     dragClip.setProperty (ids::duration, duration, um);
@@ -652,10 +927,10 @@ public:
             {
                 const double endSeconds = startSeconds + grabDuration;
                 double newStartSeconds = beatsToSeconds (*edit, snapNearest (beatAtX (e.position.x)));
-                newStartSeconds = juce::jlimit (startSeconds - grabOffset, endSeconds - 0.05, newStartSeconds);
+                newStartSeconds = juce::jlimit (startSeconds - grabOffset / grabSpeed, endSeconds - 0.05, newStartSeconds);
                 newStartSeconds = juce::jmax (0.0, newStartSeconds);
 
-                const double newOffset = grabOffset + (newStartSeconds - startSeconds);
+                const double newOffset = grabOffset + (newStartSeconds - startSeconds) * grabSpeed;
                 const double newStart = secondsToBeats (*edit, newStartSeconds);
 
                 if (std::abs (newStart - (double) dragClip[ids::start]) > 1.0e-6)
@@ -664,6 +939,24 @@ public:
                     dragClip.setProperty (ids::offset, juce::jmax (0.0, newOffset), um);
                     dragClip.setProperty (ids::duration, endSeconds - newStartSeconds, um);
                 }
+            }
+        }
+        else if (dragMode == DragMode::trimStart && ! isAutomationClip (dragClip))
+        {
+            // A pattern clip's left edge: it starts later (or earlier) in its pattern,
+            // its right edge stays put. It can't start before the pattern does.
+            const double end = grabStart + grabDuration;
+            const double newStart = juce::jlimit (juce::jmax (0.0, grabStart - grabOffset), end - stepBeats,
+                                                  snapNearest (beatAtX (e.position.x)));
+
+            if (std::abs (newStart - (double) dragClip[ids::start]) > 1.0e-6)
+            {
+                const double newOffset = juce::jmax (0.0, grabOffset + (newStart - grabStart));
+                dragClip.setProperty (ids::start, newStart, um);
+                dragClip.setProperty (ids::length, end - newStart, um);
+
+                if (newOffset < 1.0e-6) dragClip.removeProperty (ids::poff, um);
+                else                    dragClip.setProperty (ids::poff, newOffset, um);
             }
         }
         else
@@ -680,6 +973,21 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (slice.active)
+        {
+            slice.active = false;
+
+            if (cutAcross (slice.beat, slice.lane1, slice.lane2) > 0 && state.onSelectionChanged)
+                state.onSelectionChanged();
+
+            repaint();
+            return;
+        }
+
+        // A trimmed audio clip keeps its fades inside it.
+        if (auto* edit = state.getEdit(); edit != nullptr && dragClip.isValid() && isAudioClip (dragClip) && moved)
+            setClipFades (*edit, dragClip, getClipFadeIn (dragClip), getClipFadeOut (dragClip));
+
         // A take put on (or moved to) a track that sends takes to an insert plays through it.
         if (dragClip.isValid() && isAudioClip (dragClip) && (int) dragClip[ids::lane] != grabLane)
             routeTakeAndTell (state, dragClip);
@@ -719,7 +1027,7 @@ public:
 
     /** Right-click on a clip's name: pattern (rename, colour, make unique, delete) or
         audio take (insert, rename, delete). */
-    void showClipMenu (juce::ValueTree clip)
+    void showClipMenu (juce::ValueTree clip, double atBeat)
     {
         auto* edit = state.getEdit();
 
@@ -751,6 +1059,9 @@ public:
                 m.addSubMenu (TRANS ("Insert") + ": " + (now != nullptr ? now->getName() : TRANS ("Master")), inserts);
             }
 
+            m.addItem (5, TRANS ("Properties (volume, fades, pitch, speed)..."));
+            m.addItem (6, TRANS ("Cut here"));
+            m.addItem (7, TRANS ("Bounce to audio (apply its fades, volume, pitch and speed)"), owner.bouncer == nullptr || ! owner.bouncer->isRunning());
             m.addItem (2, TRANS ("Rename..."));
             m.addSeparator();
             m.addItem (3, TRANS ("Delete this clip"));
@@ -768,12 +1079,14 @@ public:
             m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("Default colour"),
                                                         c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack));
             m.addItem (4, TRANS ("Make unique (a copy of the pattern for this clip only)"));
+            m.addItem (6, TRANS ("Cut here"));
+            m.addItem (7, TRANS ("Bounce to audio (one audio clip per channel)"), owner.bouncer == nullptr || ! owner.bouncer->isRunning());
             m.addSeparator();
             m.addItem (3, TRANS ("Delete this clip"));
         }
 
         m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
-                         [safe = juce::Component::SafePointer<Lanes> (this), clipSid] (int r)
+                         [safe = juce::Component::SafePointer<Lanes> (this), clipSid, atBeat] (int r)
         {
             if (safe == nullptr || r == 0)
                 return;
@@ -798,6 +1111,20 @@ public:
             {
                 st.beginAction();
                 removeClip (*e, target);
+            }
+            else if (r == 5)
+            {
+                safe->owner.showClipProperties (clipSid, safe->localAreaToGlobal (safe->clipBounds (target).toNearestInt()));
+            }
+            else if (r == 6)
+            {
+                st.beginAction();
+                splitClip (*e, target, atBeat);
+            }
+            else if (r == 7)
+            {
+                safe->owner.bounceClip (clipSid);
+                return;
             }
             else if (r == 1 && pattern.isValid())
             {
@@ -876,8 +1203,9 @@ private:
     EditorState& state;
     juce::ValueTree dragClip;
     struct DropPreview { int lane = -1; double beat = 0.0; juce::String kind, id; } dropPreview;
-    enum class DragMode { move, resize, trimStart } dragMode = DragMode::move;
-    double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0;
+    enum class DragMode { move, resize, trimStart, fadeIn, fadeOut, stretch } dragMode = DragMode::move;
+    double grabStart = 0.0, grabBeat = 0.0, grabOffset = 0.0, grabDuration = 0.0, grabSpeed = 1.0;
+    juce::String hoverClip;   // the audio clip under the mouse (its fade handles show)
     int grabLane = -1;
     bool moved = false, clickedExisting = false;
 };
@@ -895,13 +1223,15 @@ public:
         g.fillRect (0, getHeight() - 1, getWidth(), 1);
         const int scrollX = owner.viewport->getViewPositionX();
         const float ppb = owner.pixelsPerBeat;
-        const int firstBar = juce::jmax (0, (int) (scrollX / ppb / 4.0f));
-        const int lastBar = (int) ((scrollX + getWidth()) / ppb / 4.0f) + 1;
-        const int labelEvery = ppb < 8.0f ? 4 : ppb < 14.0f ? 2 : 1;
+        const float barBeats = (float) state.getBeatsPerBar();
+        const int firstBar = juce::jmax (0, (int) (scrollX / ppb / barBeats));
+        const int lastBar = (int) ((scrollX + getWidth()) / ppb / barBeats) + 1;
+        const float barPixels = ppb * barBeats;
+        const int labelEvery = barPixels < 32.0f ? 4 : barPixels < 56.0f ? 2 : 1;
 
         for (int bar = firstBar; bar <= lastBar; ++bar)
         {
-            const float x = bar * 4.0f * ppb - (float) scrollX;
+            const float x = bar * barBeats * ppb - (float) scrollX;
             g.setColour (theme::colours::gridBar);
             g.drawVerticalLine ((int) x, 8.0f, (float) getHeight());
 
@@ -938,6 +1268,38 @@ public:
             }
         }
 
+        // Tempo changes: an amber tag with the new tempo (a slope in front of it = a ramp).
+        if (auto* edit = state.getEdit())
+        {
+            const auto changes = getTempoChanges (*edit);
+
+            for (int i = 0; i < changes.size(); ++i)
+            {
+                const auto tag = tempoTagBounds (changes[i]);
+
+                if (tag.getRight() < 0.0f || tag.getX() > (float) getWidth())
+                    continue;
+
+                // A thin line exactly where it changes (the tag sits beside a bar number).
+                const float at = (float) (changes[i].beat * owner.pixelsPerBeat) - (float) owner.viewport->getViewPositionX();
+                g.setColour (theme::colours::amber);
+                g.fillRect (at, 8.0f, 1.0f, (float) getHeight() - 8.0f);
+                g.setColour (theme::colours::amber.withAlpha (i == draggingTempo ? 1.0f : 0.85f));
+                g.fillRoundedRectangle (tag, 3.0f);
+
+                if (changes[i].ramp)
+                {
+                    juce::Path slope;
+                    slope.addTriangle (tag.getX() - 9.0f, tag.getBottom(), tag.getX(), tag.getY(), tag.getX(), tag.getBottom());
+                    g.fillPath (slope);
+                }
+
+                g.setColour (theme::colours::accentText);
+                g.setFont (theme::mono (9.5f, true));
+                g.drawText (bpmLabel (changes[i].bpm), tag.toNearestInt(), juce::Justification::centred, false);
+            }
+        }
+
         const double playBeat = state.getSongPlayheadBeat();
 
         if (playBeat >= 0.0)
@@ -947,6 +1309,125 @@ public:
         }
     }
 
+    static juce::String bpmLabel (double bpm)
+    {
+        return std::abs (bpm - std::round (bpm)) < 0.005 ? juce::String (juce::roundToInt (bpm)) : juce::String (bpm, 1);
+    }
+
+    juce::Rectangle<float> tempoTagBounds (const TempoChange& t) const
+    {
+        float x = (float) (t.beat * owner.pixelsPerBeat) - (float) owner.viewport->getViewPositionX();
+        const float w = juce::GlyphArrangement::getStringWidth (theme::mono (9.5f, true), bpmLabel (t.bpm)) + 8.0f;
+
+        // On a bar line: beside the bar's number (which is drawn there).
+        const double barBeats = state.getBeatsPerBar();
+        const double bar = t.beat / barBeats;
+
+        if (std::abs (bar - std::round (bar)) < 1.0e-6)
+            x += juce::GlyphArrangement::getStringWidth (theme::mono (10.5f), juce::String ((int) std::round (bar) + 1)) + 6.0f;
+
+        return { x + 1.0f, 9.0f, w, (float) getHeight() - 10.0f };
+    }
+
+    /** The tempo change whose tag is under this point, or -1. */
+    int tempoAt (juce::Point<float> p) const
+    {
+        if (auto* edit = state.getEdit())
+        {
+            const auto changes = getTempoChanges (*edit);
+
+            for (int i = changes.size(); --i >= 0;)
+                if (tempoTagBounds (changes[i]).expanded (2.0f, 6.0f).contains (p))
+                    return i;
+        }
+
+        return -1;
+    }
+
+    void askTempo (int index, double beat)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto changes = getTempoChanges (*edit);
+        const bool isNew = ! juce::isPositiveAndBelow (index, changes.size());
+        const double current = isNew ? edit->tempoSequence.getTempoAt (te::BeatPosition::fromBeats (beat)).getBpm()
+                                     : changes[index].bpm;
+        const bool ramp = isNew ? false : changes[index].ramp;
+        const double at = isNew ? beat : changes[index].beat;
+
+        askForText (isNew ? TRANS ("Tempo change") : TRANS ("Change this tempo"),
+                    TRANS ("New tempo from bar {BAR} (BPM):").replace ("{BAR}", barText (at, state.getBeatsPerBar())),
+                    bpmLabel (current),
+                    [safe = juce::Component::SafePointer<Ruler> (this), index, isNew, at, ramp] (juce::String text)
+        {
+            const double bpm = text.replaceCharacter (',', '.').getDoubleValue();
+
+            if (safe == nullptr || bpm < minTempo || bpm > maxTempo)
+                return;
+
+            if (auto* ed = safe->state.getEdit())
+            {
+                safe->state.beginAction();
+
+                if (isNew) addTempoChange (*ed, at, bpm, false);
+                else       setTempoChange (*ed, index, at, bpm, ramp);
+
+                safe->owner.repaint();
+            }
+        });
+    }
+
+    void showTempoMenu (int index)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto t = getTempoChanges (*edit)[index];
+        juce::PopupMenu m;
+        m.addSectionHeader (TRANS ("Tempo change: {BPM} BPM at bar {BAR}").replace ("{BPM}", bpmLabel (t.bpm))
+                                                                           .replace ("{BAR}", barText (t.beat, state.getBeatsPerBar())));
+        m.addItem (1, TRANS ("Change the tempo..."));
+        m.addItem (2, TRANS ("Jump to it"), true, ! t.ramp);
+        m.addItem (3, TRANS ("Ramp into it (speeds up / slows down gradually from the tempo before)"), true, t.ramp);
+        m.addSeparator();
+        m.addItem (4, TRANS ("Remove this tempo change"));
+
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                         [safe = juce::Component::SafePointer<Ruler> (this), index, t] (int r)
+        {
+            auto* ed = safe != nullptr ? safe->state.getEdit() : nullptr;
+
+            if (ed == nullptr || r == 0)
+                return;
+
+            if (r == 1)
+            {
+                safe->askTempo (index, t.beat);
+                return;
+            }
+
+            safe->state.beginAction();
+
+            if (r == 2 || r == 3)  setTempoChange (*ed, index, t.beat, t.bpm, r == 3);
+            else if (r == 4)       removeTempoChange (*ed, index);
+
+            safe->owner.repaint();
+        });
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        const int index = tempoAt (e.position);
+
+        if (index >= 0)
+            askTempo (index, 0.0);
+    }
+
     double beatAt (float x) const
     {
         return juce::jmax (0.0, (double) (x + (float) owner.viewport->getViewPositionX()) / owner.pixelsPerBeat);
@@ -954,9 +1435,22 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        const int tempo = tempoAt (e.position);
+
         if (e.mods.isPopupMenu())
         {
-            showPunchMenu (beatAt (e.position.x));
+            if (tempo >= 0) showTempoMenu (tempo);
+            else            showPunchMenu (beatAt (e.position.x));
+
+            return;
+        }
+
+        // Drag a tempo tag to move the change.
+        draggingTempo = tempo;
+
+        if (tempo >= 0)
+        {
+            state.beginAction();
             return;
         }
 
@@ -977,6 +1471,33 @@ public:
         if (e.mods.isPopupMenu())
             return;
 
+        if (draggingTempo >= 0)
+        {
+            auto* edit = state.getEdit();
+            const auto changes = edit != nullptr ? getTempoChanges (*edit) : juce::Array<TempoChange>();
+
+            if (! juce::isPositiveAndBelow (draggingTempo, changes.size()) || e.getDistanceFromDragStart() < 3)
+                return;
+
+            auto t = changes[draggingTempo];
+            const double beat = juce::jmax (stepBeats, state.snapPlaylistBeatNearest (beatAt (e.position.x)));
+
+            if (std::abs (beat - t.beat) > 1.0e-6)
+            {
+                setTempoChange (*edit, draggingTempo, beat, t.bpm, t.ramp);
+
+                // It may have moved past another one: find it again.
+                const auto now = getTempoChanges (*edit);
+
+                for (int i = 0; i < now.size(); ++i)
+                    if (std::abs (now[i].beat - beat) < 1.0e-6)
+                        draggingTempo = i;
+            }
+
+            owner.repaint();
+            return;
+        }
+
         if (punchAnchor >= 0.0)
         {
             const double beat = state.snapPlaylistBeatNearest (beatAt (e.position.x));
@@ -989,6 +1510,13 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (draggingTempo >= 0)
+        {
+            draggingTempo = -1;
+            repaint();
+            return;
+        }
+
         if (punchAnchor >= 0.0)
         {
             punchAnchor = -1.0;
@@ -1003,7 +1531,8 @@ public:
             else
             {
                 state.session.logMessage (TRANS ("Punch in / out: bars {FROM} to {TO}. Rec plays from a bar before and keeps only this part")
-                                            .replace ("{FROM}", barText (p.inBeat)).replace ("{TO}", barText (p.outBeat)));
+                                            .replace ("{FROM}", barText (p.inBeat, state.getBeatsPerBar()))
+                                            .replace ("{TO}", barText (p.outBeat, state.getBeatsPerBar())));
             }
 
             owner.repaint();
@@ -1012,9 +1541,9 @@ public:
         }
     }
 
-    static juce::String barText (double beat)
+    static juce::String barText (double beat, double beatsPerBar)
     {
-        const double bar = beat / 4.0 + 1.0;
+        const double bar = beat / beatsPerBar + 1.0;
         return std::abs (bar - std::round (bar)) < 0.001 ? juce::String ((int) std::round (bar)) : juce::String (bar, 2);
     }
 
@@ -1040,13 +1569,17 @@ public:
     {
         auto& rec = state.session.getRecorder();
         const auto p = rec.getPunch();
-        const double barStart = std::floor (beat / 4.0) * 4.0;
+        const double barBeats = state.getBeatsPerBar();
+        const double barStart = std::floor (beat / barBeats + 1.0e-9) * barBeats;
+        const double tempoBeat = juce::jmax (stepBeats, state.snapPlaylistBeat (beat));
 
         juce::PopupMenu m;
+        m.addItem (30, TRANS ("Tempo change here (bar {BAR})...").replace ("{BAR}", barText (tempoBeat, barBeats)));
+        m.addSeparator();
         m.addSectionHeader (TRANS ("Punch in / out (recording keeps only this part)"));
 
         for (int bars : { 1, 2, 4, 8 })
-            m.addItem (bars, TRANS ("From bar {BAR}, {N} bar(s)").replace ("{BAR}", barText (barStart)).replace ("{N}", juce::String (bars)));
+            m.addItem (bars, TRANS ("From bar {BAR}, {N} bar(s)").replace ("{BAR}", barText (barStart, barBeats)).replace ("{N}", juce::String (bars)));
 
         m.addSeparator();
         m.addItem (20, TRANS ("Punch in / out on"), p.hasRange(), p.isActive());
@@ -1055,16 +1588,22 @@ public:
         m.addItem (-1, TRANS ("Tip: Ctrl + drag here draws the range"), false);
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
-                         [safe = juce::Component::SafePointer<Ruler> (this), barStart] (int r)
+                         [safe = juce::Component::SafePointer<Ruler> (this), barStart, barBeats, tempoBeat] (int r)
         {
             if (safe == nullptr || r == 0)
                 return;
+
+            if (r == 30)
+            {
+                safe->askTempo (-1, tempoBeat);
+                return;
+            }
 
             auto& recorder = safe->state.session.getRecorder();
             auto punch = recorder.getPunch();
 
             if (r >= 1 && r <= 8)
-                safe->setPunchRange (barStart, barStart + r * 4.0, true);
+                safe->setPunchRange (barStart, barStart + r * barBeats, true);
             else if (r == 20)
                 { punch.on = ! punch.on; recorder.setPunch (punch); }
             else if (r == 21)
@@ -1077,6 +1616,7 @@ public:
     }
 
     double punchAnchor = -1.0;
+    int draggingTempo = -1;
 
     void setStart (float x, bool seekIfPlaying)
     {
@@ -1321,7 +1861,7 @@ Playlist::Playlist (EditorState& s) : state (s)
     snapBox.onChange = [this]
     {
         const int id = snapBox.getSelectedId();
-        state.playlistSnapBeats = id == 1 ? 4.0 : id == 2 ? 1.0 : id == 3 ? stepBeats : 0.0;
+        state.playlistSnapBeats = id == 1 ? EditorState::snapBar : id == 2 ? 1.0 : id == 3 ? stepBeats : 0.0;
     };
     addAndMakeVisible (snapBox);
 
@@ -1330,7 +1870,38 @@ Playlist::Playlist (EditorState& s) : state (s)
     addAndMakeVisible (fullScreenButton);
     setFullScreenState (false);
 
+    // Tools, like FL's playlist: Draw (place, move, resize) and Slice (cut clips in two).
+    drawToolButton.setTooltip (TRANS ("Draw (P): click to place, drag clips to move them, drag their edges to resize. "
+                                      "Audio clips: drag the squares at their top corners to fade, Alt + drag the right edge to stretch"));
+    sliceToolButton.setTooltip (TRANS ("Slice (C): click a clip to cut it in two there, or drag down across several tracks "
+                                       "to cut them all. Alt: no snap"));
+    theme::setIcon (drawToolButton, theme::Icon::pencil);
+    theme::setIcon (sliceToolButton, theme::Icon::slice);
+
+    for (auto* b : { &drawToolButton, &sliceToolButton })
+    {
+        b->getProperties().set ("iconOnly", true);
+        theme::setStyle (*b, "toggle");
+        b->setClickingTogglesState (false);
+        b->setWantsKeyboardFocus (false);
+        b->setMouseClickGrabsKeyboardFocus (false);
+        addAndMakeVisible (b);
+    }
+
+    drawToolButton.onClick = [this] { setSliceTool (false); };
+    sliceToolButton.onClick = [this] { setSliceTool (true); };
+    lanes->setWantsKeyboardFocus (true);
+    setSliceTool (false);
+
     startTimerHz (30);
+}
+
+void Playlist::setSliceTool (bool shouldSlice)
+{
+    sliceTool = shouldSlice;
+    drawToolButton.setToggleState (! sliceTool, juce::dontSendNotification);
+    sliceToolButton.setToggleState (sliceTool, juce::dontSendNotification);
+    lanes->setMouseCursor (sliceTool ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
 }
 
 void Playlist::setFullScreenState (bool isFullScreen)
@@ -1442,6 +2013,300 @@ void Playlist::showAutomateMenu()
         if (r >= 1 && r <= (int) targets.size() && state.createAutomation)
             state.createAutomation (targets[(size_t) r - 1].first, targets[(size_t) r - 1].second);
     });
+}
+
+//==============================================================================
+/** An audio clip's settings, like FL's audio clip properties and Pro Tools' clip gain:
+    volume, fades, pitch, speed (time-stretch), shown in a bubble next to the clip.
+    Every change is shared and undoable (one step per drag). */
+class ClipPropertiesPanel  : public juce::Component
+{
+public:
+    ClipPropertiesPanel (EditorState& s, const juce::String& sid) : state (s), clipSid (sid)
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+
+        if (! clip.isValid() || edit == nullptr)
+            return;
+
+        title = getAssetName (*edit, clip[ids::asset].toString());
+
+        const double duration = clip[ids::duration];
+        setUp (volume, TRANS ("Volume"), minClipGainDb, maxClipGainDb, 0.1, " dB", 0.0);
+        setUp (fadeIn, TRANS ("Fade in"), 0.0, juce::jmax (1.0, duration * 1000.0), 1.0, " ms", 0.0);
+        setUp (fadeOut, TRANS ("Fade out"), 0.0, juce::jmax (1.0, duration * 1000.0), 1.0, " ms", 0.0);
+        setUp (pitch, TRANS ("Pitch"), -maxClipPitch, maxClipPitch, 1.0, " st", 0.0);
+        setUp (fine, TRANS ("Fine"), -100.0, 100.0, 1.0, " ct", 0.0);
+        setUp (speed, TRANS ("Speed"), minClipSpeed * 100.0, maxClipSpeed * 100.0, 1.0, " %", 100.0);
+        speed.slider.setSkewFactorFromMidPoint (100.0);
+        fadeIn.slider.setSkewFactorFromMidPoint (juce::jmin (500.0, duration * 250.0 + 1.0));
+        fadeOut.slider.setSkewFactorFromMidPoint (juce::jmin (500.0, duration * 250.0 + 1.0));
+
+        keepPitch.setButtonText (TRANS ("Keep the pitch when changing the speed"));
+        keepPitch.setTooltip (TRANS ("On: faster or slower without sounding higher or lower (time-stretch). "
+                                     "Off: like a record, faster also sounds higher"));
+        keepPitch.onClick = [this]
+        {
+            if (auto c = findClip(); c.isValid())
+                if (auto* e = state.getEdit())
+                {
+                    state.beginAction();
+
+                    if (keepPitch.getToggleState()) c.removeProperty (ids::smode, &e->getUndoManager());
+                    else                            c.setProperty (ids::smode, "resample", &e->getUndoManager());
+                }
+        };
+        addAndMakeVisible (keepPitch);
+
+        fitLabel.setText (TRANS ("Its tempo (BPM):"), juce::dontSendNotification);
+        fitLabel.setColour (juce::Label::textColourId, theme::colours::muted);
+        fitLabel.setFont (theme::ui (11.5f));
+        addAndMakeVisible (fitLabel);
+        bpmField.setInputRestrictions (6, "0123456789.,");
+        bpmField.setTextToShowWhenEmpty ("90", theme::colours::dim);
+        bpmField.setJustification (juce::Justification::centred);
+        bpmField.onReturnKey = [this] { fitToTempo(); };
+        addAndMakeVisible (bpmField);
+        fitButton.setButtonText (TRANS ("Fit to the song"));
+        fitButton.setTooltip (TRANS ("For a loop or beat made at another tempo: type its tempo, and the clip is "
+                                     "sped up or slowed down to play in time with the song"));
+        fitButton.onClick = [this] { fitToTempo(); };
+        addAndMakeVisible (fitButton);
+
+        resetButton.setButtonText (TRANS ("Reset"));
+        resetButton.setTooltip (TRANS ("Volume 0 dB, no fades, original pitch and speed"));
+        resetButton.onClick = [this] { resetAll(); };
+        addAndMakeVisible (resetButton);
+
+        readValues();
+        setSize (340, 316);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (theme::colours::text);
+        g.setFont (theme::ui (13.0f, theme::Weight::bold));
+        g.drawText (title, getLocalBounds().reduced (14, 0).removeFromTop (30), juce::Justification::centredLeft, true);
+        g.setColour (theme::colours::line);
+        g.fillRect (14, 30, getWidth() - 28, 1);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds().reduced (14, 0);
+        r.removeFromTop (38);
+
+        for (auto* row : { &volume, &fadeIn, &fadeOut, &pitch, &fine, &speed })
+        {
+            auto line = r.removeFromTop (28);
+            row->label.setBounds (line.removeFromLeft (70));
+            row->slider.setBounds (line);
+            r.removeFromTop (2);
+        }
+
+        keepPitch.setBounds (r.removeFromTop (26));
+        r.removeFromTop (4);
+        auto fit = r.removeFromTop (26);
+        fitLabel.setBounds (fit.removeFromLeft (104));
+        bpmField.setBounds (fit.removeFromLeft (54));
+        fit.removeFromLeft (6);
+        fitButton.setBounds (fit);
+        r.removeFromTop (8);
+        resetButton.setBounds (r.removeFromTop (26).removeFromRight (90));
+    }
+
+private:
+    struct Row
+    {
+        juce::Label label;
+        juce::Slider slider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    };
+
+    EditorState& state;
+    juce::String clipSid, title;
+    Row volume, fadeIn, fadeOut, pitch, fine, speed;
+    juce::ToggleButton keepPitch;
+    juce::Label fitLabel;
+    juce::TextEditor bpmField;
+    juce::TextButton fitButton, resetButton;
+    bool reading = false;
+
+    juce::ValueTree findClip() const
+    {
+        if (auto* edit = state.getEdit())
+            for (auto& c : getClips (*edit))
+                if (c[ids::sid].toString() == clipSid)
+                    return c;
+
+        return {};
+    }
+
+    void setUp (Row& row, const juce::String& name, double min, double max, double step, const juce::String& suffix, double reset)
+    {
+        row.label.setText (name, juce::dontSendNotification);
+        row.label.setColour (juce::Label::textColourId, theme::colours::muted);
+        row.label.setFont (theme::ui (12.0f));
+        row.slider.setRange (min, max, step);
+        row.slider.setTextValueSuffix (suffix);
+        row.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 76, 22);
+        row.slider.setDoubleClickReturnValue (true, reset);
+        row.slider.onDragStart = [this] { state.beginAction(); };
+        row.slider.onValueChange = [this, &row]
+        {
+            if (! reading)
+            {
+                if (! row.slider.isMouseButtonDown())
+                    state.beginAction();   // typed in, or double-clicked back
+
+                apply (row);
+            }
+        };
+        addAndMakeVisible (row.label);
+        addAndMakeVisible (row.slider);
+    }
+
+    void readValues()
+    {
+        auto clip = findClip();
+
+        if (! clip.isValid())
+            return;
+
+        const juce::ScopedValueSetter<bool> svs (reading, true);
+        volume.slider.setValue (getClipGainDb (clip), juce::dontSendNotification);
+        fadeIn.slider.setValue (getClipFadeIn (clip) * 1000.0, juce::dontSendNotification);
+        fadeOut.slider.setValue (getClipFadeOut (clip) * 1000.0, juce::dontSendNotification);
+        const double p = getClipPitch (clip);
+        const double whole = std::round (p);
+        pitch.slider.setValue (whole, juce::dontSendNotification);
+        fine.slider.setValue (std::round ((p - whole) * 100.0), juce::dontSendNotification);
+        speed.slider.setValue (getClipSpeed (clip) * 100.0, juce::dontSendNotification);
+        keepPitch.setToggleState (getClipKeepsPitch (clip), juce::dontSendNotification);
+    }
+
+    void apply (Row& row)
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+
+        if (! clip.isValid() || edit == nullptr)
+            return;
+
+        auto* um = &edit->getUndoManager();
+        auto set = [&] (const juce::Identifier& id, double value, double defaultValue)
+        {
+            if (std::abs (value - defaultValue) < 1.0e-9) clip.removeProperty (id, um);
+            else                                          clip.setProperty (id, value, um);
+        };
+
+        if (&row == &volume)
+            set (ids::gain, volume.slider.getValue(), 0.0);
+        else if (&row == &fadeIn || &row == &fadeOut)
+            setClipFades (*edit, clip, fadeIn.slider.getValue() / 1000.0, fadeOut.slider.getValue() / 1000.0);
+        else if (&row == &pitch || &row == &fine)
+            set (ids::pitch, pitch.slider.getValue() + fine.slider.getValue() / 100.0, 0.0);
+        else if (&row == &speed)
+            setClipSpeed (*edit, clip, speed.slider.getValue() / 100.0);
+
+        readValues();   // fades may have been shortened to fit
+    }
+
+    void fitToTempo()
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+        const double itsBpm = bpmField.getText().replaceCharacter (',', '.').getDoubleValue();
+
+        if (! clip.isValid() || edit == nullptr || itsBpm < 20.0 || itsBpm > 400.0)
+            return;
+
+        // The song's tempo where the clip starts.
+        const auto& ts = edit->tempoSequence;
+        const double songBpm = ts.getTempoAt (ts.toTime (te::BeatPosition::fromBeats ((double) clip[ids::start]))).getBpm();
+        state.beginAction();
+        setClipSpeed (*edit, clip, songBpm / itsBpm);
+        readValues();
+    }
+
+    void resetAll()
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+
+        if (! clip.isValid() || edit == nullptr)
+            return;
+
+        state.beginAction();
+        auto* um = &edit->getUndoManager();
+        setClipSpeed (*edit, clip, 1.0);
+
+        for (auto* id : { &ids::gain, &ids::pitch, &ids::fi, &ids::fo, &ids::smode })
+            clip.removeProperty (*id, um);
+
+        readValues();
+    }
+};
+
+void Playlist::showClipProperties (const juce::String& clipSid, juce::Rectangle<int> clipArea)
+{
+    auto panel = std::make_unique<ClipPropertiesPanel> (state, clipSid);
+
+    if (panel->getWidth() == 0)
+        return;   // the clip is gone
+
+    // Inside the main window (not a see-through window of its own: those don't draw well everywhere).
+    auto* top = getTopLevelComponent();
+    juce::CallOutBox::launchAsynchronously (std::move (panel), top != nullptr ? top->getLocalArea (nullptr, clipArea) : clipArea, top);
+}
+
+void Playlist::bounceClip (const juce::String& clipSid)
+{
+    auto* edit = state.getEdit();
+    auto* sync = state.session.getSync();
+
+    if (edit == nullptr || sync == nullptr)
+        return;
+
+    if (bouncer == nullptr)
+        bouncer = std::make_unique<Bouncer> (edit->engine, state.session.getAssetStore());
+
+    const auto error = bouncer->start (sync->createSnapshot(), clipSid,
+                                       [safe = juce::Component::SafePointer<Playlist> (this)] (const Bouncer::Result& r)
+    {
+        auto* e = safe != nullptr ? safe->state.getEdit() : nullptr;
+
+        if (e == nullptr)
+            return;
+
+        if (! r.ok())
+        {
+            safe->state.session.logMessage (TRANS ("Bounce failed") + ": " + r.error);
+            return;
+        }
+
+        safe->state.beginAction();
+        const auto clips = Bouncer::apply (*e, r);
+
+        if (clips.isEmpty())
+        {
+            safe->state.session.logMessage (TRANS ("Bounce: the clip was deleted meanwhile, nothing was replaced"));
+            return;
+        }
+
+        safe->state.session.logMessage (TRANS ("Bounced into {N} audio clip(s) - they are being sent to the others (Ctrl+Z puts the clip back)")
+                                          .replace ("{N}", juce::String (clips.size()))
+                                        + (r.silentChannels > 0 ? " - " + TRANS ("{N} silent channel(s) left out").replace ("{N}", juce::String (r.silentChannels))
+                                                                : juce::String()));
+        safe->state.selectedChannel = safe->state.placeAudioChannel = clips.getFirst()[ids::ch].toString();
+
+        if (safe->state.onSelectionChanged)
+            safe->state.onSelectionChanged();
+
+        safe->refresh();
+    });
+
+    state.session.logMessage (error.isNotEmpty() ? TRANS ("Bounce failed") + ": " + error : TRANS ("Bouncing to audio..."));
 }
 
 void Playlist::showImportDialog()
@@ -1580,6 +2445,10 @@ void Playlist::resized()
     top.removeFromRight (6);
     automateButton.setBounds (top.removeFromRight (104));
     top.removeFromRight (8);
+    sliceToolButton.setBounds (top.removeFromRight (30));
+    top.removeFromRight (3);
+    drawToolButton.setBounds (top.removeFromRight (30));
+    top.removeFromRight (8);
     const int titleWidth = (int) juce::GlyphArrangement::getStringWidth (theme::ui (12.5f, theme::Weight::bold), TRANS ("Playlist")) + 10;
     title.setBounds (top.withTrimmedLeft (4 + titleWidth));
 
@@ -1596,7 +2465,8 @@ void Playlist::layoutContent()
 {
     auto* edit = state.getEdit();
     const double songBeats = edit != nullptr ? getSongLengthBeats (*edit) : 4.0;
-    const double shownBeats = juce::jmax (64.0 * 4.0, songBeats + 16.0 * 4.0);
+    const double bar = state.getBeatsPerBar();
+    const double shownBeats = juce::jmax (64.0 * bar, songBeats + 16.0 * bar);
     lanes->setSize (juce::jmax (viewport->getMaximumVisibleWidth(), (int) (shownBeats * pixelsPerBeat)),
                     numLanes * laneHeight);
 }

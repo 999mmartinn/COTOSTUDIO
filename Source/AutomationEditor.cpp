@@ -165,17 +165,20 @@ void AutomationEditor::paint (juce::Graphics& g)
 
     // Grid: beats and bars, plus 25 / 50 / 75 %.
     const double len = clipLength();
+    const int bar = juce::roundToInt (state.getBeatsPerBar());
+    const int clipStart = (int) std::floor ((double) clip[ids::start] + 1.0e-9);
 
     for (int b = 0; b <= (int) std::ceil (len); ++b)
     {
-        g.setColour (b % 4 == 0 ? theme::colours::gridBar : theme::colours::grid);
+        const bool onBar = (clipStart + b) % bar == 0;
+        g.setColour (onBar ? theme::colours::gridBar : theme::colours::grid);
         g.drawVerticalLine ((int) xForBeat (b), r.getY(), r.getBottom());
 
-        if (b % 4 == 0 && b < len)
+        if (onBar && b < len)
         {
             g.setColour (theme::colours::muted);
             g.setFont (theme::mono (10.0f));
-            g.drawText (juce::String ((int) ((double) clip[ids::start] + b) / 4 + 1), (int) xForBeat (b) + 3, (int) r.getY() + 1, 40, 12,
+            g.drawText (juce::String ((clipStart + b) / bar + 1), (int) xForBeat (b) + 3, (int) r.getY() + 1, 40, 12,
                         juce::Justification::centredLeft);
         }
     }

@@ -60,6 +60,45 @@ void PatternCompiler::changed (const juce::ValueTree& v)
     triggerAsyncUpdate();
 }
 
+const juce::Identifier PatternCompiler::notePanID ("cotoPan"), PatternCompiler::noteFineID ("cotoFine");
+
+void PatternCompiler::notePropertiesInto (juce::MidiMessageSequence& seq, const te::MidiList& list, te::MidiClip& clip,
+                                          te::MidiList::TimeBase timeBase)
+{
+    // Only our own instruments know these messages (a VST would take them as aftertouch).
+    if (! (bool) clip.state[song::ids::generated])
+        return;
+
+    auto* track = clip.getAudioTrack();
+    auto* instrument = track != nullptr ? song::getInstrument (*track) : nullptr;
+
+    if (dynamic_cast<SamplerPlugin*> (instrument) == nullptr && instrument != nullptr
+         && instrument->getPluginType() != juce::String ("drumsynth"))
+        return;
+
+    // Each note with a pan or a fine pitch gets a key-pressure message for its own key at the
+    // moment it starts: on MIDI channel 16 = pan, 15 = fine pitch (value 64 = centre / none).
+    // The instrument applies it to the note that starts there (whichever arrives first).
+    for (auto* n : list.getNotes())
+    {
+        const int pan = n->state[notePanID], fine = n->state[noteFineID];
+
+        if (pan == 0 && fine == 0)
+            continue;
+
+        // The same time the engine gives the note-on (our clips have no groove).
+        const double time = timeBase == te::MidiList::TimeBase::beatsRaw ? n->getStartBeat().inBeats()
+                          : timeBase == te::MidiList::TimeBase::beats    ? n->getPlaybackBeats (te::MidiNote::startEdge, clip, nullptr).inBeats()
+                                                                         : n->getPlaybackTime (te::MidiNote::startEdge, clip, nullptr).inSeconds();
+        auto toValue = [] (int v) { return juce::jlimit (0, 127, 64 + juce::roundToInt (v * 63.0 / 100.0)); };
+
+        if (pan != 0)   seq.addEvent (juce::MidiMessage::aftertouchChange (16, n->getNoteNumber(), toValue (pan)), juce::jmax (0.0, time));
+        if (fine != 0)  seq.addEvent (juce::MidiMessage::aftertouchChange (15, n->getNoteNumber(), toValue (fine)), juce::jmax (0.0, time));
+    }
+
+    seq.updateMatchedPairs();
+}
+
 te::MidiClip* PatternCompiler::findGeneratedClip (te::AudioTrack& track)
 {
     for (auto* c : track.getClips())
@@ -76,15 +115,17 @@ namespace
     {
         int pitch, velocity;
         double beat, length;
+        int release = 64, pan = 0, fine = 0;   // note properties (see song::NoteProperty)
 
         bool operator< (const NoteData& o) const
         {
-            return std::tie (beat, pitch, length, velocity) < std::tie (o.beat, o.pitch, o.length, o.velocity);
+            return std::tie (beat, pitch, length, velocity, release, pan, fine)
+                 < std::tie (o.beat, o.pitch, o.length, o.velocity, o.release, o.pan, o.fine);
         }
 
         bool operator== (const NoteData& o) const
         {
-            return pitch == o.pitch && velocity == o.velocity
+            return pitch == o.pitch && velocity == o.velocity && release == o.release && pan == o.pan && fine == o.fine
                 && std::abs (beat - o.beat) < 1.0e-6 && std::abs (length - o.length) < 1.0e-6;
         }
     };
@@ -107,7 +148,8 @@ void PatternCompiler::compileNow()
     const auto range = edit.tempoSequence.toTime ({ te::BeatPosition(), te::BeatPosition::fromBeats (lengthBeats) });
 
     // Pattern mode: one "placement" of the pattern at 0. Song mode: every clip in the playlist.
-    struct Placement { juce::ValueTree pattern; double start, length; };
+    // offset: where in the pattern the placement starts (a clip whose start was cut off).
+    struct Placement { juce::ValueTree pattern; double start, length, offset; };
     std::vector<Placement> placements;
 
     if (songMode)
@@ -117,13 +159,17 @@ void PatternCompiler::compileNow()
             auto p = song::findPattern (edit, c[song::ids::pattern].toString());
 
             if (p.isValid())
+            {
+                const double offset = song::getPatternOffset (c);
                 placements.push_back ({ p, (double) c[song::ids::start],
-                                        juce::jmin (song::getClipLength (edit, c), song::getLengthBeats (p)) });
+                                        juce::jmin (song::getClipLength (edit, c), song::getLengthBeats (p) - offset),
+                                        offset });
+            }
         }
     }
     else
     {
-        placements.push_back ({ pattern, 0.0, lengthBeats });
+        placements.push_back ({ pattern, 0.0, lengthBeats, 0.0 });
     }
 
     for (auto* track : song::getChannels (edit))
@@ -141,11 +187,14 @@ void PatternCompiler::compileNow()
         {
             for (auto& n : song::getNotes (pl.pattern, song::getChannelID (*track)))
             {
-                const double b = n[song::ids::b];
+                const double b = (double) n[song::ids::b] - pl.offset;   // within the placement
 
-                if (b < pl.length - 1.0e-6)
-                    wanted.push_back ({ (int) n[song::ids::p], (int) n[song::ids::v], pl.start + b,
-                                        juce::jmin ((double) n[song::ids::l], pl.length - b) });
+                if (b >= -1.0e-6 && b < pl.length - 1.0e-6)
+                    wanted.push_back ({ (int) n[song::ids::p], (int) n[song::ids::v], pl.start + juce::jmax (0.0, b),
+                                        juce::jmin ((double) n[song::ids::l], pl.length - b),
+                                        song::getNoteProperty (n, song::NoteProperty::release),
+                                        song::getNoteProperty (n, song::NoteProperty::pan),
+                                        song::getNoteProperty (n, song::NoteProperty::fine) });
             }
         }
 
@@ -172,7 +221,8 @@ void PatternCompiler::compileNow()
         std::vector<NoteData> current;
 
         for (auto* n : seq.getNotes())
-            current.push_back ({ n->getNoteNumber(), n->getVelocity(), n->getStartBeat().inBeats(), n->getLengthBeats().inBeats() });
+            current.push_back ({ n->getNoteNumber(), n->getVelocity(), n->getStartBeat().inBeats(), n->getLengthBeats().inBeats(),
+                                 n->getNoteOffVelocity(), (int) n->state[notePanID], (int) n->state[noteFineID] });
 
         std::sort (current.begin(), current.end());
 
@@ -181,8 +231,16 @@ void PatternCompiler::compileNow()
             seq.clear (nullptr);
 
             for (auto& n : wanted)
-                seq.addNote (n.pitch, te::BeatPosition::fromBeats (n.beat), te::BeatDuration::fromBeats (n.length),
-                             n.velocity, 0, nullptr);
+                if (auto* added = seq.addNote (n.pitch, te::BeatPosition::fromBeats (n.beat), te::BeatDuration::fromBeats (n.length),
+                                               n.velocity, 0, nullptr))
+                {
+                    // Release velocity is MIDI's note-off velocity; pan and fine pitch ride along on the
+                    // engine's note and reach our own instruments (see notePropertiesInto).
+                    added->setNoteOffVelocity (n.release, nullptr);
+
+                    if (n.pan != 0)   added->state.setProperty (notePanID, n.pan, nullptr);
+                    if (n.fine != 0)  added->state.setProperty (noteFineID, n.fine, nullptr);
+                }
         }
     }
 
@@ -198,7 +256,15 @@ void PatternCompiler::compileNow()
 void PatternCompiler::compileAudio (te::AudioTrack& track)
 {
     // Which audio clips should play on this channel (song mode only, file present here).
-    struct Wanted { juce::String sid, hash; te::TimeRange time; te::TimeDuration offset; };
+    struct Wanted
+    {
+        juce::String sid, hash;
+        te::TimeRange time;
+        te::TimeDuration offset;          // in the engine's terms: file seconds / speed
+        double fadeIn, fadeOut, gainDb, pitch, speed;
+        bool keepPitch;
+    };
+
     std::vector<Wanted> wanted;
     const auto channelID = song::getChannelID (track);
 
@@ -215,10 +281,13 @@ void PatternCompiler::compileAudio (te::AudioTrack& track)
                 continue;   // not arrived yet: added as soon as it does
 
             const double startSeconds = song::beatsToSeconds (edit, c[song::ids::start]);
+            const double speed = song::getClipSpeed (c);
             wanted.push_back ({ c[song::ids::sid].toString(), hash,
                                 te::TimeRange (te::TimePosition::fromSeconds (startSeconds),
                                                te::TimeDuration::fromSeconds ((double) c[song::ids::duration])),
-                                te::TimeDuration::fromSeconds ((double) c[song::ids::offset]) });
+                                te::TimeDuration::fromSeconds ((double) c[song::ids::offset] / speed),
+                                song::getClipFadeIn (c), song::getClipFadeOut (c), song::getClipGainDb (c),
+                                song::getClipPitch (c), speed, song::getClipKeepsPitch (c) });
         }
     }
 
@@ -233,30 +302,66 @@ void PatternCompiler::compileAudio (te::AudioTrack& track)
     for (auto& w : wanted)
     {
         auto it = existing.find (w.sid);
-        const te::ClipPosition position { w.time, w.offset };
+        te::WaveAudioClip* clip = nullptr;
 
         if (it != existing.end() && it->second->state["srcHash"].toString() == w.hash)
         {
-            auto* clip = it->second;
+            clip = it->second;
             existing.erase (it);
-
-            const auto now = clip->getPosition();
-
-            if (now.time != position.time || std::abs (now.offset.inSeconds() - position.offset.inSeconds()) > 1.0e-6)
-                clip->setPosition (position);
-
-            continue;
         }
-
-        auto clip = track.insertWaveClip (song::getAssetName (edit, w.hash), assets.getFile (w.hash), position, false);
-
-        if (clip != nullptr)
+        else
         {
+            auto created = track.insertWaveClip (song::getAssetName (edit, w.hash), assets.getFile (w.hash),
+                                                 { w.time, w.offset }, false);
+
+            if (created == nullptr)
+                continue;
+
+            clip = created.get();
             clip->state.setProperty (song::ids::generated, true, nullptr);
             clip->state.setProperty ("srcSid", w.sid, nullptr);
             clip->state.setProperty ("srcHash", w.hash, nullptr);
             clip->setAutoTempo (false);
+            clip->setFadeInType (te::AudioFadeCurve::sCurve);
+            clip->setFadeOutType (te::AudioFadeCurve::sCurve);
         }
+
+        // Speed and pitch first (they change how long the file lasts on the timeline).
+        // "Resample": a pure speed change (like a record), plus any extra pitch on top;
+        // with extra pitch the stretcher does both, so the speed's own pitch is added to it.
+        const bool stretched = std::abs (w.speed - 1.0) > 1.0e-6 || std::abs (w.pitch) > 1.0e-6;
+        const double semitones = w.keepPitch || std::abs (w.pitch) < 1.0e-6
+                                    ? w.pitch : w.pitch + 12.0 * std::log2 (w.speed);
+        const auto mode = ! stretched || (! w.keepPitch && std::abs (w.pitch) < 1.0e-6)
+                            ? te::TimeStretcher::disabled : te::TimeStretcher::signalsmithDefault;
+
+        // Played straight from the file, stretched as it plays (no waiting for a rendered copy).
+        if (stretched && clip->canUseProxy())
+            clip->setUsesProxy (false);
+
+        if (clip->getTimeStretchMode() != mode)
+            clip->setTimeStretchMode (mode);
+
+        if (std::abs (clip->getPitchChange() - (float) semitones) > 1.0e-4f)
+            clip->setPitchChange ((float) semitones);
+
+        if (std::abs (clip->getSpeedRatio() - w.speed) > 1.0e-9)
+            clip->setSpeedRatio (w.speed);
+
+        const te::ClipPosition position { w.time, w.offset };
+        const auto now = clip->getPosition();
+
+        if (now.time != position.time || std::abs (now.offset.inSeconds() - position.offset.inSeconds()) > 1.0e-6)
+            clip->setPosition (position);
+
+        if (std::abs (clip->getGainDB() - (float) w.gainDb) > 1.0e-4f)
+            clip->setGainDB ((float) w.gainDb);
+
+        if (std::abs (clip->getFadeIn().inSeconds() - w.fadeIn) > 1.0e-6)
+            clip->setFadeIn (te::TimeDuration::fromSeconds (w.fadeIn));
+
+        if (std::abs (clip->getFadeOut().inSeconds() - w.fadeOut) > 1.0e-6)
+            clip->setFadeOut (te::TimeDuration::fromSeconds (w.fadeOut));
     }
 
     // Anything left is no longer wanted.
@@ -424,9 +529,20 @@ juce::StringArray PatternCompiler::describeCompiledAudio (te::AudioTrack& track)
     for (auto* c : track.getClips())
         if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
             if ((bool) wc->state[song::ids::generated])
-                out.add (wc->state["srcHash"].toString().substring (0, 8) + "@" + juce::String (wc->getPosition().getStart().inSeconds(), 3)
-                          + "+" + juce::String (wc->getPosition().getLength().inSeconds(), 3)
-                          + ">" + juce::String (wc->getPosition().offset.inSeconds(), 3));
+            {
+                auto text = wc->state["srcHash"].toString().substring (0, 8) + "@" + juce::String (wc->getPosition().getStart().inSeconds(), 3)
+                              + "+" + juce::String (wc->getPosition().getLength().inSeconds(), 3)
+                              + ">" + juce::String (wc->getPosition().offset.inSeconds(), 3);
+
+                // Clip settings, only when set (so older expectations stay the same).
+                if (wc->getFadeIn() > te::TimeDuration())    text << " fi=" << juce::String (wc->getFadeIn().inSeconds(), 3);
+                if (wc->getFadeOut() > te::TimeDuration())   text << " fo=" << juce::String (wc->getFadeOut().inSeconds(), 3);
+                if (std::abs (wc->getGainDB()) > 1.0e-4f)    text << " g=" << juce::String (wc->getGainDB(), 2);
+                if (std::abs (wc->getPitchChange()) > 1.0e-4f) text << " p=" << juce::String (wc->getPitchChange(), 2);
+                if (std::abs (wc->getSpeedRatio() - 1.0) > 1.0e-6) text << " s=" << juce::String (wc->getSpeedRatio(), 3);
+
+                out.add (text);
+            }
 
     out.sort (false);
     return out;
@@ -438,8 +554,17 @@ juce::StringArray PatternCompiler::describeCompiledNotes (te::AudioTrack& track)
 
     if (auto* clip = findGeneratedClip (track))
         for (auto* n : clip->getSequence().getNotes())
-            out.add (juce::String (n->getNoteNumber()) + "@" + juce::String (n->getStartBeat().inBeats(), 3)
-                      + "+" + juce::String (n->getLengthBeats().inBeats(), 3) + "*" + juce::String (n->getVelocity()));
+        {
+            auto text = juce::String (n->getNoteNumber()) + "@" + juce::String (n->getStartBeat().inBeats(), 3)
+                          + "+" + juce::String (n->getLengthBeats().inBeats(), 3) + "*" + juce::String (n->getVelocity());
+
+            // Note properties, only when set (so older expectations stay the same).
+            if (n->getNoteOffVelocity() != 64)      text << " rv=" << n->getNoteOffVelocity();
+            if ((int) n->state[notePanID] != 0)     text << " pan=" << (int) n->state[notePanID];
+            if ((int) n->state[noteFineID] != 0)    text << " fine=" << (int) n->state[noteFineID];
+
+            out.add (text);
+        }
 
     out.sort (false);
     return out;

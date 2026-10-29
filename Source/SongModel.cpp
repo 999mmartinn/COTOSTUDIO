@@ -114,7 +114,7 @@ juce::ValueTree clonePattern (te::Edit& edit, const juce::ValueTree& pattern)
 
     for (auto n : pattern)
         if (n.hasType (ids::PNOTE))
-            addNote (edit, copy, n[ids::ch].toString(), n[ids::p], n[ids::b], n[ids::l], n[ids::v]);
+            copyNoteProperties (edit, n, addNote (edit, copy, n[ids::ch].toString(), n[ids::p], n[ids::b], n[ids::l], n[ids::v]));
 
     return copy;
 }
@@ -177,10 +177,157 @@ double getClipLength (te::Edit& edit, const juce::ValueTree& clip)
     }
 
     if (clip.hasProperty (ids::length))
-        return juce::jmax (stepBeats, (double) clip[ids::length]);
+        return juce::jmax (stepBeats / 4.0, (double) clip[ids::length]);
 
     auto pattern = findPattern (edit, clip[ids::pattern].toString());
-    return pattern.isValid() ? getLengthBeats (pattern) : 4.0;
+    return pattern.isValid() ? juce::jmax (stepBeats / 4.0, getLengthBeats (pattern) - getPatternOffset (clip))
+                             : 4.0;
+}
+
+double getPatternOffset (const juce::ValueTree& clip)
+{
+    return juce::jmax (0.0, (double) clip.getProperty (ids::poff, 0.0));
+}
+
+//==============================================================================
+double getClipFadeIn (const juce::ValueTree& clip)     { return juce::jmax (0.0, (double) clip.getProperty (ids::fi, 0.0)); }
+double getClipFadeOut (const juce::ValueTree& clip)    { return juce::jmax (0.0, (double) clip.getProperty (ids::fo, 0.0)); }
+double getClipGainDb (const juce::ValueTree& clip)     { return juce::jlimit (minClipGainDb, maxClipGainDb, (double) clip.getProperty (ids::gain, 0.0)); }
+double getClipPitch (const juce::ValueTree& clip)      { return juce::jlimit (-maxClipPitch, maxClipPitch, (double) clip.getProperty (ids::pitch, 0.0)); }
+double getClipSpeed (const juce::ValueTree& clip)      { return juce::jlimit (minClipSpeed, maxClipSpeed, (double) clip.getProperty (ids::speed, 1.0)); }
+bool getClipKeepsPitch (const juce::ValueTree& clip)   { return clip[ids::smode].toString() != "resample"; }
+
+double getMaxClipDuration (te::Edit& edit, const juce::ValueTree& clip)
+{
+    const double fileSeconds = juce::jmax (0.05, getAssetSeconds (edit, clip[ids::asset].toString()));
+    return juce::jmax (0.05, (fileSeconds - (double) clip[ids::offset]) / getClipSpeed (clip));
+}
+
+/** Sets a number, or removes it when it is back at its default (keeps old songs and the sync small). */
+static void setOrClear (te::Edit& edit, juce::ValueTree& v, const juce::Identifier& id, double value, double defaultValue)
+{
+    if (std::abs (value - defaultValue) < 1.0e-9)
+    {
+        if (v.hasProperty (id))
+            v.removeProperty (id, um (edit));
+    }
+    else if (! v.hasProperty (id) || std::abs ((double) v[id] - value) > 1.0e-9)
+    {
+        v.setProperty (id, value, um (edit));
+    }
+}
+
+void setClipFades (te::Edit& edit, juce::ValueTree clip, double in, double out)
+{
+    const double duration = juce::jmax (0.0, (double) clip[ids::duration]);
+    in = juce::jlimit (0.0, duration, in);
+    out = juce::jlimit (0.0, duration - in, out);
+    setOrClear (edit, clip, ids::fi, in, 0.0);
+    setOrClear (edit, clip, ids::fo, out, 0.0);
+}
+
+void setClipSpeed (te::Edit& edit, juce::ValueTree clip, double speed, bool keepLength)
+{
+    speed = juce::jlimit (minClipSpeed, maxClipSpeed, speed);
+    const double oldSpeed = getClipSpeed (clip);
+    const double fileSeconds = juce::jmax (0.05, getAssetSeconds (edit, clip[ids::asset].toString()));
+    const double offset = clip[ids::offset];
+    double duration = clip[ids::duration];
+
+    if (! keepLength)
+        duration = duration * oldSpeed / speed;   // the same part of the file
+
+    duration = juce::jlimit (0.01, juce::jmax (0.01, (fileSeconds - offset) / speed), duration);
+
+    setOrClear (edit, clip, ids::speed, speed, 1.0);
+
+    if (std::abs ((double) clip[ids::duration] - duration) > 1.0e-9)
+        clip.setProperty (ids::duration, duration, um (edit));
+
+    setClipFades (edit, clip, getClipFadeIn (clip), getClipFadeOut (clip));
+}
+
+juce::ValueTree splitClip (te::Edit& edit, juce::ValueTree clip, double beat)
+{
+    auto parent = clip.getParent();
+
+    if (! parent.isValid())
+        return {};
+
+    const double start = clip[ids::start];
+    const double length = getClipLength (edit, clip);
+    const double cut = beat - start;
+
+    if (cut <= 1.0e-4 || cut >= length - 1.0e-4)
+        return {};
+
+    juce::ValueTree right (ids::PCLIP);
+    right.copyPropertiesFrom (clip, nullptr);
+    right.setProperty (ids::sid, newSyncID(), nullptr);
+    right.setProperty (ids::start, beat, nullptr);
+
+    if (isAudioClip (clip))
+    {
+        // In seconds: the two parts together play exactly what the clip played.
+        const double startSeconds = beatsToSeconds (edit, start);
+        const double cutSeconds = beatsToSeconds (edit, beat) - startSeconds;
+        const double duration = clip[ids::duration];
+
+        if (cutSeconds <= 1.0e-3 || cutSeconds >= duration - 1.0e-3)
+            return {};
+
+        const double fadeIn = getClipFadeIn (clip), fadeOut = getClipFadeOut (clip);
+        right.setProperty (ids::offset, (double) clip[ids::offset] + cutSeconds * getClipSpeed (clip), nullptr);
+        right.setProperty (ids::duration, duration - cutSeconds, nullptr);
+        right.removeProperty (ids::fi, nullptr);
+        right.removeProperty (ids::fo, nullptr);
+
+        if (fadeOut > 0.0)
+            right.setProperty (ids::fo, juce::jmin (fadeOut, duration - cutSeconds), nullptr);
+
+        parent.addChild (right, parent.indexOf (clip) + 1, um (edit));
+        clip.setProperty (ids::duration, cutSeconds, um (edit));
+        setClipFades (edit, clip, fadeIn, 0.0);
+        return right;
+    }
+
+    if (isAutomationClip (clip))
+    {
+        // Each part keeps its points; both get one exactly at the cut, so the line is the same.
+        const float atCut = getAutomationValueAt (clip, cut);
+        right.setProperty (ids::length, length - cut, nullptr);
+        auto addPoint = [] (juce::ValueTree& c, double b, float v)
+        {
+            juce::ValueTree p (ids::APOINT);
+            p.setProperty (ids::sid, newSyncID(), nullptr);
+            p.setProperty (ids::b, b, nullptr);
+            p.setProperty (ids::v, v, nullptr);
+            c.appendChild (p, nullptr);
+        };
+
+        addPoint (right, 0.0, atCut);
+
+        for (auto& p : getAutomationPoints (clip))
+            if ((double) p[ids::b] > cut + 1.0e-6 && (double) p[ids::b] <= length + 1.0e-6)
+                addPoint (right, (double) p[ids::b] - cut, (float) p[ids::v]);
+
+        parent.addChild (right, parent.indexOf (clip) + 1, um (edit));
+
+        for (auto& p : getAutomationPoints (clip))
+            if ((double) p[ids::b] > cut + 1.0e-6)
+                clip.removeChild (p, um (edit));
+
+        addAutomationPoint (edit, clip, cut, atCut);
+        clip.setProperty (ids::length, cut, um (edit));
+        return right;
+    }
+
+    // A pattern clip: the right part starts that far into the pattern.
+    right.setProperty (ids::length, length - cut, nullptr);
+    right.setProperty (ids::poff, getPatternOffset (clip) + cut, nullptr);
+    parent.addChild (right, parent.indexOf (clip) + 1, um (edit));
+    clip.setProperty (ids::length, cut, um (edit));
+    return right;
 }
 
 double getSongLengthBeats (te::Edit& edit)
@@ -190,12 +337,155 @@ double getSongLengthBeats (te::Edit& edit)
     for (auto& c : getClips (edit))
         end = juce::jmax (end, (double) c[ids::start] + getClipLength (edit, c));
 
-    return juce::jmax (4.0, std::ceil (end / 4.0 - 1.0e-9) * 4.0);
+    const double bar = getBeatsPerBar (edit);
+    return juce::jmax (bar, std::ceil (end / bar - 1.0e-9) * bar);
 }
 
 int getBars (const juce::ValueTree& pattern)               { return juce::jlimit (1, 8, (int) pattern.getProperty (ids::bars, 1)); }
-int getNumSteps (const juce::ValueTree& pattern)           { return getBars (pattern) * stepsPerBar; }
-double getLengthBeats (const juce::ValueTree& pattern)     { return getBars (pattern) * 4.0; }
+int getNumSteps (const juce::ValueTree& pattern)           { return getBars (pattern) * getStepsPerBar (pattern); }
+double getLengthBeats (const juce::ValueTree& pattern)     { return getBars (pattern) * getBeatsPerBar (pattern); }
+
+//==============================================================================
+juce::Array<TimeSignature> getTimeSignatureChoices()
+{
+    juce::Array<TimeSignature> choices;
+
+    for (auto [num, den] : { std::pair (4, 4), std::pair (3, 4), std::pair (2, 4), std::pair (5, 4),
+                             std::pair (6, 4), std::pair (7, 4), std::pair (6, 8), std::pair (12, 8) })
+        choices.add ({ num, den });
+
+    return choices;
+}
+
+static TimeSignature readTimeSignature (const juce::ValueTree& model)
+{
+    TimeSignature ts { (int) model.getProperty (ids::tsNum, 4), (int) model.getProperty (ids::tsDen, 4) };
+
+    for (auto& choice : getTimeSignatureChoices())
+        if (choice == ts)
+            return ts;
+
+    return {};   // anything else (a damaged file): 4/4
+}
+
+TimeSignature getTimeSignature (te::Edit& edit)
+{
+    return readTimeSignature (edit.state.getChildWithName (ids::SONGMODEL));
+}
+
+double getBeatsPerBar (te::Edit& edit)                     { return getTimeSignature (edit).beatsPerBar(); }
+int getStepsPerBar (te::Edit& edit)                        { return juce::roundToInt (getBeatsPerBar (edit) / stepBeats); }
+
+double getBeatsPerBar (const juce::ValueTree& anyPart)
+{
+    const auto root = anyPart.getRoot();
+    return readTimeSignature (root.hasType (ids::SONGMODEL) ? root : root.getChildWithName (ids::SONGMODEL)).beatsPerBar();
+}
+
+int getStepsPerBar (const juce::ValueTree& anyPart)        { return juce::roundToInt (getBeatsPerBar (anyPart) / stepBeats); }
+
+void setTimeSignature (te::Edit& edit, TimeSignature ts)
+{
+    if (! getTimeSignatureChoices().contains (ts))
+        return;
+
+    auto model = getModel (edit);
+
+    if (ts == TimeSignature())
+    {
+        model.removeProperty (ids::tsNum, um (edit));
+        model.removeProperty (ids::tsDen, um (edit));
+    }
+    else
+    {
+        model.setProperty (ids::tsNum, ts.numerator, um (edit));
+        model.setProperty (ids::tsDen, ts.denominator, um (edit));
+    }
+
+    // The engine counts quarter-note beats: 6/8 is 3 of them a bar (the metronome clicks
+    // each beat, louder on each bar, and the count-in lasts whole bars).
+    if (auto* sig = edit.tempoSequence.getTimeSig (0))
+    {
+        sig->state.setProperty (te::IDs::numerator, juce::roundToInt (ts.beatsPerBar()), um (edit));
+        sig->state.setProperty (te::IDs::denominator, 4, um (edit));
+    }
+}
+
+//==============================================================================
+juce::Array<TempoChange> getTempoChanges (te::Edit& edit)
+{
+    juce::Array<TempoChange> result;
+    auto& seq = edit.tempoSequence;
+
+    for (int i = 1; i < seq.getNumTempos(); ++i)
+        if (auto* t = seq.getTempo (i))
+            if (auto* previous = seq.getTempo (i - 1))
+                result.add ({ t->getStartBeat().inBeats(), t->getBpm(), std::abs (previous->getCurve() - 1.0f) > 1.0e-3f });
+
+    return result;
+}
+
+/** Each tempo's curve says how it gets to the next one: 1 = holds, then jumps; 0 = a straight ramp. */
+static void setCurveInto (te::Edit& edit, int index, bool ramp)
+{
+    if (auto* previous = edit.tempoSequence.getTempo (index - 1))
+        previous->state.setProperty (te::IDs::curve, ramp ? 0.0f : 1.0f, um (edit));
+}
+
+void addTempoChange (te::Edit& edit, double beat, double bpm, bool ramp)
+{
+    auto& seq = edit.tempoSequence;
+    beat = juce::jmax (stepBeats, beat);
+
+    for (int i = 1; i < seq.getNumTempos(); ++i)
+        if (std::abs (seq.getTempo (i)->getStartBeat().inBeats() - beat) < 1.0e-6)
+            return setTempoChange (edit, i - 1, beat, bpm, ramp);   // one already there: change it
+
+    seq.insertTempo (te::BeatPosition::fromBeats (beat), juce::jlimit (minTempo, maxTempo, bpm), 1.0f);   // (undoable)
+
+    for (int i = 1; i < seq.getNumTempos(); ++i)
+        if (std::abs (seq.getTempo (i)->getStartBeat().inBeats() - beat) < 1.0e-6)
+            setCurveInto (edit, i, ramp);
+
+    // The last tempo holds forever.
+    if (auto* last = seq.getTempo (seq.getNumTempos() - 1))
+        last->state.setProperty (te::IDs::curve, 1.0f, um (edit));
+}
+
+void setTempoChange (te::Edit& edit, int index, double beat, double bpm, bool ramp)
+{
+    auto& seq = edit.tempoSequence;
+    auto* t = seq.getTempo (index + 1);
+
+    if (t == nullptr)
+        return;
+
+    beat = juce::jmax (stepBeats, beat);
+
+    if (std::abs (t->getStartBeat().inBeats() - beat) > 1.0e-6)
+    {
+        // Moved: taken out and put back where it now belongs (the tempos stay in order).
+        removeTempoChange (edit, index);
+        addTempoChange (edit, beat, bpm, ramp);
+        return;
+    }
+
+    t->state.setProperty (te::IDs::bpm, juce::jlimit (minTempo, maxTempo, bpm), um (edit));
+    setCurveInto (edit, index + 1, ramp);
+}
+
+void removeTempoChange (te::Edit& edit, int index)
+{
+    auto& seq = edit.tempoSequence;
+
+    if (index < 0 || index + 1 >= seq.getNumTempos())
+        return;
+
+    seq.removeTempo (index + 1, false);
+
+    if (auto* last = seq.getTempo (seq.getNumTempos() - 1))
+        last->state.setProperty (te::IDs::curve, 1.0f, um (edit));
+}
 
 void setBars (te::Edit& edit, juce::ValueTree pattern, int bars)
 {
@@ -411,6 +701,68 @@ juce::ValueTree addNote (te::Edit& edit, juce::ValueTree pattern, const juce::St
     return n;
 }
 
+//==============================================================================
+static const juce::Identifier& idFor (NoteProperty p)
+{
+    switch (p)
+    {
+        case NoteProperty::release:   return ids::rv;
+        case NoteProperty::pan:       return ids::pn;
+        case NoteProperty::fine:      return ids::fp;
+        case NoteProperty::velocity:  break;
+    }
+
+    return ids::v;
+}
+
+juce::Range<int> getNotePropertyRange (NoteProperty p)
+{
+    switch (p)
+    {
+        case NoteProperty::velocity:  return { 1, 127 };
+        case NoteProperty::release:   return { 0, 127 };
+        case NoteProperty::pan:       return { -100, 100 };
+        case NoteProperty::fine:      return { -100, 100 };
+    }
+
+    return {};
+}
+
+int getNotePropertyDefault (NoteProperty p)
+{
+    return p == NoteProperty::velocity ? 100 : p == NoteProperty::release ? 64 : 0;
+}
+
+int getNoteProperty (const juce::ValueTree& note, NoteProperty p)
+{
+    const auto range = getNotePropertyRange (p);
+    return juce::jlimit (range.getStart(), range.getEnd(), (int) note.getProperty (idFor (p), getNotePropertyDefault (p)));
+}
+
+void setNoteProperty (te::Edit& edit, juce::ValueTree note, NoteProperty p, int value)
+{
+    const auto range = getNotePropertyRange (p);
+    value = juce::jlimit (range.getStart(), range.getEnd(), value);
+    const auto& id = idFor (p);
+
+    // Velocity is always written (older versions expect it); the others only when not normal.
+    if (p != NoteProperty::velocity && value == getNotePropertyDefault (p))
+    {
+        if (note.hasProperty (id))
+            note.removeProperty (id, um (edit));
+    }
+    else if (! note.hasProperty (id) || (int) note[id] != value)
+    {
+        note.setProperty (id, value, um (edit));
+    }
+}
+
+void copyNoteProperties (te::Edit& edit, const juce::ValueTree& from, juce::ValueTree to)
+{
+    for (auto p : { NoteProperty::release, NoteProperty::pan, NoteProperty::fine })
+        setNoteProperty (edit, to, p, getNoteProperty (from, p));
+}
+
 void removeNote (te::Edit& edit, juce::ValueTree note)
 {
     auto parent = note.getParent();
@@ -428,7 +780,8 @@ int setChannelNotes (te::Edit& edit, juce::ValueTree pattern, const juce::String
     for (auto& n : getNotes (pattern, channelID))
         pattern.removeChild (n, um (edit));
 
-    const double maxBeats = 8 * 4.0;
+    const double bar = getBeatsPerBar (edit);
+    const double maxBeats = 8 * bar;
     double end = 0.0;
     int added = 0;
 
@@ -443,7 +796,7 @@ int setChannelNotes (te::Edit& edit, juce::ValueTree pattern, const juce::String
         ++added;
     }
 
-    const int bars = juce::jlimit (1, 8, (int) std::ceil (end / 4.0 - 1.0e-9));
+    const int bars = juce::jlimit (1, 8, (int) std::ceil (end / bar - 1.0e-9));
 
     if (bars > getBars (pattern))
         setBars (edit, pattern, bars);
@@ -1545,7 +1898,7 @@ juce::Array<juce::ValueTree> splitPatternByChannel (te::Edit& edit, const juce::
         auto p = addPattern (edit, name + " - " + (t != nullptr ? t->getName() : juce::String ("?")), bars);
 
         for (auto& n : getNotes (pattern, channelID))
-            addNote (edit, p, channelID, n[ids::p], n[ids::b], n[ids::l], n[ids::v]);
+            copyNoteProperties (edit, n, addNote (edit, p, channelID, n[ids::p], n[ids::b], n[ids::l], n[ids::v]));
 
         result.add (p);
     }
@@ -1570,8 +1923,7 @@ juce::Array<juce::ValueTree> splitPatternByChannel (te::Edit& edit, const juce::
 
         const int lane = c[ids::lane];
         const double start = c[ids::start];
-        const double end = start + (c.hasProperty (ids::length) ? juce::jmax (stepBeats, (double) c[ids::length])
-                                                               : (double) bars * 4.0);
+        const double end = start + getClipLength (edit, c);
         int nextLane = lane;
 
         for (int i = 0; i < result.size(); ++i)
@@ -1590,6 +1942,9 @@ juce::Array<juce::ValueTree> splitPatternByChannel (te::Edit& edit, const juce::
 
             if (c.hasProperty (ids::length))
                 copy.setProperty (ids::length, c[ids::length], um (edit));
+
+            if (c.hasProperty (ids::poff))
+                copy.setProperty (ids::poff, c[ids::poff], um (edit));
         }
     }
 

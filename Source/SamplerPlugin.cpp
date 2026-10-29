@@ -187,7 +187,8 @@ SamplerPlugin::Settings SamplerPlugin::readSettings (const Sample& s) const
     return k;
 }
 
-void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumber, float velocity, bool cut)
+void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumber, float velocity, bool cut,
+                                float pan, float fineCents)
 {
     if (k.region.getLength() < 2.0)
         return;   // trimmed to nothing
@@ -200,13 +201,16 @@ void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumb
     auto& v = voices[(size_t) nextVoice];
     nextVoice = (nextVoice + 1) % maxVoices;
 
-    const double speed = s.rate / sampleRate * std::pow (2.0, (noteNumber - 60 + (double) k.tune) / 12.0);
+    const double speed = s.rate / sampleRate * std::pow (2.0, (noteNumber - 60 + (double) k.tune + fineCents / 100.0) / 12.0);
     v.active = true;
     v.released = false;
     v.note = noteNumber;
     v.step = k.reverse ? -speed : speed;
     v.position = v.startPosition = k.reverse ? k.region.getEnd() - 1.0 - 1.0e-6 : k.region.getStart();
     v.gain = velocity;
+    // The note's pan (FL's note property): a balance, the far side turned down.
+    v.gainL = juce::jlimit (0.0f, 1.0f, 1.0f - pan);
+    v.gainR = juce::jlimit (0.0f, 1.0f, 1.0f + pan);
     v.fade = 1.0f;
     v.fadeStep = 0.0f;
     v.useEnvelope = k.envelope;
@@ -215,8 +219,13 @@ void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumb
     v.holdLeft = k.holdSamples;
 }
 
-void SamplerPlugin::releaseNote (int noteNumber, const Settings& k)
+void SamplerPlugin::releaseNote (int noteNumber, const Settings& k, int releaseVelocity)
 {
+    // The note's release velocity (FL's "release"): 64 = the Release knob's time, lower =
+    // shorter (down to a quarter), higher = longer (up to 4 times). 0 = not given (live keys).
+    const float factor = releaseVelocity <= 0 ? 1.0f
+                                              : juce::jlimit (0.25f, 4.0f, std::pow (2.0f, (float) (releaseVelocity - 64) / 32.0f));
+
     // Only with the envelope on: otherwise the whole sound plays, like before (one-shot).
     for (auto& v : voices)
     {
@@ -224,7 +233,7 @@ void SamplerPlugin::releaseNote (int noteNumber, const Settings& k)
         {
             v.released = true;
             v.stage = Stage::release;
-            v.releaseStep = juce::jmax (1.0e-4f, v.env) / k.releaseSamples;
+            v.releaseStep = juce::jmax (1.0e-4f, v.env) / (k.releaseSamples * factor);
         }
     }
 }
@@ -311,8 +320,10 @@ void SamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
 
     // Notes starting and ending in this block, in order (no allocation here: a fixed list).
     // At the same moment an end goes before a start, so a note that ends where the next
-    // one starts doesn't release the new one.
-    struct Event { int pos, note, order; float vel; bool on; };
+    // one starts doesn't release the new one; a note's pan / fine pitch (key pressure on
+    // channel 16 / 15, see PatternCompiler::notePropertiesInto) goes just before its start.
+    enum Kind { noteOff = 0, panOf = 1, fineOf = 2, noteOn = 3 };
+    struct Event { int pos, note, order, kind; float vel; int raw; };
     std::array<Event, 512> events;
     int numEvents = 0;
 
@@ -320,21 +331,34 @@ void SamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     {
         for (auto& m : *fc.bufferForMidiMessages)
         {
-            if (numEvents >= (int) events.size() || ! (m.isNoteOn() || m.isNoteOff()))
+            int kind = -1;
+
+            if (m.isNoteOn())                                         kind = noteOn;
+            else if (m.isNoteOff())                                   kind = noteOff;
+            else if (m.isAftertouch() && m.getChannel() == 16)        kind = panOf;
+            else if (m.isAftertouch() && m.getChannel() == 15)        kind = fineOf;
+
+            if (numEvents >= (int) events.size() || kind < 0)
                 continue;
 
+            const int raw = kind == noteOn || kind == noteOff ? (int) m.getVelocity() : m.getAfterTouchValue();
             events[(size_t) numEvents] = { juce::jlimit (start, start + num - 1, juce::roundToInt (m.getTimeStamp() * sampleRate)),
-                                           m.getNoteNumber(), numEvents, m.getFloatVelocity(), m.isNoteOn() };
+                                           m.getNoteNumber(), numEvents, kind, m.getFloatVelocity(), raw };
             ++numEvents;
         }
 
         std::sort (events.begin(), events.begin() + numEvents, [] (const Event& a, const Event& b)
         {
-            if (a.pos != b.pos)   return a.pos < b.pos;
-            if (a.on != b.on)     return ! a.on;
+            if (a.pos != b.pos)     return a.pos < b.pos;
+            if (a.kind != b.kind)   return a.kind < b.kind;
             return a.order < b.order;
         });
     }
+
+    // Pan and fine pitch waiting for their note (only for a note starting at that moment).
+    std::array<float, 128> pendingPan {}, pendingFine {};
+    std::array<int, 128> pendingAt;
+    pendingAt.fill (-1);
 
     if (k.filterType != lastFilterType)
     {
@@ -362,11 +386,29 @@ void SamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
         while (eventIndex < numEvents && events[(size_t) eventIndex].pos <= i)
         {
             auto& ev = events[(size_t) eventIndex++];
+            const auto key = (size_t) juce::jlimit (0, 127, ev.note);
 
-            if (ev.on)
-                startVoice (s, k, ev.note, ev.vel, cut);
+            if (ev.kind == panOf || ev.kind == fineOf)
+            {
+                if (pendingAt[key] != ev.pos)
+                {
+                    pendingPan[key] = pendingFine[key] = 0.0f;
+                    pendingAt[key] = ev.pos;
+                }
+
+                const float amount = juce::jlimit (-1.0f, 1.0f, (float) (ev.raw - 64) / 63.0f);
+                (ev.kind == panOf ? pendingPan : pendingFine)[key] = ev.kind == panOf ? amount : amount * 100.0f;
+            }
+            else if (ev.kind == noteOn)
+            {
+                const bool hasProperties = pendingAt[key] == ev.pos;
+                startVoice (s, k, ev.note, ev.vel, cut, hasProperties ? pendingPan[key] : 0.0f, hasProperties ? pendingFine[key] : 0.0f);
+                pendingAt[key] = -1;
+            }
             else
-                releaseNote (ev.note, k);
+            {
+                releaseNote (ev.note, k, ev.raw);
+            }
         }
 
         float outL = 0.0f, outR = 0.0f;
@@ -395,8 +437,8 @@ void SamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             g *= nextEnvelope (v, k);
 
             const float frac = (float) (v.position - index);
-            outL += (srcL[index] + frac * (srcL[index + 1] - srcL[index])) * g;
-            outR += (srcR[index] + frac * (srcR[index + 1] - srcR[index])) * g;
+            outL += (srcL[index] + frac * (srcL[index + 1] - srcL[index])) * g * v.gainL;
+            outR += (srcR[index] + frac * (srcR[index + 1] - srcR[index])) * g * v.gainR;
             v.position += v.step;
 
             if (v.fadeStep > 0.0f && (v.fade -= v.fadeStep) <= 0.0f)

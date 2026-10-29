@@ -15,11 +15,15 @@ namespace te = tracktion;
         SONGMODEL
           PATTERNS
             PATTERN sid name bars colour
-              PNOTE sid ch p b l v       <- channel (track ID), pitch, start beat, length beats, velocity
+              PNOTE sid ch p b l v rv pn fp   <- channel (track ID), pitch, start beat, length beats, velocity,
+                                                 release velocity, pan, fine pitch (the last three optional)
           PLAYLIST
             PCLIP sid pattern lane start length   <- a pattern placed in the song (beats)
-            PCLIP sid kind="audio" asset ch lane start offset duration
-                                                  <- an audio clip: start in beats, offset/duration in seconds
+            PCLIP sid pattern lane start length poff   <- poff: where in the pattern it starts (beats)
+            PCLIP sid kind="audio" asset ch lane start offset duration fi fo gain pitch speed smode
+                                                  <- an audio clip: start in beats, duration in seconds on the
+                                                     timeline, offset in seconds of the file; optional fades,
+                                                     volume, pitch and speed (see getClipSpeed)
           ASSETS
             ASSET sid=<fingerprint> name seconds rate numChannels bytes   <- shared audio files (the bytes travel separately)
 
@@ -76,11 +80,71 @@ namespace song
         SONG_DECLARE_ID (param)
         SONG_DECLARE_ID (LANES)
         SONG_DECLARE_ID (LANE)
+        // Audio clip settings (1.8): fades in seconds, volume in dB, pitch in semitones,
+        // speed (1 = as recorded, 2 = twice as fast), stretch mode ("" = keep the pitch,
+        // "resample" = faster also sounds higher, like a record)
+        SONG_DECLARE_ID (fi)
+        SONG_DECLARE_ID (fo)
+        SONG_DECLARE_ID (gain)
+        SONG_DECLARE_ID (pitch)
+        SONG_DECLARE_ID (speed)
+        SONG_DECLARE_ID (smode)
+        // Pattern clips: where in the pattern the clip starts (beats; set by cutting it)
+        SONG_DECLARE_ID (poff)
+        // Note properties (PNOTE, like FL's): release velocity 0..127 (64 = normal),
+        // pan -100..100, fine pitch in cents -100..100. Not set = the default.
+        SONG_DECLARE_ID (rv)
+        SONG_DECLARE_ID (pn)
+        SONG_DECLARE_ID (fp)
+        // Time signature (SONGMODEL), e.g. 6/8: tsNum = 6, tsDen = 8
+        SONG_DECLARE_ID (tsNum)
+        SONG_DECLARE_ID (tsDen)
         #undef SONG_DECLARE_ID
     }
 
-    constexpr double stepBeats = 0.25;      // a step is a 1/16 note
-    constexpr int stepsPerBar = 16;
+    constexpr double stepBeats = 0.25;      // a step is a 1/16 note (a beat is always a quarter note)
+
+    //==============================================================================
+    // Time signature (shared, like FL's project time signature). A bar is
+    // numerator * 4 / denominator beats: 4/4 = 4 beats (16 steps), 3/4 and 6/8 = 3 beats
+    // (12 steps), 12/8 = 6 beats. Pattern lengths, the step sequencer, the grids, bar
+    // numbers, the metronome and the count-in all follow it.
+    struct TimeSignature
+    {
+        int numerator = 4, denominator = 4;
+        bool operator== (const TimeSignature& o) const   { return numerator == o.numerator && denominator == o.denominator; }
+        juce::String toString() const                     { return juce::String (numerator) + "/" + juce::String (denominator); }
+        double beatsPerBar() const                        { return numerator * 4.0 / denominator; }
+    };
+
+    /** The ones you can pick (whole beats per bar, so bars always line up with the beat grid). */
+    juce::Array<TimeSignature> getTimeSignatureChoices();
+    TimeSignature getTimeSignature (te::Edit&);
+    /** Also sets the engine's (metronome, count-in). Undoable, shared. */
+    void setTimeSignature (te::Edit&, TimeSignature);
+    /** Beats in a bar (4 in 4/4). The ValueTree version works from any part of the song. */
+    double getBeatsPerBar (te::Edit&);
+    double getBeatsPerBar (const juce::ValueTree& anyPartOfTheSong);
+    /** Steps (1/16 notes) in a bar: 16 in 4/4, 12 in 3/4. */
+    int getStepsPerBar (te::Edit&);
+    int getStepsPerBar (const juce::ValueTree& anyPartOfTheSong);
+
+    //==============================================================================
+    // Tempo changes (FL's tempo automation, simplified to markers): the song's tempo
+    // is the first one (changed with everyone's OK, see Session::requestTempo); later
+    // ones jump (or ramp) to a new tempo at a beat. Shared and undoable, part of the
+    // engine's tempo map, so everything (playback, recording, export) follows them.
+    struct TempoChange
+    {
+        double beat = 0.0, bpm = 120.0;
+        bool ramp = false;   // true: glides there from the previous tempo instead of jumping
+    };
+    juce::Array<TempoChange> getTempoChanges (te::Edit&);          // not including the first tempo
+    void addTempoChange (te::Edit&, double beat, double bpm, bool ramp = false);
+    /** index into getTempoChanges(). */
+    void setTempoChange (te::Edit&, int index, double beat, double bpm, bool ramp);
+    void removeTempoChange (te::Edit&, int index);
+    constexpr double minTempo = 40.0, maxTempo = 250.0;
 
     juce::String newSyncID();
 
@@ -132,6 +196,18 @@ namespace song
     void removeNote (te::Edit&, juce::ValueTree note);
     juce::ValueTree findNoteAt (const juce::ValueTree& pattern, const juce::String& channelID, int pitch, double beat);
 
+    /** FL's note properties, edited in the piano roll's lane below the notes. Velocity and
+        release velocity reach every instrument (MIDI note-on / note-off velocity); pan and
+        fine pitch reach the built-in Sampler and Drum Synth (VST instruments don't get them). */
+    enum class NoteProperty { velocity, release, pan, fine };
+    int getNoteProperty (const juce::ValueTree& note, NoteProperty);
+    /** Sets it (undoable, shared); the default value removes it. */
+    void setNoteProperty (te::Edit&, juce::ValueTree note, NoteProperty, int value);
+    juce::Range<int> getNotePropertyRange (NoteProperty);   // inclusive: { min, max }
+    int getNotePropertyDefault (NoteProperty);
+    /** Copies release, pan and fine pitch to another note (velocity is passed to addNote). */
+    void copyNoteProperties (te::Edit&, const juce::ValueTree& from, juce::ValueTree to);
+
     /** A note to add (e.g. read from a MIDI file). */
     struct NoteSpec
     {
@@ -156,6 +232,40 @@ namespace song
     double getClipLength (te::Edit&, const juce::ValueTree& clip);
     /** End of the last clip, rounded up to a whole bar (at least one bar). */
     double getSongLengthBeats (te::Edit&);
+
+    /** Where in its pattern a pattern clip starts (beats; > 0 once its start was cut off). */
+    double getPatternOffset (const juce::ValueTree& clip);
+
+    /** Cuts a clip in two at a beat (any kind: pattern, audio, automation), FL's slice tool.
+        The left part keeps the clip; the right part is a new clip, returned. Audio keeps
+        playing exactly as before (the right part starts later in the file), the fade-in
+        stays on the left part and the fade-out on the right one. Returns {} if the beat
+        isn't inside the clip. */
+    juce::ValueTree splitClip (te::Edit&, juce::ValueTree clip, double beat);
+
+    //==============================================================================
+    // Audio clip settings (FL's clip properties / Pro Tools clip gain): all optional.
+    double getClipFadeIn (const juce::ValueTree& clip);       // seconds
+    double getClipFadeOut (const juce::ValueTree& clip);      // seconds
+    double getClipGainDb (const juce::ValueTree& clip);
+    double getClipPitch (const juce::ValueTree& clip);        // semitones (fractions = cents)
+    /** How fast the file plays: 1 = as recorded, 2 = twice as fast (half as long), 0.5 = half
+        speed. The clip lasts `duration` seconds on the timeline and uses duration * speed
+        seconds of the file, from `offset`. */
+    double getClipSpeed (const juce::ValueTree& clip);
+    /** True (the default): a speed change keeps the pitch (time-stretch). False ("resample"):
+        faster also sounds higher, like speeding up a record. */
+    bool getClipKeepsPitch (const juce::ValueTree& clip);
+    constexpr double minClipSpeed = 0.25, maxClipSpeed = 4.0, maxClipPitch = 24.0;
+    constexpr double minClipGainDb = -36.0, maxClipGainDb = 18.0;
+    /** The longest the clip can be on the timeline (seconds) with its offset and speed. */
+    double getMaxClipDuration (te::Edit&, const juce::ValueTree& clip);
+    /** Sets the fades (seconds), keeping them inside the clip and not overlapping. */
+    void setClipFades (te::Edit&, juce::ValueTree clip, double fadeInSeconds, double fadeOutSeconds);
+    /** Changes the speed and keeps the same part of the file (so the clip gets longer or
+        shorter), or keeps the clip's length when keepLength is set (then it uses more or less
+        of the file). The fades shrink to fit. */
+    void setClipSpeed (te::Edit&, juce::ValueTree clip, double speed, bool keepLength = false);
 
     /** Playlist track names (shared): SONGMODEL/LANES/LANE (sid, lane = 0-based, name).
         "" = no name (the header shows "Track <n>"). */

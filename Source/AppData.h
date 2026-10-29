@@ -60,7 +60,8 @@ namespace appdata
     /** Turns any chosen song file into its project form: "<folder>\<name>\<name>.cotosong"
         (unless it already sits in a folder of its own name). */
     juce::File projectSongFile (const juce::File& chosen);
-    /** True if a song file is an automatic backup (it sits in a "Backups" folder). */
+    /** True if a song file is an automatic backup (it sits in a "Backups" folder, or in a
+        never-saved song's folder inside the data folder's Backups). */
     bool isBackup (const juce::File& songFile);
     /** The folder of a saved song's project (its Exports, Backups... live here). */
     inline juce::File projectFolderOf (const juce::File& songFile)   { return songFile.getParentDirectory(); }

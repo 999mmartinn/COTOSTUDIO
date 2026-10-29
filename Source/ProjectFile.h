@@ -45,9 +45,14 @@ namespace project
     };
 
     /** Writes the song file (replacing the old one only once the new one is complete) and,
-        if asked, its audio into the Audio / Takes folders next to it. */
+        if asked, its audio into the Audio / Takes folders next to it.
+        alreadyThere: files in that folder known to hold a sound (path -> fingerprint), so they
+        are reused without being read again (backups: from the folder's other backups).
+        tidy: files the last save of this same song file put there and that it no longer
+        uses go to the recycle bin (off for backups: the other backups may use them). */
     SaveResult save (const juce::File& target, const juce::ValueTree& song, const AssetStore&,
-                     const std::vector<AudioFile>& audio, bool includeAudio, const juce::String& savedBy);
+                     const std::vector<AudioFile>& audio, bool includeAudio, const juce::String& savedBy,
+                     const std::map<juce::String, juce::String>& alreadyThere = {}, bool tidy = true);
 
     struct LoadResult
     {

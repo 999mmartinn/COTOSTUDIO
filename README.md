@@ -26,6 +26,66 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.8
+
+Features from FL Studio and Pro Tools that were missing:
+
+* **Cut and fade clips in the playlist** (FL's slice tool, Pro Tools' clip gain).
+  The playlist now has two tools: **Draw (P)** and **Slice (C)**. Slice cuts a clip in
+  two where you click, or every clip a line crosses when you drag down across tracks
+  (it snaps to the grid; Alt = free). Right-click a clip's name → **Cut here** does
+  the same. Pattern clips can now be trimmed from their left edge too.
+  * **Fades**: hover an audio clip and drag the small squares at its top corners to
+    fade it in / out (smooth S-curves, drawn over the waveform).
+  * **Properties** (double-click an audio clip, or right-click its name): volume
+    (-36 to +18 dB, the waveform grows with it), fade in / out, pitch, speed.
+* **Time-stretch and pitch-shift audio clips** (Pro Tools' Elastic Audio, FL's
+  stretch and pitch):
+  * **Pitch**: semitones and fine cents, the length stays the same.
+  * **Speed**: 25% to 400%, keeping the pitch (time-stretch) or like a record (untick
+    *Keep the pitch*: faster also sounds higher).
+  * **Alt + drag a clip's right edge** stretches it to that length.
+  * **Fit to the song**: type the tempo a loop was made at and it plays in time.
+  * The clip's name shows what's changed (e.g. *+3 dB  +2 st  150%*).
+* **Tempo and time signature**:
+  * **Time signature** (the *4/4* button in the counter): 4/4, 3/4, 2/4, 5/4, 6/4,
+    7/4, 6/8, 12/8. Pattern lengths, the step sequencer (12 steps in 3/4), the grids,
+    the bar numbers, the metronome and the count-in follow it.
+  * **Tempo changes**: right-click the playlist's ruler → *Tempo change here*. It
+    shows as an amber tag with its tempo; drag it to move it, double-click it to
+    change it, right-click it to make it *ramp* (speed up / slow down gradually) or
+    remove it.
+  * **TAP** (in the counter): click it in time with the music, 4 times or more; the
+    tempo is set when you stop. In a session it's asked for like any tempo change.
+* **Bounce to audio** (FL's "render as audio clip", Pro Tools' commit): right-click a
+  clip's name → *Bounce to audio*.
+  * A **pattern** becomes one audio clip per instrument it plays, rendered before the
+    mixer and routed to the same inserts, so it sounds the same and you can turn heavy
+    plugins off.
+  * An **audio clip** gets its fades, volume, pitch and speed built in.
+  * Ctrl+Z puts the original clip back.
+* **Ghost notes and note properties** in the piano roll (FL's):
+  * **Ghosts** (button in the title row): the other instruments' notes in the
+    pattern, faded behind yours. Double-click one to edit that instrument.
+  * **The lane under the notes** shows each note's **velocity**, **release**, **pan**
+    or **fine pitch** (click its name to switch). Drag across the bars to draw values
+    (only the selected notes if some are selected); right-drag resets them.
+  * New notes copy the properties of the last note you clicked, and copy / paste /
+    duplicate / slice keep them.
+  * Velocity and release reach every instrument. Pan and fine pitch work with the
+    built-in Sampler and drum sounds.
+* **Better automatic backups**:
+  * **Audio included**: backups now keep the song's audio (as a second name for the
+    same file on the same drive, so no extra space), so a backup opens even after the
+    Cache clean-up.
+  * **One folder per song**: each song's backups are kept together.
+  * **What's kept**: the last 20 of each song; never-saved songs' backups go after
+    14 days.
+  * **How often**: Settings → *Automatic backups* (off, or every 1 / 2 / 5 / 10 min;
+    2 by default).
+  * **Opening one**: File → *Backups...* lists them (this song's first) with *Open*
+    and *Back up now*.
+
 ## What's new in 1.7
 
 * **Play / stop from a plugin window**: Space works while a plugin's window has the
@@ -429,6 +489,14 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   become sends. FL's fader curve isn't published: levels are converted from its
   ends (0 dB and +5.6 dB) and can be a dB or two off in between, so check them by
   ear. Plugin settings carry over for VST3 plugins only.
+* Time-stretching (a speed other than 100% with *Keep the pitch*): a clip that plays
+  up to the very end of its file loses its last tenth of a second or so (the
+  stretcher reads ahead). Trim a hair off the end, or use *resample*.
+* Note pan and fine pitch only work with the built-in Sampler and drum sounds (VST
+  instruments get velocity and release). Tempo changes (the amber tags) are normal
+  edits, shared and undoable, without the song tempo's "everyone accepts" question.
+* Time signatures: the ones with whole beats in a bar (no 5/8 or 7/8 yet), one for
+  the whole song.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -470,7 +538,15 @@ channel and onto empty space; deleting the file removes its channel), and two
 people changing different things of the same channel at the same moment (all
 four changes kept), and the data folder (a project saved as a folder with its
 Audio and Takes, saving again writes nothing new, an old `.syncsong` still opens,
-and an older version's files are moved into the data folder intact).
+and an older version's files are moved into the data folder intact),
+and 1.8: cutting audio and pattern clips (the song plays the same notes and audio),
+fades and clip volume measured in a render, time-stretch and pitch measured (an
+octave up = twice the frequency, exactly in place; 2x speed = half as long, same
+pitch; resample at half speed = an octave down), time signatures and tempo changes
+the same everywhere, bouncing a pattern and an audio clip (the bounced audio sounds
+like the original in the song), note pan / fine pitch / release velocity (measured
+in the sampler and heard on the left only through the engine), and backups (their
+audio, pruning, opening one after the working copy is gone).
 The self-test never touches your data folder. The Windows build on GitHub runs
 it automatically.
 
@@ -501,6 +577,8 @@ Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
 * COTOSTUDIO: GNU AGPLv3 (`LICENSE`). Tracktion Engine: GPLv3. JUCE: AGPLv3.
 * Fonts built into the app: **Inter** and **JetBrains Mono**, both under the SIL
   Open Font License 1.1 (`Resources/Fonts/*-LICENSE.txt`, also in the release zip).
+* Time-stretching: **Signalsmith Stretch** (MIT licence, shipped inside Tracktion
+  Engine; its licence is in the release zip).
 * ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 
 ---

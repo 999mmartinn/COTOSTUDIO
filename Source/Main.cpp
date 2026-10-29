@@ -13,6 +13,7 @@
 #include "BinaryData.h"
 #include "FlpImportDialog.h"
 #include <iostream>
+#include "PatternCompiler.h"
 
 /** Engine settings: raw recordings go to this copy's own folder (see Recorder). */
 struct AppEngineBehaviour  : public te::EngineBehaviour
@@ -31,6 +32,16 @@ struct AppEngineBehaviour  : public te::EngineBehaviour
         limits.maxPluginsOnTrack = 64;
         limits.maxNumMasterPlugins = 64;
         return limits;
+    }
+
+    /** The notes the engine plays, plus each note's pan and fine pitch for our own
+        instruments (see PatternCompiler::notePropertiesInto). */
+    juce::MidiMessageSequence createPlaybackMidiSequence (const te::MidiList& list, te::MidiClip& clip,
+                                                          te::MidiList::TimeBase timeBase, bool generateMPE) override
+    {
+        auto seq = te::MidiList::createDefaultPlaybackMidiSequence (list, clip, timeBase, generateMPE);
+        PatternCompiler::notePropertiesInto (seq, list, clip, timeBase);
+        return seq;
     }
 };
 

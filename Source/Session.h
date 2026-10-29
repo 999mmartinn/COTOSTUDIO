@@ -187,8 +187,11 @@ public:
     //==============================================================================
     // Song files (see ProjectFile.h)
     /** Saves this PC's copy of the song (in the background). includeAudio: put every
-        audio file in it too, so it opens anywhere. */
-    void saveProject (const juce::File&, bool includeAudio, std::function<void (project::SaveResult)> onDone);
+        audio file in it too, so it opens anywhere. asBackup: an automatic backup (with its
+        audio, sharing it with the other backups in that folder, which is then tidied up:
+        see Backups.h). */
+    void saveProject (const juce::File&, bool includeAudio, std::function<void (project::SaveResult)> onDone,
+                      bool asBackup = false);
     /** Opens a song file (in the background). Only when you're alone or hosting:
         it replaces the song for everyone. onDone gets an error text, or "" if it worked. */
     void openProject (const juce::File&, std::function<void (juce::String error)> onDone,

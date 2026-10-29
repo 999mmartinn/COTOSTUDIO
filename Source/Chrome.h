@@ -20,6 +20,9 @@ public:
     ~LcdDisplay() override;
 
     juce::Rectangle<int> getTempoArea() const;
+    /** A narrow column at the right end, for the time signature and tap tempo buttons. */
+    juce::Rectangle<int> getSideArea() const;
+    static constexpr int sideWidth = 40;
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void refresh()                          { repaint(); }
@@ -33,7 +36,7 @@ public:
     /** Narrow windows: bar and tempo only (no time). */
     void setCompact (bool c)                { if (c != compact) { compact = c; repaint(); } }
 
-    static constexpr int preferredWidth = 330, compactWidth = 250;
+    static constexpr int preferredWidth = 330 + sideWidth, compactWidth = 250 + sideWidth;
 
 private:
     EditorState& state;

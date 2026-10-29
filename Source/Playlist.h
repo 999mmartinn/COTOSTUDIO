@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EditorState.h"
+#include "Bouncer.h"
 
 /**
     FL-style playlist: lanes on a timeline where patterns are placed as clips.
@@ -15,7 +16,12 @@
       - Click a clip: open its pattern in the channel rack and piano roll.
       - Ctrl + mouse wheel: zoom.  Ruler: set where SONG mode starts.
       - Drop audio files (or "Import audio...") to add audio clips; each file gets
-        its own audio channel. Audio clips can be trimmed from both edges.
+        its own audio channel. Clips can be trimmed from both edges.
+      - Tools (like FL): Draw (P) places, moves and resizes; Slice (C) cuts clips in two
+        (click one, or drag down across several). Right-click a clip's name: "Cut here".
+      - Audio clips: drag the small squares at their top corners to fade them in / out;
+        Alt + drag the right edge stretches them (time-stretch); double-click one (or
+        "Properties..." in its menu) for volume, fades, pitch and speed.
 */
 class Playlist  : public juce::Component,
                   private juce::Timer
@@ -56,6 +62,14 @@ private:
     juce::Label title;
     juce::ComboBox snapBox;
     juce::TextButton importButton { TRANS ("Import audio...") }, automateButton { TRANS ("Automate...") }, fullScreenButton;
+    juce::TextButton drawToolButton, sliceToolButton;
+    bool sliceTool = false;
+    void setSliceTool (bool);
+    /** The settings panel of an audio clip (volume, fades, pitch, speed), next to it. */
+    void showClipProperties (const juce::String& clipSid, juce::Rectangle<int> clipArea);
+    /** Replaces a clip with its sound as audio clips (see Bouncer). */
+    void bounceClip (const juce::String& clipSid);
+    std::unique_ptr<Bouncer> bouncer;
     void showAutomateMenu();
     std::unique_ptr<juce::FileChooser> chooser;
     juce::ThreadPool importPool { 1 };

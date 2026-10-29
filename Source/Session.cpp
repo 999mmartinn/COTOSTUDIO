@@ -1,4 +1,5 @@
 #include "Session.h"
+#include "Backups.h"
 #include "SongModel.h"
 #include "PatternCompiler.h"
 #include "AppData.h"
@@ -2224,7 +2225,8 @@ void Session::openProject (const juce::File& file, std::function<void (juce::Str
     });
 }
 
-void Session::saveProject (const juce::File& file, bool includeAudio, std::function<void (project::SaveResult)> onDone)
+void Session::saveProject (const juce::File& file, bool includeAudio, std::function<void (project::SaveResult)> onDone,
+                           bool asBackup)
 {
     if (edit == nullptr || editSync == nullptr)
     {
@@ -2245,10 +2247,15 @@ void Session::saveProject (const juce::File& file, bool includeAudio, std::funct
     ++fileJobsRunning;
     juce::WeakReference<Session> weak (this);
 
-    fileJobs.addJob ([this, weak, file, song, audio, includeAudio, by = peerName, onDone, songHash]
+    fileJobs.addJob ([this, weak, file, song, audio, includeAudio, by = peerName, onDone, songHash, asBackup]
     {
-        auto result = project::save (file, song, assets, audio, includeAudio, by);
+        const auto folder = file.getParentDirectory();
+        auto result = asBackup ? project::save (file, song, assets, audio, true, by, backups::knownAudio (folder), false)
+                               : project::save (file, song, assets, audio, includeAudio, by);
         result.songHash = songHash;
+
+        if (asBackup && result.ok())
+            backups::prune (folder);
 
         juce::MessageManager::callAsync ([weak, result, onDone]
         {

@@ -14,7 +14,13 @@ LcdDisplay::~LcdDisplay()   { stopTimer(); }
 
 juce::Rectangle<int> LcdDisplay::getTempoArea() const
 {
-    return getLocalBounds().withTrimmedLeft (positionWidth()).reduced (6, 0).withTrimmedTop (15).withTrimmedBottom (3);
+    return getLocalBounds().withTrimmedLeft (positionWidth()).withTrimmedRight (sideWidth).reduced (6, 0)
+                           .withTrimmedTop (15).withTrimmedBottom (3);
+}
+
+juce::Rectangle<int> LcdDisplay::getSideArea() const
+{
+    return getLocalBounds().removeFromRight (sideWidth).reduced (4, 3).withTrimmedLeft (1);
 }
 
 juce::String LcdDisplay::positionText (juce::String& timeText) const
@@ -32,8 +38,9 @@ juce::String LcdDisplay::positionText (juce::String& timeText) const
                                 : state.getPlayStartBeat();
     const double seconds = playing ? edit->getTransport().getPosition().inSeconds() : state.beatsToSeconds (beat);
 
-    const int bar = (int) std::floor (beat / 4.0 + 1.0e-9) + 1;
-    const int beatInBar = (int) std::floor (std::fmod (beat, 4.0) + 1.0e-9) + 1;
+    const double barBeats = song::getBeatsPerBar (*edit);
+    const int bar = (int) std::floor (beat / barBeats + 1.0e-9) + 1;
+    const int beatInBar = (int) std::floor (std::fmod (beat, barBeats) + 1.0e-9) + 1;
     const int step = (int) std::floor (std::fmod (beat, 1.0) * 4.0 + 1.0e-9) + 1;
 
     const int ms = (int) std::floor (juce::jmax (0.0, seconds) * 1000.0);
@@ -104,6 +111,10 @@ void LcdDisplay::paint (juce::Graphics& g)
 
     area.removeFromLeft (8);
     label (area, "BPM");
+
+    // The column with the time signature and tap tempo buttons.
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.fillRect (getLocalBounds().removeFromRight (sideWidth).removeFromLeft (1).withTrimmedTop (7).withTrimmedBottom (7));
 }
 
 void LcdDisplay::mouseDown (const juce::MouseEvent& e)

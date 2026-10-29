@@ -3,6 +3,8 @@
 //   SyncTest --selftest [--plugin=<path to a VST3 effect>] [--dump=<dir>]
 
 #include "SelfTest.h"
+#include "Bouncer.h"
+#include "Backups.h"
 #include <iostream>
 #include <thread>
 #include <mutex>
@@ -270,11 +272,20 @@ public:
         buildSteps();
 
         // Developer: --only=<text> runs just the steps whose name contains it (for the
-        // measurement steps, which need no network).
+        // measurement steps, which need no network); several texts: separated by "|".
         if (onlySteps.isNotEmpty())
-            steps.erase (std::remove_if (steps.begin(), steps.end(),
-                                         [this] (const Step& st) { return ! st.name.contains (onlySteps); }),
+        {
+            const auto wanted = juce::StringArray::fromTokens (onlySteps, "|", {});
+            steps.erase (std::remove_if (steps.begin(), steps.end(), [&wanted] (const Step& st)
+                         {
+                             for (auto& w : wanted)
+                                 if (w.isNotEmpty() && st.name.contains (w))
+                                     return false;
+
+                             return true;
+                         }),
                          steps.end());
+        }
 
         startTimer (20);
     }
@@ -304,6 +315,14 @@ private:
 
     // People, chat, browser
     juce::StringArray compiledBeforeSplit;
+
+    // 1.8: cutting, fades, stretch
+    juce::String cutsHash;
+    float cutsBaseline = 0.0f;
+    juce::StringArray compiledBeforeCut;
+    std::unique_ptr<Bouncer> testBouncer;
+    Bouncer::Result bounceResult;
+    bool bounceDone = false, bounceApplied = false;
 
     // Song files
     juce::File projectFile, legacyFile;
@@ -338,7 +357,7 @@ private:
     bool emptySongHadInput = false, scaleCheck = false;
 
     // FL Studio template import
-    bool flpCheck = false, cleanupCheck = false;
+    bool flpCheck = false, cleanupCheck = false, backupCheck = false;
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -863,6 +882,128 @@ private:
 
         file.deleteFile();
         return peak;
+    }
+
+    /** Renders some tracks (as the song plays them) between two times; returns the left channel
+        (or the right one). */
+    static juce::AudioBuffer<float> renderTracks (te::Edit& e, const juce::StringArray& trackNames, double from, double to,
+                                                  bool rightSide = false)
+    {
+        auto file = juce::File::getSpecialLocation (juce::File::tempDirectory).getNonexistentChildFile ("synctest-render", ".wav");
+        juce::BigInteger tracks;
+        auto all = te::getAllTracks (e);
+
+        for (int i = 0; i < all.size(); ++i)
+            if (trackNames.contains (all[i]->getName()))
+                tracks.setBit (i);
+
+        juce::AudioBuffer<float> result;
+        const te::TimeRange range (te::TimePosition::fromSeconds (from), te::TimePosition::fromSeconds (to));
+
+        // Like Renderer::renderToFile with a set of tracks, but without the master's effects
+        // (earlier steps put a delay and a reverb there, which would blur these measurements).
+        {
+            const te::Edit::ScopedRenderStatus srs (e, true);
+            te::Track::Array chosen;
+
+            for (auto bit = tracks.findNextSetBit (0); bit != -1; bit = tracks.findNextSetBit (bit + 1))
+                chosen.add (all[bit]);
+
+            const te::FreezePointPlugin::ScopedTrackSoloIsolator isolator (e, chosen);
+            te::TransportControl::stopAllTransports (e.engine, false, true);
+            te::Renderer::Parameters r (e);
+            r.destFile = file;
+            r.audioFormat = e.engine.getAudioFileFormatManager().getDefaultFormat();
+            r.bitDepth = 24;
+            r.sampleRateForAudio = 44100.0;
+            r.blockSizeForAudio = 512;
+            r.time = range;
+            r.usePlugins = true;
+            r.useMasterPlugins = false;
+            r.tracksToDo = tracks;
+
+            if (auto task = te::render_utils::createRenderTask (r, "test", nullptr, nullptr))
+                while (task->runJob() == juce::ThreadPoolJob::jobNeedsRunningAgain) {}
+        }
+
+        if (file.existsAsFile())
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+
+            if (std::unique_ptr<juce::AudioFormatReader> reader { fm.createReaderFor (file) })
+            {
+                juce::AudioBuffer<float> both (2, (int) reader->lengthInSamples);
+                reader->read (&both, 0, (int) reader->lengthInSamples, 0, true, true);
+                result.setSize (1, both.getNumSamples());
+                result.copyFrom (0, 0, both, rightSide && reader->numChannels > 1 ? 1 : 0, 0, both.getNumSamples());
+            }
+        }
+
+        file.deleteFile();
+        return result;
+    }
+
+    /** True once the engine can read every audio clip of these tracks (a compressed file
+        first gets a cached WAV copy, made on the message thread: rendering before it
+        exists, on the message thread, would wait for it forever). */
+    static bool audioReady (te::Edit& e, const juce::StringArray& trackNames)
+    {
+        for (auto* t : te::getAudioTracks (e))
+            if (trackNames.contains (t->getName()))
+                for (auto* c : t->getClips())
+                    if (auto* wc = dynamic_cast<te::WaveAudioClip*> (c))
+                        if (wc->getPlaybackFile().getSampleRate() <= 0.0)
+                            return false;
+
+        return true;
+    }
+
+    /** Peak level of part of a rendered buffer (seconds, at 44.1 kHz). */
+    static float peakIn (const juce::AudioBuffer<float>& b, double from, double to)
+    {
+        const int start = juce::jlimit (0, b.getNumSamples(), (int) (from * 44100.0));
+        const int end = juce::jlimit (start, b.getNumSamples(), (int) (to * 44100.0));
+        return end > start ? b.getMagnitude (0, start, end - start) : 0.0f;
+    }
+
+    /** Pitch of a tone in part of a rendered buffer (Hz, by counting upward zero crossings). */
+    static double frequencyIn (const juce::AudioBuffer<float>& b, double from, double to)
+    {
+        const int start = juce::jlimit (1, b.getNumSamples(), (int) (from * 44100.0));
+        const int end = juce::jlimit (start, b.getNumSamples(), (int) (to * 44100.0));
+        int first = -1, last = -1, count = 0;
+        const float* d = b.getReadPointer (0);
+
+        for (int i = start; i < end; ++i)
+            if (d[i - 1] < 0.0f && d[i] >= 0.0f)
+            {
+                if (first < 0) first = i;
+                last = i;
+                ++count;
+            }
+
+        return count > 1 ? (count - 1) * 44100.0 / (double) (last - first) : 0.0;
+    }
+
+    /** Where the sound in a rendered buffer starts after a time (seconds; the first sample above a level). */
+    static double soundStartIn (const juce::AudioBuffer<float>& b, double after, float level)
+    {
+        for (int i = juce::jmax (0, (int) (after * 44100.0)); i < b.getNumSamples(); ++i)
+            if (std::abs (b.getSample (0, i)) > level)
+                return i / 44100.0;
+
+        return -1.0;
+    }
+
+    /** Where the sound in a rendered buffer stops (seconds; the last sample above -40 dB). */
+    static double soundEndIn (const juce::AudioBuffer<float>& b)
+    {
+        for (int i = b.getNumSamples(); --i >= 0;)
+            if (std::abs (b.getSample (0, i)) > 0.01f)
+                return i / 44100.0;
+
+        return 0.0;
     }
 
     float renderPeak (te::Edit& e)
@@ -3613,6 +3754,53 @@ private:
                 o = render (4096, twoHits);
                 check ("cut itself: only the new hit after 5 ms", o[3000], ramp (2000) - 1e-4, ramp (2000) + 1e-4);
 
+                // 1.8 note properties: pan / fine pitch arrive as key pressure on channel 16 / 15
+                // for the note's key at its start (in any order with the note-on); release
+                // velocity is the note-off's velocity.
+                auto renderMessages = [s, sr] (int total, std::vector<std::pair<int, juce::MidiMessage>> messages, bool rightSide)
+                {
+                    s->reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    std::vector<float> out;
+
+                    for (int pos = 0; pos < total; pos += 512)
+                    {
+                        midi.clear();
+
+                        for (auto& [at, m] : messages)
+                            if (at >= pos && at < pos + 512)
+                                midi.addMidiMessage (m, (at - pos) / sr, te::MPESourceID {});
+
+                        buffer.clear();
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        s->applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                            out.push_back (buffer.getSample (rightSide ? 1 : 0, i));
+                    }
+
+                    return out;
+                };
+
+                const auto on60 = juce::MidiMessage::noteOn (1, 60, 1.0f);
+                defaults();
+                o = renderMessages (4096, { { 0, on60 }, { 0, juce::MidiMessage::aftertouchChange (16, 60, 1) } }, true);
+                check ("note pan -100 (sent after the note-on): right side silent", std::abs (o[1000]), 0.0, 1e-9);
+                o = renderMessages (4096, { { 0, on60 }, { 0, juce::MidiMessage::aftertouchChange (16, 60, 1) } }, false);
+                check ("note pan -100: left side untouched", o[1000], ramp (1000) - 1e-5, ramp (1000) + 1e-5);
+                o = renderMessages (4096, { { 0, juce::MidiMessage::aftertouchChange (16, 60, 96) }, { 0, on60 } }, false);
+                check ("note pan +51 (value 96): left side at 49%", o[1000] / ramp (1000), 0.48, 0.50);
+                o = renderMessages (4096, { { 0, juce::MidiMessage::aftertouchChange (15, 60, 127) }, { 0, on60 } }, false);
+                check ("note fine pitch +100 cents = one semitone", o[1000], ramp (1000 * std::pow (2.0, 1.0 / 12.0)) - 1e-4, ramp (1000 * std::pow (2.0, 1.0 / 12.0)) + 1e-4);
+                o = renderMessages (4096, { { 0, juce::MidiMessage::aftertouchChange (16, 61, 1) }, { 0, on60 } }, true);
+                check ("another key's pan doesn't touch this note", o[1000], ramp (1000) - 1e-5, ramp (1000) + 1e-5);
+                o = renderMessages (4096, { { 0, juce::MidiMessage::aftertouchChange (16, 60, 1) }, { 2000, on60 } }, true);
+                check ("a pan from an earlier moment doesn't stick to a later note", o[3000], ramp (1000) - 1e-5, ramp (1000) + 1e-5);
+                defaults(); s->envOnParam->setParameter (1.0f, juce::sendNotificationSync); s->releaseParam->setParameter (100.0f, juce::sendNotificationSync);
+                o = renderMessages (16384, { { 0, on60 }, { 4410, juce::MidiMessage::noteOff (1, 60, (juce::uint8) 32) } }, false);
+                check ("release velocity 32 = half the release: half volume 25 ms after the note ends", o[4410 + 1102] / ramp (4410 + 1102), 0.48, 0.52);
+
                 // Filters on the 5 kHz sine (level measured once it has settled).
                 s->loadSample ("sine", dir.getChildFile ("sine.wav"));
                 auto rmsDb = [&render, &hit]
@@ -4394,6 +4582,574 @@ private:
                 edit = nullptr;
                 return found.size() == 1 && found[0] == unused.hash;
             } });
+
+        //==============================================================================
+        // 1.8: cutting and fading clips, time-stretch and pitch
+        steps.push_back ({ "1.8 clips: host imports a 2 s tone onto track 15 at beat 400 -> everyone has it",
+            [this]
+            {
+                for (auto* sess : { &host, &peer1, &peer2 })
+                    sess->setSongMode (true);
+
+                auto r = host.getAssetStore().importAudioFile (writeTestWav (testRoot.getChildFile ("cuts.wav"), 2.0, 330.0, false));
+                cutsHash = r.hash;
+
+                if (r.ok())
+                    song::addImportedAudio (H(), r, "cuts.wav", 14, 400.0);
+            },
+            [this]
+            {
+                if (cutsHash.isEmpty() || ! everywhere ([this] (te::Edit& e) { return audioClipOf (e, cutsHash).isValid(); })
+                     || ! hasVerified (peer1, cutsHash) || ! hasVerified (peer2, cutsHash) || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                // Its level as imported (to compare the clip volume with).
+                if (! audioReady (H(), { "cuts" }))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 400.0);
+                cutsBaseline = peakIn (renderTracks (H(), { "cuts" }, start, start + 2.0), 0.5, 0.9);
+                std::cout << "    level as imported: " << cutsBaseline << std::endl;
+                return cutsBaseline > 0.1f;
+            },
+            15000 });
+
+        steps.push_back ({ "1.8 clips: host fades it (0.25 s in, 0.5 s out), turns it up 6 dB and cuts it at 1 s -> two parts everywhere, it sounds the same",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                auto clip = audioClipOf (H(), cutsHash);
+                song::setClipFades (H(), clip, 0.25, 0.5);
+                clip.setProperty (song::ids::gain, 6.0, &H().getUndoManager());
+                const double cutBeat = song::secondsToBeats (H(), song::beatsToSeconds (H(), 400.0) + 1.0);
+                auto right = song::splitClip (H(), clip, cutBeat);
+                std::cout << "    cut: " << (right.isValid() ? "yes" : "NO") << std::endl;
+            },
+            [this]
+            {
+                const bool structure = everywhere ([this] (te::Edit& e)
+                {
+                    int parts = 0;
+
+                    for (auto& c : song::getClips (e))
+                        if (song::isAudioClip (c) && c[song::ids::asset].toString() == cutsHash)
+                            ++parts;
+
+                    return parts == 2;
+                });
+
+                if (! structure || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                const auto engine = compiledAudio (host, "cuts");
+                std::cout << "    engine: " << engine.joinIntoString (" | ") << std::endl;
+
+                if (engine.size() != 2 || ! engine[0].contains ("+1.000>0.000 fi=0.250 g=6.00") || engine[0].contains ("fo=")
+                     || ! engine[1].contains ("+1.000>1.000 fo=0.500 g=6.00") || engine[1].contains ("fi="))
+                    return false;
+
+                if (! audioReady (H(), { "cuts" }))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 400.0);
+                const auto b = renderTracks (H(), { "cuts" }, start, start + 2.0);
+                const float atStart = peakIn (b, 0.0, 0.02), middle = peakIn (b, 0.5, 1.4), atEnd = peakIn (b, 1.97, 2.0);
+                std::cout << "    level: start " << atStart << ", middle " << middle << " (x" << middle / cutsBaseline
+                          << "), end " << atEnd << std::endl;
+                return atStart < 0.1f * middle && atEnd < 0.1f * middle
+                    && middle / cutsBaseline > 1.9f && middle / cutsBaseline < 2.1f;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 clips: peer 1 cuts a pattern clip in two, then trims the right part's start -> the song plays the same notes, minus the trimmed one",
+            [this]
+            {
+                auto cut = song::addPattern (P1(), "Cut", 1);
+
+                for (int step : { 0, 4, 8, 12 })
+                    song::setStep (P1(), cut, *ch (P1(), "Kick"), step, true);
+
+                song::addClip (P1(), cut[song::ids::sid].toString(), 15, 408.0);
+            },
+            [this]
+            {
+                if (! everywhere ([] (te::Edit& e) { return pat (e, "Cut").isValid(); }) || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (auto* c = peer1.getCompiler())
+                    c->compileNow();
+
+                compiledBeforeCut = compiled (peer1, "Kick");
+                juce::ValueTree clip;
+
+                for (auto& c : song::getClips (P1()))
+                    if (c[song::ids::pattern].toString() == pat (P1(), "Cut")[song::ids::sid].toString())
+                        clip = c;
+
+                P1().getUndoManager().beginNewTransaction();
+                auto right = song::splitClip (P1(), clip, 410.0);
+
+                if (auto* c = peer1.getCompiler())
+                    c->compileNow();
+
+                const bool same = compiled (peer1, "Kick") == compiledBeforeCut;
+                std::cout << "    after the cut: " << (right.isValid() ? "2 clips" : "NOT CUT") << ", same notes: " << same
+                          << ", right part starts " << (double) right[song::ids::poff] << " beats into the pattern" << std::endl;
+
+                // Trim the right part's start by one beat (like dragging its left edge).
+                right.setProperty (song::ids::start, 411.0, &P1().getUndoManager());
+                right.setProperty (song::ids::poff, 3.0, &P1().getUndoManager());
+                right.setProperty (song::ids::length, 1.0, &P1().getUndoManager());
+                return same && right.isValid() && std::abs ((double) right[song::ids::poff] - 3.0) < 1.0e-9;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 clips: ...everyone plays the kick at 408, 409 and 411 (not 410)",
+            {},
+            [this]
+            {
+                if (! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                const auto notes = compiled (host, "Kick").joinIntoString (" ");
+                return notes.contains ("@408.000") && notes.contains ("@409.000") && notes.contains ("@411.000") && ! notes.contains ("@410.000");
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 stretch: peer 2 pitches the right part +12 (and turns the left part down) -> an octave higher (660 Hz), exactly in place and as long as before",
+            [this]
+            {
+                for (auto& c : song::getClips (P2()))
+                    if (song::isAudioClip (c) && c[song::ids::asset].toString() == cutsHash)
+                    {
+                        if ((double) c[song::ids::offset] > 0.5)
+                        {
+                            c.setProperty (song::ids::pitch, 12.0, &P2().getUndoManager());
+                            song::setClipFades (P2(), c, 0.0, 0.0);   // to see exactly where it starts and ends
+                        }
+                        else
+                        {
+                            c.setProperty (song::ids::gain, -36.0, &P2().getUndoManager());
+                        }
+                    }
+            },
+            [this]
+            {
+                if (! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (! audioReady (H(), { "cuts" }))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 400.0);
+                const auto b = renderTracks (H(), { "cuts" }, start, start + 2.2);
+                const double left = frequencyIn (b, 0.4, 0.9), right = frequencyIn (b, 1.2, 1.4);
+                const double from = soundStartIn (b, 0.5, 0.1), to = soundEndIn (b);
+                std::cout << "    left part " << left << " Hz, right part " << right << " Hz, from " << from << " s to " << to << " s" << std::endl;
+                return std::abs (left - 330.0) < 3.0 && std::abs (right - 660.0) < 8.0
+                    && std::abs (from - 1.0) < 0.005 && std::abs (to - 2.0) < 0.005;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 stretch: host plays 0.6 s of the right part at 2x speed, keeping the pitch -> 0.3 s long, exactly in place, still 660 Hz",
+            [this]
+            {
+                for (auto& c : song::getClips (H()))
+                    if (song::isAudioClip (c) && c[song::ids::asset].toString() == cutsHash && (double) c[song::ids::offset] > 0.5)
+                    {
+                        // (Not to the file's very end: there the engine's stretcher stops about
+                        // a tenth of a second early - a known limit, see the README.)
+                        song::setClipSpeed (H(), c, 2.0);
+                        c.setProperty (song::ids::duration, 0.3, &H().getUndoManager());
+                    }
+            },
+            [this]
+            {
+                if (! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (! audioReady (H(), { "cuts" }))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 400.0);
+                const auto b = renderTracks (H(), { "cuts" }, start, start + 2.2);
+                const double right = frequencyIn (b, 1.1, 1.35);
+                const double from = soundStartIn (b, 0.5, 0.1), to = soundEndIn (b);
+                std::cout << "    right part " << right << " Hz, from " << from << " s to " << to << " s" << std::endl;
+                return std::abs (right - 660.0) < 8.0 && std::abs (from - 1.0) < 0.005 && std::abs (to - 1.3) < 0.005;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 stretch: peer 1 switches it to 'resample' at half speed, no pitch -> like a slow record: 165 Hz, 1.2 s long",
+            [this]
+            {
+                for (auto& c : song::getClips (P1()))
+                    if (song::isAudioClip (c) && c[song::ids::asset].toString() == cutsHash && (double) c[song::ids::offset] > 0.5)
+                    {
+                        c.removeProperty (song::ids::pitch, &P1().getUndoManager());
+                        c.setProperty (song::ids::smode, "resample", &P1().getUndoManager());
+                        song::setClipSpeed (P1(), c, 0.5);
+                    }
+            },
+            [this]
+            {
+                if (! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (! audioReady (H(), { "cuts" }))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 400.0);
+                const auto b = renderTracks (H(), { "cuts" }, start, start + 3.4);
+                const double right = frequencyIn (b, 1.2, 2.1);
+                const double from = soundStartIn (b, 0.5, 0.1), to = soundEndIn (b);
+                std::cout << "    right part " << right << " Hz, from " << from << " s to " << to << " s" << std::endl;
+                return std::abs (right - 165.0) < 3.0 && std::abs (from - 1.0) < 0.005 && std::abs (to - 2.2) < 0.005;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 time signature: host picks 3/4 -> everyone's patterns are 3 beats a bar (12 steps), the metronome counts 3",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::setTimeSignature (H(), { 3, 4 });
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return song::getTimeSignature (e) == song::TimeSignature { 3, 4 }
+                        && std::abs (song::getLengthBeats (pat (e, "Cut")) - 3.0) < 1.0e-9
+                        && song::getNumSteps (pat (e, "Cut")) == 12
+                        && e.tempoSequence.getTimeSig (0)->numerator == 3
+                        && std::fmod (song::getSongLengthBeats (e), 3.0) < 1.0e-9;
+                }) && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 time signature: peer 1 picks 6/8 (3 beats a bar too), then back to 4/4 -> 16 steps a bar again everywhere",
+            [this]
+            {
+                P1().getUndoManager().beginNewTransaction();
+                song::setTimeSignature (P1(), { 6, 8 });
+                P1().getUndoManager().beginNewTransaction();
+                song::setTimeSignature (P1(), { 4, 4 });
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    return song::getTimeSignature (e) == song::TimeSignature()
+                        && song::getNumSteps (pat (e, "Cut")) == 16
+                        && e.tempoSequence.getTimeSig (0)->numerator == 4
+                        && ! e.state.getChildWithName (song::ids::SONGMODEL).hasProperty (song::ids::tsNum);
+                }) && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 tempo changes: peer 2 adds a jump to 180 BPM at beat 144 -> everyone plays beat 160 at the same, earlier time",
+            [this]
+            {
+                P2().getUndoManager().beginNewTransaction();
+                song::addTempoChange (P2(), 144.0, 180.0);
+            },
+            [this]
+            {
+                const double base = H().tempoSequence.getTempo (0)->getBpm();
+                const double expected = song::beatsToSeconds (H(), 144.0) + 16.0 * 60.0 / 180.0;
+                const bool ok = everywhere ([expected] (te::Edit& e)
+                {
+                    const auto changes = song::getTempoChanges (e);
+                    return changes.size() == 1 && std::abs (changes[0].bpm - 180.0) < 1.0e-6 && ! changes[0].ramp
+                        && std::abs (song::beatsToSeconds (e, 160.0) - expected) < 1.0e-6
+                        && std::abs (song::beatsToSeconds (e, 144.0) - 144.0 * 60.0 / e.tempoSequence.getTempo (0)->getBpm()) < 1.0e-6;
+                });
+                std::cout << "    song tempo " << base << ", beat 160 at " << song::beatsToSeconds (H(), 160.0) << " s (expected " << expected << ")" << std::endl;
+                return ok && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 tempo changes: host makes it a ramp (beat 160 lands later than with the jump), moves it to beat 148, then removes it",
+            [this]
+            {
+                H().getUndoManager().beginNewTransaction();
+                song::setTempoChange (H(), 0, 144.0, 180.0, true);
+            },
+            [this]
+            {
+                // A ramp speeds up gradually from the tempo before it (from the song's start here),
+                // so beat 144 comes sooner than at a steady tempo.
+                const bool ramped = everywhere ([] (te::Edit& e)
+                {
+                    const auto changes = song::getTempoChanges (e);
+                    const double steady = 144.0 * 60.0 / e.tempoSequence.getTempo (0)->getBpm();
+                    return changes.size() == 1 && changes[0].ramp && song::beatsToSeconds (e, 144.0) < steady - 0.5;
+                }) && hashesEqual();
+
+                if (! ramped)
+                    return false;
+
+                song::setTempoChange (H(), 0, 148.0, 180.0, true);
+                const bool moved = song::getTempoChanges (H()).size() == 1 && std::abs (song::getTempoChanges (H())[0].beat - 148.0) < 1.0e-9;
+                song::removeTempoChange (H(), 0);
+                std::cout << "    ramp: yes, moved: " << (moved ? "yes" : "NO") << std::endl;
+                return moved && song::getTempoChanges (H()).isEmpty();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 tempo changes: ...gone everywhere, one steady tempo again",
+            {},
+            [this]
+            {
+                return everywhere ([] (te::Edit& e) { return song::getTempoChanges (e).isEmpty() && e.tempoSequence.getNumTempos() == 1; })
+                    && hashesEqual() && compiledEqualEverywhere();
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 bounce: host bounces the first part of the 'Cut' pattern clip -> its kick, as audio",
+            [this]
+            {
+                juce::String sid;
+
+                for (auto& c : song::getClips (H()))
+                    if (c[song::ids::pattern].toString() == pat (H(), "Cut")[song::ids::sid].toString()
+                         && std::abs ((double) c[song::ids::start] - 408.0) < 1.0e-9)
+                        sid = c[song::ids::sid].toString();
+
+                bounceDone = bounceApplied = false;
+                testBouncer = std::make_unique<Bouncer> (engine, host.getAssetStore());
+                const auto error = testBouncer->start (host.getSync()->createSnapshot(), sid,
+                                                       [this] (const Bouncer::Result& r) { bounceResult = r; bounceDone = true; });
+                std::cout << "    started: " << (error.isEmpty() ? juce::String ("yes") : error) << std::endl;
+            },
+            [this]
+            {
+                if (! bounceDone)
+                    return false;
+
+                if (! bounceApplied)
+                {
+                    H().getUndoManager().beginNewTransaction();
+                    const auto clips = Bouncer::apply (H(), bounceResult);
+                    bounceApplied = true;
+                    std::cout << "    parts: " << (int) bounceResult.parts.size() << ", silent: " << bounceResult.silentChannels
+                              << (bounceResult.error.isNotEmpty() ? ", error: " + bounceResult.error : juce::String())
+                              << ", clips added: " << clips.size() << std::endl;
+
+                    if (clips.size() != 1)
+                        return false;
+                }
+
+                return bounceResult.parts.size() == 1 && bounceResult.parts[0].seconds >= song::beatsToSeconds (H(), 410.0) - song::beatsToSeconds (H(), 408.0) - 1.0e-3;
+            },
+            30000 });
+
+        steps.push_back ({ "1.8 bounce: ...everyone has the 'Cut - Kick' audio clip in its place (same insert as the kick), the pattern clip is gone, and it sounds",
+            {},
+            [this]
+            {
+                const auto hash = bounceResult.parts.empty() ? juce::String() : bounceResult.parts[0].audio.hash;
+                const bool structure = everywhere ([hash] (te::Edit& e)
+                {
+                    auto* kick = ch (e, "Kick");
+                    auto* audio = ch (e, "Cut - Kick");
+                    bool patternClipAt128 = false;
+
+                    for (auto& c : song::getClips (e))
+                        if (! song::isAudioClip (c) && std::abs ((double) c[song::ids::start] - 408.0) < 1.0e-9 && (int) c[song::ids::lane] == 15)
+                            patternClipAt128 = true;
+
+                    auto clip = audioClipOf (e, hash);
+                    return kick != nullptr && audio != nullptr && clip.isValid() && ! patternClipAt128
+                        && (int) clip[song::ids::lane] == 15 && std::abs ((double) clip[song::ids::start] - 408.0) < 1.0e-9
+                        && song::getRoute (*audio) == song::getRoute (*kick);
+                });
+
+                if (! structure || ! hasVerified (peer1, hash) || ! hasVerified (peer2, hash) || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                // With the inserts it plays through (rendered alone, a routed channel is silent).
+                juce::StringArray chain { "Cut - Kick" };
+
+                for (auto* t = song::resolveRoute (H(), *ch (H(), "Cut - Kick")); t != nullptr && ! chain.contains (t->getName()); t = song::resolveRoute (H(), *t))
+                    chain.add (t->getName());
+
+                if (! audioReady (H(), chain))
+                    return false;
+
+                const double start = song::beatsToSeconds (H(), 408.0);
+                const float peak = peakIn (renderTracks (H(), chain, start, start + 1.0), 0.0, 1.0);
+                std::cout << "    bounced kick peak " << peak << std::endl;
+                return peak > 0.05f;
+            },
+            15000, 600 });
+
+        steps.push_back ({ "1.8 bounce: peer 1 bounces the first part of the tone (fade-in, +6 dB) -> the new file has them built in",
+            [this]
+            {
+                juce::String sid;
+
+                for (auto& c : song::getClips (P1()))
+                    if (song::isAudioClip (c) && c[song::ids::asset].toString() == cutsHash && (double) c[song::ids::offset] < 0.5)
+                    {
+                        sid = c[song::ids::sid].toString();
+                        c.setProperty (song::ids::gain, 6.0, &P1().getUndoManager());   // back to +6 dB
+                    }
+
+                bounceDone = bounceApplied = false;
+                testBouncer = std::make_unique<Bouncer> (engine, peer1.getAssetStore());
+                testBouncer->start (peer1.getSync()->createSnapshot(), sid,
+                                    [this] (const Bouncer::Result& r) { bounceResult = r; bounceDone = true; });
+            },
+            [this]
+            {
+                if (! bounceDone)
+                    return false;
+
+                if (! bounceApplied)
+                {
+                    P1().getUndoManager().beginNewTransaction();
+                    bounceApplied = true;
+
+                    if (Bouncer::apply (P1(), bounceResult).size() != 1)
+                        return false;
+                }
+
+                const auto& part = bounceResult.parts[0];
+                const auto file = peer1.getAssetStore().getFile (part.audio.hash);
+                const float atStart = peakOf (file, 0.0, 0.02), middle = peakOf (file, 0.5, 0.9);
+                std::cout << "    bounced: " << part.seconds << " s, start " << atStart << ", middle " << middle << std::endl;
+                return part.seconds >= 0.999 && atStart < 0.1f * middle && middle > 0.1f && ch (P1(), "cuts (bounce)") != nullptr;
+            },
+            30000 });
+
+        steps.push_back ({ "1.8 bounce: ...everyone has it",
+            {},
+            [this]
+            {
+                const auto hash = bounceResult.parts.empty() ? juce::String() : bounceResult.parts[0].audio.hash;
+
+                if (! everywhere ([hash] (te::Edit& e) { return audioClipOf (e, hash).isValid() && ch (e, "cuts (bounce)") != nullptr; })
+                     || ! hasVerified (host, hash) || ! hasVerified (peer2, hash) || ! hashesEqual() || ! compiledEqualEverywhere()
+                     || ! audioReady (H(), { "cuts (bounce)" }))
+                    return false;
+
+                // Played in the song, it sounds like the clip did: faded in, 6 dB up.
+                const double start = song::beatsToSeconds (H(), 400.0);
+                const auto b = renderTracks (H(), { "cuts (bounce)" }, start, start + 1.0);
+                const float atStart = peakIn (b, 0.0, 0.02), middle = peakIn (b, 0.5, 0.9);
+                std::cout << "    in the song: start " << atStart << ", middle " << middle << " (x" << middle / cutsBaseline << " the tone as imported)" << std::endl;
+                return atStart < 0.1f * middle && middle / cutsBaseline > 1.95f && middle / cutsBaseline < 2.05f;
+            },
+            15000, 600 });
+
+        steps.push_back ({ "1.8 note properties: peer 2 pans the 'Cut' kick notes hard left, tunes them +50 cents and sets their release -> the same everywhere, the kick plays on the left only",
+            [this]
+            {
+                P2().getUndoManager().beginNewTransaction();
+
+                // Straight to the master (an insert's stereo effects would spread it), so the
+                // kick's own left / right is what's measured.
+                song::setRoute (P2(), *ch (P2(), "Kick"), {});
+
+                for (auto& n : song::getNotes (pat (P2(), "Cut"), song::getChannelID (*ch (P2(), "Kick"))))
+                {
+                    song::setNoteProperty (P2(), n, song::NoteProperty::pan, -100);
+                    song::setNoteProperty (P2(), n, song::NoteProperty::fine, 50);
+                    song::setNoteProperty (P2(), n, song::NoteProperty::release, 20);
+                }
+            },
+            [this]
+            {
+                const bool everywhereSet = everywhere ([] (te::Edit& e)
+                {
+                    const auto notes = song::getNotes (pat (e, "Cut"), song::getChannelID (*ch (e, "Kick")));
+
+                    for (auto& n : notes)
+                        if (song::getNoteProperty (n, song::NoteProperty::pan) != -100 || song::getNoteProperty (n, song::NoteProperty::fine) != 50
+                             || song::getNoteProperty (n, song::NoteProperty::release) != 20)
+                            return false;
+
+                    return ! notes.isEmpty();
+                });
+
+                if (! everywhereSet || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                const auto notes = compiled (host, "Kick").joinIntoString (" | ");
+
+                if (! notes.contains ("@411.000+0.250*100 rv=20 pan=-100 fine=50"))
+                {
+                    std::cout << "    compiled: " << notes << std::endl;
+                    return false;
+                }
+
+                const double start = song::beatsToSeconds (H(), 411.0);
+                // The kick and the inserts it plays through (rendered alone, a routed channel is silent).
+                juce::StringArray chain { "Kick" };
+
+                for (auto* t = song::resolveRoute (H(), *ch (H(), "Kick")); t != nullptr && ! chain.contains (t->getName()); t = song::resolveRoute (H(), *t))
+                    chain.add (t->getName());
+
+                if (! audioReady (H(), chain))
+                    return false;
+
+                const float left = peakIn (renderTracks (H(), chain, start, start + 0.4, false), 0.0, 0.4);
+                const float right = peakIn (renderTracks (H(), chain, start, start + 0.4, true), 0.0, 0.4);
+                std::cout << "    kick at beat 411: left " << left << ", right " << right << std::endl;
+                return left > 0.05f && right < 0.02f * left;
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.8 backups: they carry their audio (shared, not copied twice), keep the newest, drop audio only old ones used, and open after the working copy is gone",
+            [this]
+            {
+                fourth.newProject();
+                auto assetFolder = testRoot.getChildFile ("fourth-backup-assets");
+                assetFolder.deleteRecursively();
+                fourth.setAssetFolder (assetFolder);
+                auto& store = fourth.getAssetStore();
+                auto* e = fourth.getEdit();
+                const auto tone = store.importAudioFile (toneFile), voice = store.importAudioFile (voiceFile);
+                song::addImportedAudio (*e, tone, "tone.wav", 0, 0.0);
+                song::addImportedAudio (*e, voice, "voice.wav", 1, 0.0);
+
+                const auto folder = backups::folderForUnsaved ("Backup test", juce::Time::getCurrentTime());
+                folder.deleteRecursively();
+                auto audioOf = [e] { std::vector<project::AudioFile> a;
+                                     for (auto& h : song::getAssetHashes (*e)) a.push_back ({ h, song::getAssetName (*e, h), false });
+                                     return a; };
+
+                // 1: both files; 2: the voice gone from the song (the tone is already there).
+                const auto first = folder.getChildFile (juce::String ("Backup test (backup 1)") + appdata::songExtension);
+                const auto r1 = project::save (first, e->state, store, audioOf(), true, "test", backups::knownAudio (folder), false);
+                first.setLastModificationTime (juce::Time::getCurrentTime() - juce::RelativeTime::minutes (5));
+                song::removeAsset (*e, voice.hash);
+                const auto second = folder.getChildFile (juce::String ("Backup test (backup 2)") + appdata::songExtension);
+                const auto r2 = project::save (second, e->state, store, audioOf(), true, "test", backups::knownAudio (folder), false);
+                const bool bothFiles = folder.getChildFile ("Audio/voice.flac").existsAsFile() && folder.getChildFile ("Audio/tone.flac").existsAsFile();
+
+                // Keep only the newest: the first backup and the voice (only it used) go.
+                backups::prune (folder, 1);
+                const bool pruned = ! first.existsAsFile() && second.existsAsFile()
+                                     && ! folder.getChildFile ("Audio/voice.flac").existsAsFile() && folder.getChildFile ("Audio/tone.flac").existsAsFile();
+
+                // The working copy goes (as when a never-saved song closes): the backup still opens with its sound.
+                store.deleteFiles ({ tone.hash });
+                const bool goneHere = ! store.has (tone.hash);
+                const auto loaded = project::load (second, store);
+                const bool restored = loaded.ok() && store.has (tone.hash) && loaded.audioRestored == 1;
+                const bool listed = backups::list (folder).size() >= 1 && backups::list (folder)[0].thisSong
+                                     && backups::list (folder)[0].song == "Backup test" && appdata::isBackup (second);
+
+                std::cout << "    saved: " << r1.ok() << r2.ok() << " (2nd wrote " << r2.audioWritten << " new files), both files: " << bothFiles
+                          << ", pruned: " << pruned << ", gone from the cache: " << goneHere << ", restored from the backup: " << restored
+                          << ", listed: " << listed << std::endl;
+                backupCheck = r1.ok() && r1.audioWritten == 2 && r2.ok() && r2.audioWritten == 0 && bothFiles && pruned && goneHere && restored && listed;
+                folder.deleteRecursively();
+                fourth.newProject();
+            },
+            [this] { return backupCheck; } });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

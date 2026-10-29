@@ -14,7 +14,8 @@ struct EditorState
     juce::String selectedChannel;   // channel (track) ID
     double startBeat = 0.0;         // where Play starts in PAT mode (marker on the piano-roll ruler)
     double songStartBeat = 0.0;     // where Play starts in SONG mode (marker on the playlist ruler)
-    double playlistSnapBeats = 4.0; // playlist snap: bar / beat / step, 0 = none
+    static constexpr double snapBar = -1.0;   // a snap setting meaning "a bar" (its length depends on the time signature)
+    double playlistSnapBeats = snapBar;       // playlist snap: bar / beat / step, 0 = none
     juce::String placeAudioChannel; // if set, clicking empty playlist space places this audio
                                     // channel's file; otherwise the viewed pattern
     juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
@@ -30,7 +31,19 @@ struct EditorState
     // Piano roll tool and snap (this PC only), like FL: Pencil (P), Select (E), Slice (C).
     enum class PianoTool { pencil, select, slice };
     PianoTool pianoTool = PianoTool::pencil;
-    double pianoSnapBeats = song::stepBeats;   // the grid notes land on, 0 = none (Alt held = none too)
+    double pianoSnapBeats = song::stepBeats;   // the grid notes land on, 0 = none (Alt held = none too), snapBar = a bar
+    bool ghostNotes = true;                      // the other instruments' notes, faded, behind yours (FL's ghost notes)
+    song::NoteProperty laneProperty = song::NoteProperty::velocity;   // what the lane under the notes edits
+
+    /** Beats in a bar of the current song (4 in 4/4). */
+    double getBeatsPerBar() const
+    {
+        auto* edit = getEdit();
+        return edit != nullptr ? song::getBeatsPerBar (*edit) : 4.0;
+    }
+
+    /** A snap setting in beats (snapBar becomes the bar's length). */
+    double resolveSnap (double setting) const          { return setting < 0.0 ? getBeatsPerBar() : setting; }
 
     std::function<void()> onSelectionChanged;
 
@@ -77,7 +90,7 @@ struct EditorState
     /** Snaps a beat to the playlist grid (rounding down); Alt held = no snap, like FL. */
     double snapPlaylistBeat (double beat) const
     {
-        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : playlistSnapBeats;
+        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : resolveSnap (playlistSnapBeats);
         beat = juce::jmax (0.0, beat);
         return grid > 0.0 ? std::floor (beat / grid + 1.0e-6) * grid : beat;
     }
@@ -85,7 +98,7 @@ struct EditorState
     /** Same, rounding to the nearest grid line. */
     double snapPlaylistBeatNearest (double beat) const
     {
-        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : playlistSnapBeats;
+        const double grid = juce::ModifierKeys::currentModifiers.isAltDown() ? 0.0 : resolveSnap (playlistSnapBeats);
         return snapPlaylistBeat (beat + grid * 0.5);
     }
 

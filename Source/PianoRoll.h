@@ -15,6 +15,10 @@
     Up / Down a semitone (Ctrl or Shift: an octave), Left / Right one grid step.
     Ctrl+wheel zooms in time, around the mouse. The instrument whose notes you edit is
     picked in the title row (its menu, or < >, or Alt+Up / Alt+Down). Notes snap to the chosen grid (Alt = free).
+    Ghost notes (button "Ghosts"): the other instruments' notes in the pattern, faded behind
+    yours; double-click one to edit that instrument. The lane under the notes edits each
+    note's velocity, release, pan or fine pitch (click its name to switch): drag across
+    the bars to draw values (only the selected notes, if any), right-drag resets them.
     Notes are heard while placed or dragged only when the song is stopped (the keyboard
     on the left always plays). The Scale button keeps notes on a key's scale.
     The ruler on top sets where Play starts (jumps there while playing).
@@ -39,14 +43,17 @@ public:
     std::function<void()> onDetachToggle, onFullScreenToggle;
     void setDetached (bool);
     void setFullScreenState (bool isFullScreen);
-    /** The scale helper or the snap changed (to remember them). */
+    /** The scale helper, the snap, ghost notes or the lane's property changed (to remember them). */
     std::function<void()> onScaleChanged;
+    /** The settings above were loaded: show them. */
+    void refreshTools();
 
 private:
     class Grid;
     class Ruler;
     class Keys;
     class ChannelPicker;
+    class PropertyLane;
 
     struct NotesViewport  : public juce::Viewport
     {
@@ -59,6 +66,10 @@ private:
     std::unique_ptr<Ruler> ruler;
     std::unique_ptr<Keys> keys;
     std::unique_ptr<ChannelPicker> picker;   // which instrument's notes you edit (menu, < >)
+    std::unique_ptr<PropertyLane> lane;      // velocity / release / pan / fine pitch of each note
+    juce::TextButton ghostButton;
+    static constexpr int laneHeight = 72;
+    juce::int64 laneSignature = 0;
     juce::TextButton prevChannelButton, nextChannelButton;
     /** The previous (-1) or next (+1) instrument in the rack. */
     void stepChannel (int direction);

@@ -30,11 +30,14 @@ std::map<juce::String, juce::String> readAudioList (const juce::File& songFile)
 
 /** Puts the song's audio into Audio\ and Takes\ next to the song file; returns the list for audio.xml. */
 static std::unique_ptr<juce::XmlElement> writeAudioFolder (const juce::File& target, const AssetStore& assets,
-                                                            const std::vector<AudioFile>& audio, SaveResult& result)
+                                                            const std::vector<AudioFile>& audio, SaveResult& result,
+                                                            const std::map<juce::String, juce::String>& alreadyThere, bool tidy)
 {
     auto list = std::make_unique<juce::XmlElement> ("AUDIO");
     const auto folder = target.getParentDirectory();
-    const auto before = readAudioList (target);   // what the last save put there
+    const auto lastSave = readAudioList (target);   // what the last save put there
+    auto before = lastSave;
+    before.insert (alreadyThere.begin(), alreadyThere.end());
     std::set<juce::String> used;
 
     for (auto& a : audio)
@@ -100,15 +103,17 @@ static std::unique_ptr<juce::XmlElement> writeAudioFolder (const juce::File& tar
     }
 
     // Files an earlier save put there that the song doesn't use any more: to the recycle bin.
-    for (auto& [path, hash] : before)
-        if (used.count (path) == 0)
-            folder.getChildFile (path).moveToTrash();
+    if (tidy)
+        for (auto& [path, hash] : lastSave)
+            if (used.count (path) == 0)
+                folder.getChildFile (path).moveToTrash();
 
     return list;
 }
 
 SaveResult save (const juce::File& target, const juce::ValueTree& song, const AssetStore& assets,
-                 const std::vector<AudioFile>& audio, bool includeAudio, const juce::String& savedBy)
+                 const std::vector<AudioFile>& audio, bool includeAudio, const juce::String& savedBy,
+                 const std::map<juce::String, juce::String>& alreadyThere, bool tidy)
 {
     SaveResult result;
 
@@ -135,7 +140,7 @@ SaveResult save (const juce::File& target, const juce::ValueTree& song, const As
     if (includeAudio)
     {
         target.getParentDirectory().createDirectory();
-        auto list = writeAudioFolder (target, assets, audio, result);
+        auto list = writeAudioFolder (target, assets, audio, result, alreadyThere, tidy);
 
         if (! result.ok())
             return result;

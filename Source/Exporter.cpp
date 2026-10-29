@@ -118,7 +118,7 @@ juce::String Exporter::start (const juce::ValueTree& songState, const Options& o
             return "That pattern doesn't exist any more";
         }
 
-        lengthBeats = song::getBars (pattern) * 4.0;
+        lengthBeats = song::getLengthBeats (pattern);
     }
 
     const te::TimeRange range (te::TimePosition(), copy->tempoSequence.toTime (te::BeatPosition::fromBeats (lengthBeats)));

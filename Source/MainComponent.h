@@ -68,7 +68,14 @@ private:
     void saveSong (bool saveAs, std::function<void (bool saved)> then = {});
     void writeSong (const juce::File&, std::function<void (bool saved)> then);
     void askToSaveChanges (std::function<void()> proceed);
-    void autosave();
+    /** An automatic backup (see Backups.h) if the song changed since the last one (or was saved).
+        byHand: "Back up now" (tells you either way). */
+    void autosave (bool byHand = false);
+    /** File > "Backups...": every backup, to open one. */
+    void showBackups();
+    int backupMinutes = 2;                     // 0 = off (Settings > Automatic backups)
+    te::Edit* backedUpEdit = nullptr;          // the song the backups are for (a new one starts a new folder)
+    juce::Time songStartedAt;
     /** Browser > Audio > "Delete unused takes...": takes with no clip, out of the song and off this PC (asks first). */
     void deleteUnusedTakes();
     void updateTitle();
@@ -128,6 +135,11 @@ private:
     void timerCallback() override;
     juce::TextButton playButton, newPatternButton, patternMenuButton, undoButton, redoButton;
     juce::Slider tempoSlider { juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft };
+    // In the counter, next to the tempo: the time signature (menu) and tap tempo.
+    juce::TextButton timeSigButton, tapButton { "TAP" };
+    juce::Array<double> tapTimes;   // ms of the recent taps
+    void showTimeSignatureMenu();
+    void tapTempo();
     juce::ComboBox patternBox, lengthBox;
 
     // Your own folders of sounds (far left; local only) and what plays them while you browse.
