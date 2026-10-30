@@ -1,7 +1,7 @@
 #include "SamplerPlugin.h"
 
 const char* SamplerPlugin::xmlTypeName = "cotosampler";
-const juce::Identifier SamplerPlugin::assetID ("asset"), SamplerPlugin::cutID ("cutItself");
+const juce::Identifier SamplerPlugin::assetID ("asset"), SamplerPlugin::cutID ("cutItself"), SamplerPlugin::noteLengthID ("noteLength");
 
 namespace
 {
@@ -18,6 +18,7 @@ namespace
 SamplerPlugin::SamplerPlugin (te::PluginCreationInfo info) : CotoFxPlugin (info)
 {
     cutValue.referTo (state, cutID, getUndoManager(), false);
+    noteLengthValue.referTo (state, noteLengthID, getUndoManager(), false);
 
     for (auto& p : voicePositions)
         p = -1.0f;
@@ -89,7 +90,7 @@ void SamplerPlugin::reset()
 void SamplerPlugin::restorePluginStateFromValueTree (const juce::ValueTree& v)
 {
     CotoFxPlugin::restorePluginStateFromValueTree (v);
-    te::copyPropertiesToCachedValues (v, cutValue);
+    te::copyPropertiesToCachedValues (v, cutValue, noteLengthValue);
 
     if (v.hasProperty (assetID))
         state.setProperty (assetID, v[assetID], nullptr);
@@ -172,6 +173,7 @@ SamplerPlugin::Settings SamplerPlugin::readSettings (const Sample& s) const
     k.fadeOut = fadeOutParam->getCurrentValue() * 0.001 * s.rate;
     k.tune = tuneParam->getCurrentValue() + fineParam->getCurrentValue() * 0.01f;
     k.level = levelParam->getCurrentValue();
+    k.stopAtNoteEnd = noteLengthValue.get();
 
     k.envelope = envOnParam->getCurrentValue() >= 0.5f;
     const auto samples = [this] (te::AutomatableParameter* p) { return (float) (p->getCurrentValue() * 0.001 * sampleRate); };
@@ -226,14 +228,25 @@ void SamplerPlugin::releaseNote (int noteNumber, const Settings& k, int releaseV
     const float factor = releaseVelocity <= 0 ? 1.0f
                                               : juce::jlimit (0.25f, 4.0f, std::pow (2.0f, (float) (releaseVelocity - 64) / 32.0f));
 
-    // Only with the envelope on: otherwise the whole sound plays, like before (one-shot).
+    // With the envelope on: its release. With "Stop at note end": a short fade (no click).
+    // Otherwise the whole sound plays, like before (one-shot).
     for (auto& v : voices)
     {
-        if (v.active && v.useEnvelope && ! v.released && v.note == noteNumber)
+        if (! v.active || v.released || v.note != noteNumber)
+            continue;
+
+        if (v.useEnvelope)
         {
             v.released = true;
             v.stage = Stage::release;
             v.releaseStep = juce::jmax (1.0e-4f, v.env) / (k.releaseSamples * factor);
+        }
+        else if (k.stopAtNoteEnd)
+        {
+            v.released = true;
+
+            if (v.fadeStep == 0.0f)
+                v.fadeStep = 1.0f / (float) (0.01 * sampleRate);   // 10 ms
         }
     }
 }

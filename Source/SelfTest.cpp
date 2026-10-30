@@ -3612,7 +3612,7 @@ private:
             },
             8000, 600 });
 
-        steps.push_back ({ "Edit sound: measured (trim, reverse, fades, tune, envelope and release at the note's end, one-shot without it, cut itself, filters)",
+        steps.push_back ({ "Edit sound: measured (trim, reverse, fades, tune, envelope and release at the note's end, one-shot without it, stop at note end, cut itself, filters)",
             [] {},
             [this]
             {
@@ -3656,6 +3656,7 @@ private:
                         p->setParameter (p->getDefaultValue().value_or (0.0f), juce::sendNotificationSync);
 
                     s->cutValue = false;
+                    s->noteLengthValue = false;
                 };
 
                 // Plays notes (sample position, on / off) and returns the left output.
@@ -3734,6 +3735,12 @@ private:
                 defaults();
                 o = render (16384, shortNote);
                 check ("envelope off: a 100 ms note still plays the whole sound (one-shot)", o[8820], ramp (8820) - 1e-4, ramp (8820) + 1e-4);
+
+                defaults(); s->noteLengthValue = true;
+                o = render (16384, shortNote);
+                check ("stop at note end: full volume while the note lasts", o[4000] / ramp (4000), 0.999, 1.001);
+                check ("stop at note end: half volume 5 ms after the note ends (10 ms fade)", o[4410 + 220] / ramp (4410 + 220), 0.47, 0.53);
+                check ("stop at note end: silent from 10 ms after it", std::abs (o[4410 + 450]) + std::abs (o[8820]), 0.0, 1e-9);
 
                 defaults(); s->envOnParam->setParameter (1.0f, juce::sendNotificationSync); s->releaseParam->setParameter (100.0f, juce::sendNotificationSync);
                 o = render (16384, shortNote);
@@ -5155,6 +5162,140 @@ private:
                 fourth.newProject();
             },
             [this] { return backupCheck; } });
+
+        //==============================================================================
+        // 1.10: importing a beat from FL Studio
+        steps.push_back ({ "1.10 FL beat import: an .flp with a sampler (its sound next to the .flp), an audio clip, a pattern with note properties and a trimmed clip -> the same beat here",
+            {},
+            [this]
+            {
+                // The project's folder: the .flp, and its sounds in Samples\ and Audio\ (FL saved other paths).
+                auto folder = testRoot.getChildFile ("fl-beat");
+                folder.deleteRecursively();
+                folder.getChildFile ("Samples").createDirectory();
+                folder.getChildFile ("Audio").createDirectory();
+                writeTestWav (folder.getChildFile ("Samples").getChildFile ("Sad 808.wav"), 1.0, 55.0, false);
+                writeTestWav (folder.getChildFile ("Audio").getChildFile ("vox.wav"), 3.0, 330.0, false);
+
+                FlpWriter w;
+                auto version = FlpWriter::text8 ("26.1.5.0");
+                version.append ("\0", 1);
+                w.dataEvent (199, version);
+                w.dwordEvent (156, 120000);
+
+                // A pattern's notes come first (as FL writes them): two 808 notes.
+                auto note = [] (juce::MemoryOutputStream& o, int pos, int channel, int length, int key, int fine, int pan, int velocity)
+                {
+                    o.writeInt (pos);  o.writeShort (0x4000);  o.writeShort ((short) channel);  o.writeInt (length);
+                    o.writeShort ((short) key);  o.writeShort (0);
+                    o.writeByte ((char) fine);  o.writeByte (0);  o.writeByte (64);  o.writeByte (0);
+                    o.writeByte ((char) pan);  o.writeByte ((char) velocity);  o.writeByte ((char) 128);  o.writeByte ((char) 128);
+                };
+                juce::MemoryOutputStream notes;
+                note (notes, 0, 0, 48, 62, 120, 64, 100);      // beat 0, half a beat, D5
+                note (notes, 96, 0, 96, 65, 240, 0, 90);       // beat 1, one beat, F5, +100 cents, hard left
+                w.wordEvent (65, 1);
+                w.dataEvent (224, notes.getMemoryBlock());
+
+                // Channel 0: a sampler with FL's volume envelope on, through insert 1.
+                juce::MemoryBlock levels (24, true), envelope (68, true), envelopeOn (68, true);
+                const int pan = 6400, vol = 10000, on = -1;
+                levels.copyFrom (&pan, 0, 4);  levels.copyFrom (&vol, 4, 4);
+                envelopeOn.copyFrom (&on, 4, 4);
+
+                w.wordEvent (64, 0);
+                w.byteEvent (21, 0);
+                w.textEvent (201, "");
+                w.textEvent (203, "Sad 808");
+                w.textEvent (196, "%FLStudioFactoryData%\\Projects\\my beat\\Samples\\Sad 808.wav");
+                w.wordEvent (104, 1);
+                w.dataEvent (219, levels);
+                w.dataEvent (218, envelope);
+                w.dataEvent (218, envelopeOn);
+                w.wordEvent (65, 1);
+                w.textEvent (193, "808 line");
+
+                // Channel 1: an audio clip channel to the master.
+                w.wordEvent (64, 1);
+                w.byteEvent (21, 4);
+                w.textEvent (201, "");
+                w.textEvent (203, "Vox");
+                w.textEvent (196, "%FLStudioFactoryData%\\Projects\\my beat\\Audio\\vox.wav");
+                w.wordEvent (104, 0);
+                w.dataEvent (219, levels);
+
+                // The playlist: the pattern on track 3 at beat 4, trimmed to start 1 beat in and
+                // last 6 beats; the audio on track 4 at beat 2, starting 0.5 s into the file, 2 beats long.
+                auto item = [] (juce::MemoryOutputStream& o, int pos, int what, int length, int track, const void* trim)
+                {
+                    o.writeInt (pos);  o.writeShort (20480);  o.writeShort ((short) what);  o.writeInt (length);
+                    o.writeShort ((short) (499 - track));  o.writeShort (0);
+                    for (int i = 0; i < 8; ++i) o.writeByte (0);
+                    o.write (trim, 8);
+                    for (int i = 32; i < 88; ++i) o.writeByte (0);
+                };
+                juce::MemoryOutputStream items;
+                const int patternTrim[] = { 96, 672 };
+                const float audioTrim[] = { 500.0f, 1500.0f };
+                item (items, 384, 20480 + 1, 576, 2, patternTrim);
+                item (items, 192, 1, 192, 3, audioTrim);
+                w.wordEvent (99, 0);
+                w.dataEvent (233, items.getMemoryBlock());
+
+                // A mixer: the master and insert 1 (where the 808 plays).
+                auto header = [&w] (const juce::String& name) { if (name.isNotEmpty()) w.textEvent (204, name); w.dataEvent (236, juce::MemoryBlock (12, true)); };
+                auto routing = [&w] (std::initializer_list<int> to) { juce::MemoryBlock r (4, true); for (auto t : to) r[(size_t) t] = 1; w.dataEvent (235, r); };
+                header ({});   routing ({});
+                header ({});   routing ({ 0 });
+
+                const auto flp = folder.getChildFile ("my beat.flp");
+                const auto bytes = w.finish();
+                flp.replaceWithData (bytes.getData(), bytes.getSize());
+
+                flimport::Project project;
+                const auto error = flimport::parse (flp, project);
+                project.findSamples (flp);
+
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                for (auto* t : te::getAudioTracks (*edit))
+                    edit->deleteTrack (t);
+
+                flimport::Options options;
+                options.inserts = project.getUsedInserts();
+                options.assets = &fourth.getAssetStore();
+                const auto report = flimport::apply (*edit, project, options);
+
+                auto* bass = ch (*edit, "Sad 808");
+                auto* vox = ch (*edit, "Vox");
+                auto* sampler = bass != nullptr ? dynamic_cast<SamplerPlugin*> (song::getInstrument (*bass)) : nullptr;
+                auto pattern = pat (*edit, "808 line");
+                auto* insert1 = song::findInsertNamed (*edit, "Insert 1");
+                const auto bassNotes = bass != nullptr && pattern.isValid() ? song::getNotes (pattern, song::getChannelID (*bass)) : juce::Array<juce::ValueTree>();
+
+                juce::ValueTree patternClip, audioClip;
+                for (auto& c : song::getClips (*edit))
+                    (song::isAudioClip (c) ? audioClip : patternClip) = c;
+
+                auto near = [] (double a, double b) { return std::abs (a - b) < 1.0e-6; };
+                const bool channels = bass != nullptr && vox != nullptr && sampler != nullptr && sampler->getAsset().isNotEmpty()
+                                      && sampler->noteLengthValue.get() && insert1 != nullptr && song::getRoute (*bass) == insert1->itemID.toString();
+                const bool notesOk = bassNotes.size() == 2 && near (bassNotes[0][song::ids::b], 0.0) && near (bassNotes[0][song::ids::l], 0.5)
+                                     && (int) bassNotes[0][song::ids::p] == 62 && near (bassNotes[1][song::ids::b], 1.0)
+                                     && (int) bassNotes[1][song::ids::p] == 65 && (int) bassNotes[1][song::ids::v] == 90
+                                     && song::getNoteProperty (bassNotes[1], song::NoteProperty::pan) == -100
+                                     && song::getNoteProperty (bassNotes[1], song::NoteProperty::fine) == 100;
+                const bool clipsOk = patternClip.isValid() && (int) patternClip[song::ids::lane] == 2 && near (patternClip[song::ids::start], 4.0)
+                                     && near (song::getClipLength (*edit, patternClip), 6.0) && near (song::getPatternOffset (patternClip), 1.0)
+                                     && audioClip.isValid() && (int) audioClip[song::ids::lane] == 3 && near (audioClip[song::ids::start], 2.0)
+                                     && near (audioClip[song::ids::offset], 0.5) && near (audioClip[song::ids::duration], 1.0)   // 2 beats at 120 BPM
+                                     && audioClip[song::ids::ch].toString() == song::getChannelID (*vox);
+
+                std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << ", sounds found " << project.countSamples (true) << "/" << project.countSamples (false)
+                          << ", channels " << (channels ? "right" : "WRONG") << ", notes " << (notesOk ? "right" : "WRONG")
+                          << ", clips " << (clipsOk ? "right" : "WRONG") << "\n    " << report.toText().upToFirstOccurrenceOf ("\n\n", false, false).replace ("\n", " | ") << std::endl;
+                return error.isEmpty() && project.countSamples (true) == 2 && channels && notesOk && clipsOk;
+            },
+            10000 });
 
         //==============================================================================
         // 1.9: the playlist opens a pattern on the instrument last edited in it

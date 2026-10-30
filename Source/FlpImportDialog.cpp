@@ -68,10 +68,10 @@ struct FlpImportDialog::Row  : public juce::Component
 };
 
 //==============================================================================
-FlpImportDialog::FlpImportDialog (const flimport::Project& p, const juce::String& fileName,
-                                  std::function<void (const flimport::Options&)> done)
-    : project (p), onImport (std::move (done))
+FlpImportDialog::FlpImportDialog (const flimport::Project& p, const juce::File& file, Callback done)
+    : project (p), flpFile (file), onImport (std::move (done))
 {
+    const auto fileName = file.getFileName();
     auto& master = project.inserts.getReference (0);
     const auto used = project.getUsedInserts();
     int namedTracks = 0;
@@ -115,6 +115,40 @@ FlpImportDialog::FlpImportDialog (const flimport::Project& p, const juce::String
     for (auto& fx : master.effects)
         offEffects += fx.enabled ? 0 : 1;
 
+    // The beat: channels, patterns, the playlist, and its sounds.
+    size_t noteCount = 0;
+    for (auto& pat : project.patterns)
+        noteCount += pat.notes.size();
+
+    beatToggle.setButtonText (TRANS ("The beat: {C} channels, {P} patterns ({N} notes), {I} clips on the playlist")
+                                .replace ("{C}", juce::String ((int) project.channels.size())).replace ("{P}", juce::String ((int) project.patterns.size()))
+                                .replace ("{N}", juce::String ((int) noteCount)).replace ("{I}", juce::String ((int) project.items.size())));
+    beatToggle.setToggleState (project.hasBeat(), juce::dontSendNotification);
+    beatToggle.setEnabled (project.hasBeat());
+    beatToggle.onClick = [this] { updateSounds(); };
+    addAndMakeVisible (beatToggle);
+
+    soundsLabel.setFont (theme::ui (12.0f));
+    soundsLabel.setMinimumHorizontalScale (0.7f);
+    addAndMakeVisible (soundsLabel);
+    findSoundsButton.setButtonText (TRANS ("Find missing sounds..."));
+    findSoundsButton.setTooltip (TRANS ("Choose a folder with the beat's sounds (e.g. the project's Samples folder, or your sample packs): they're looked for in it and in its folders"));
+    findSoundsButton.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> (TRANS ("Where are the beat's sounds?"), flpFile.getParentDirectory());
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                              [safe = juce::Component::SafePointer<FlpImportDialog> (this)] (const juce::FileChooser& fc)
+        {
+            if (safe != nullptr && fc.getResult().isDirectory())
+            {
+                safe->project.findSamples (safe->flpFile, { fc.getResult() });
+                safe->updateSounds();
+            }
+        });
+    };
+    addAndMakeVisible (findSoundsButton);
+    updateSounds();
+
     skipOff.setButtonText (TRANS ("Leave out effects that are off in FL ({N}): less CPU and memory").replace ("{N}", juce::String (offEffects)));
     skipOff.setToggleState (offEffects > 0, juce::dontSendNotification);
     skipOff.setEnabled (offEffects > 0);
@@ -140,11 +174,13 @@ FlpImportDialog::FlpImportDialog (const flimport::Project& p, const juce::String
 
         o.namesOnPlaylist = laneNames.getToggleState();
         o.skipOffEffects = skipOff.getToggleState();
+        o.beat = beatToggle.getToggleState();
         auto callback = onImport;
+        auto chosen = project;
         close();
 
         if (callback)
-            callback (o);
+            callback (chosen, o);
     };
 
     cancelButton.onClick = [this] { close(); };
@@ -153,17 +189,37 @@ FlpImportDialog::FlpImportDialog (const flimport::Project& p, const juce::String
         addAndMakeVisible (b);
 
     updateImportButton();
-    setSize (640, 560);
+    setSize (660, project.hasBeat() ? 640 : 560);
+}
+
+void FlpImportDialog::updateSounds()
+{
+    const int needed = project.countSamples (false), found = project.countSamples (true);
+    const bool show = project.hasBeat() && needed > 0;
+    soundsLabel.setVisible (show);
+    findSoundsButton.setVisible (show && found < needed);
+    findSoundsButton.setEnabled (beatToggle.getToggleState());
+
+    juce::StringArray missing;
+
+    for (auto& c : project.channels)
+        if (c.needsSample() && ! c.sampleFile.existsAsFile())
+            missing.add (c.samplePath.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false));
+
+    soundsLabel.setText (found == needed ? TRANS ("Sounds: all {N} found").replace ("{N}", juce::String (needed))
+                                         : TRANS ("Sounds: {F} of {N} found (the rest come in silent)").replace ("{F}", juce::String (found)).replace ("{N}", juce::String (needed)),
+                         juce::dontSendNotification);
+    soundsLabel.setColour (juce::Label::textColourId, found == needed ? col::green : col::amber);
+    soundsLabel.setTooltip (missing.isEmpty() ? juce::String() : TRANS ("Not found:") + "\n" + missing.joinIntoString ("\n"));
 }
 
 FlpImportDialog::~FlpImportDialog() = default;
 
-void FlpImportDialog::show (const flimport::Project& p, const juce::String& fileName,
-                            std::function<void (const flimport::Options&)> onImport)
+void FlpImportDialog::show (const flimport::Project& p, const juce::File& flpFile, Callback onImport)
 {
     juce::DialogWindow::LaunchOptions o;
-    o.content.setOwned (new FlpImportDialog (p, fileName, std::move (onImport)));
-    o.dialogTitle = TRANS ("Import an FL Studio template");
+    o.content.setOwned (new FlpImportDialog (p, flpFile, std::move (onImport)));
+    o.dialogTitle = TRANS ("Import an FL Studio project");
     o.dialogBackgroundColour = col::panel;
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar = true;
@@ -235,6 +291,15 @@ void FlpImportDialog::resized()
     r.removeFromBottom (8);
     skipOff.setBounds (r.removeFromBottom (26));
     laneNames.setBounds (r.removeFromBottom (26));
+
+    if (project.hasBeat())
+    {
+        auto sounds = r.removeFromBottom (28);
+        findSoundsButton.setBounds (sounds.removeFromRight (180).reduced (0, 2));
+        soundsLabel.setBounds (sounds.withTrimmedLeft (22));
+        beatToggle.setBounds (r.removeFromBottom (26));
+    }
+
     r.removeFromBottom (6);
 
     viewport.setBounds (r);

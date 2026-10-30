@@ -173,6 +173,7 @@ namespace song
     juce::ValueTree getModel (te::Edit&);                       // created if missing
     juce::Array<juce::ValueTree> getPatterns (te::Edit&);
     juce::ValueTree findPattern (te::Edit&, const juce::String& sid);
+    constexpr int maxBars = 32;   // a pattern's longest length (FL patterns from an import can be long)
     juce::ValueTree addPattern (te::Edit&, const juce::String& name, int bars);
     void removePattern (te::Edit&, const juce::ValueTree& pattern);
     /** A copy of a pattern with all its notes ("<name> copy"). */
@@ -193,6 +194,8 @@ namespace song
     enum class InstrumentKind { kick, clap, hat, snare, synth };
     te::AudioTrack* addChannel (te::Edit&, InstrumentKind);
     te::AudioTrack* addChannel (te::Edit&, const juce::PluginDescription& instrument);
+    /** A channel playing an instrument plugin made beforehand (e.g. with saved settings). */
+    te::AudioTrack* addChannel (te::Edit&, te::Plugin::Ptr instrument, const juce::String& name);
     void removeChannel (te::Edit&, te::AudioTrack&);
 
     /** The channel's instrument: its first plugin. */
@@ -487,6 +490,8 @@ namespace song
     juce::String getSamplerAsset (te::AudioTrack&);
     /** A new channel named after the file, playing it. */
     te::AudioTrack* addSamplerChannel (te::Edit&, const AssetStore::ImportResult&, const juce::String& fileName);
+    /** A sampler channel with no sound yet (drop one on it later). */
+    te::AudioTrack* addEmptySamplerChannel (te::Edit&, const juce::String& name);
     /** Gives a sampler channel a new sound (a file dropped on its row). False if it isn't one. */
     bool setSamplerSample (te::Edit&, te::AudioTrack&, const AssetStore::ImportResult&, const juce::String& fileName);
     /** Names of the sampler channels playing this file. */

@@ -189,7 +189,8 @@ public:
 
                         if (flimport::parse (flp, project).isEmpty())
                         {
-                            FlpImportDialog dialog (project, flp.getFileName(), {});
+                            project.findSamples (flp);
+                            FlpImportDialog dialog (project, flp, {});
                             const juce::File png (b.fromFirstOccurrenceOf ("=", false, false).unquoted());
                             png.deleteFile();
                             juce::FileOutputStream out (png);

@@ -3,20 +3,21 @@
 #include "FlpImport.h"
 
 /**
-    File > Templates > Import an FL Studio template: shows what the .flp holds (the
-    mixer inserts in use, with their effects and where they go) and lets you untick
-    the ones you don't need before the song is built.
+    File > Import an FL Studio project: shows what the .flp holds (the mixer inserts in
+    use, with their effects and where they go; a beat's channels, patterns and playlist,
+    and which of its sounds were found) and lets you untick what you don't need before
+    the song is built. "Find missing sounds..." looks for the beat's sounds in a folder.
 */
 class FlpImportDialog  : public juce::Component
 {
 public:
-    FlpImportDialog (const flimport::Project&, const juce::String& fileName,
-                     std::function<void (const flimport::Options&)> onImport);
+    using Callback = std::function<void (const flimport::Project&, const flimport::Options&)>;
+
+    FlpImportDialog (const flimport::Project&, const juce::File& flpFile, Callback onImport);
     ~FlpImportDialog() override;
 
     /** Opens the dialog in its own window. */
-    static void show (const flimport::Project&, const juce::String& fileName,
-                      std::function<void (const flimport::Options&)> onImport);
+    static void show (const flimport::Project&, const juce::File& flpFile, Callback onImport);
 
     /** A window with a long text (the import report). */
     static void showText (const juce::String& title, const juce::String& text);
@@ -26,18 +27,22 @@ public:
 
 private:
     struct Row;
-    const flimport::Project project;
-    std::function<void (const flimport::Options&)> onImport;
+    flimport::Project project;
+    const juce::File flpFile;
+    Callback onImport;
 
     juce::Label intro;
     juce::OwnedArray<Row> rows;
     juce::Component list;
     juce::Viewport viewport;
-    juce::ToggleButton laneNames, skipOff;
-    juce::TextButton allButton, noneButton, importButton, cancelButton;
+    juce::ToggleButton laneNames, skipOff, beatToggle;
+    juce::Label soundsLabel;
+    juce::TextButton allButton, noneButton, importButton, cancelButton, findSoundsButton;
+    std::unique_ptr<juce::FileChooser> chooser;
 
     void close();
     void updateImportButton();
+    void updateSounds();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FlpImportDialog)
 };

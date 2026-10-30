@@ -342,7 +342,7 @@ double getSongLengthBeats (te::Edit& edit)
     return juce::jmax (bar, std::ceil (end / bar - 1.0e-9) * bar);
 }
 
-int getBars (const juce::ValueTree& pattern)               { return juce::jlimit (1, 8, (int) pattern.getProperty (ids::bars, 1)); }
+int getBars (const juce::ValueTree& pattern)               { return juce::jlimit (1, maxBars, (int) pattern.getProperty (ids::bars, 1)); }
 int getNumSteps (const juce::ValueTree& pattern)           { return getBars (pattern) * getStepsPerBar (pattern); }
 double getLengthBeats (const juce::ValueTree& pattern)     { return getBars (pattern) * getBeatsPerBar (pattern); }
 
@@ -490,7 +490,7 @@ void removeTempoChange (te::Edit& edit, int index)
 
 void setBars (te::Edit& edit, juce::ValueTree pattern, int bars)
 {
-    pattern.setProperty (ids::bars, juce::jlimit (1, 8, bars), um (edit));
+    pattern.setProperty (ids::bars, juce::jlimit (1, maxBars, bars), um (edit));
 }
 
 //==============================================================================
@@ -573,6 +573,16 @@ te::AudioTrack* addChannel (te::Edit& edit, const juce::PluginDescription& instr
     if (track != nullptr)
         if (auto p = edit.getPluginCache().createNewPlugin (te::ExternalPlugin::xmlTypeName, instrument))
             track->pluginList.insertPlugin (p, 0, nullptr);
+
+    return track;
+}
+
+te::AudioTrack* addChannel (te::Edit& edit, te::Plugin::Ptr instrument, const juce::String& name)
+{
+    auto* track = addEmptyChannel (edit, name);
+
+    if (track != nullptr && instrument != nullptr)
+        track->pluginList.insertPlugin (instrument, 0, nullptr);
 
     return track;
 }
@@ -797,7 +807,7 @@ int setChannelNotes (te::Edit& edit, juce::ValueTree pattern, const juce::String
         ++added;
     }
 
-    const int bars = juce::jlimit (1, 8, (int) std::ceil (end / bar - 1.0e-9));
+    const int bars = juce::jlimit (1, maxBars, (int) std::ceil (end / bar - 1.0e-9));
 
     if (bars > getBars (pattern))
         setBars (edit, pattern, bars);
@@ -2043,6 +2053,17 @@ te::AudioTrack* addSamplerChannel (te::Edit& edit, const AssetStore::ImportResul
             track->pluginList.insertPlugin (p, 0, nullptr);
         }
     }
+
+    return track;
+}
+
+te::AudioTrack* addEmptySamplerChannel (te::Edit& edit, const juce::String& name)
+{
+    auto* track = addEmptyChannel (edit, name);
+
+    if (track != nullptr)
+        if (auto p = edit.getPluginCache().createNewPlugin (SamplerPlugin::xmlTypeName, {}))
+            track->pluginList.insertPlugin (p, 0, nullptr);
 
     return track;
 }

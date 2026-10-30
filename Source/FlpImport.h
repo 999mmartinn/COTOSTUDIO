@@ -1,14 +1,16 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "AssetStore.h"
 
 namespace te = tracktion;
 
 /**
-    Imports an FL Studio project (.flp), typically a recording template, into a
-    COTOSTUDIO song: mixer inserts with their names, faders, routing, sends and
-    effect chains (third-party VST3 effects with their saved settings), the tempo
-    and the names of the playlist tracks.
+    Imports an FL Studio project (.flp) into a COTOSTUDIO song: a recording template's
+    mixer inserts with their names, faders, routing, sends and effect chains (third-party
+    VST3 effects with their saved settings), the tempo and the names of the playlist
+    tracks - and a beat: its channels (sampler sounds, VST3 instruments with their
+    settings), patterns with their notes, and the playlist (pattern and audio clips).
 
     The .flp is read as data only, from what the file itself contains (no FL code).
     Layout, as written by FL Studio 20-26:
@@ -27,10 +29,25 @@ namespace te = tracktion;
       kind 0x1f: insert values - what 0: slot <sub> on/off, 1: slot mix,
                  0xc0 volume (12800 = 0 dB, 16000 = max), 0xc1 pan (+-6400)
       kind 0x20: route level from <insert> to insert <what> (12800 = 0 dB).
+    The beat (1.10):
+      channels: 64 = channel index (a new channel), 21 type (0 sampler, 2 plugin,
+        3 layer, 4 audio clip, 5 automation), 201 plugin kind ("Fruity Wrapper" = VST),
+        203 name, 196 sound file, 213 plugin data, 104 mixer insert, 219 levels
+        (i32 pan 0..12800, i32 volume, 10000 = FL's default), 218 envelopes (5 records:
+        panning, volume, mod X, mod Y, pitch; u32 #1 = -1 when on).
+      patterns: 65 = pattern number, then 224 notes (24-byte records: u32 position,
+        u16 flags, u16 channel, u32 length, u16 key (60 = C5), u16 group, u8 fine
+        (120 = 0), u8, u8 release (64), u8, u8 pan (64 = centre), u8 velocity, u8 x2),
+        193 name. Times in ticks: the header's PPQ per beat.
+      playlist: 233 = items (88 bytes in FL 21+, 60 or 32 before): u32 position, u16 20480,
+        u16 item (>= 20480: pattern item - 20480, else a channel: audio / automation),
+        u32 length, u16 499 - track, u16 group, 8 bytes, then the trim: patterns i32 start
+        / end ticks into the pattern (-1 = none), audio f32 start / end in ms of the file.
     A VST wrapper's data (213) is u32 version + records <u32 id><u64 size><bytes>:
-      50 kind (7 = VST3, 0 = VST2), 51 VST2 ID, 52 VST3 class ID (16 bytes),
+      50 kind (7 = VST3 effect, 8 = VST3 instrument, 0 / 4 = VST2), 51 VST2 ID, 52 VST3 class ID (16 bytes),
       54 name, 55 file, 56 vendor, 53 state = 80-byte header + records
-      (3 = VST3 component state, 2 = controller state, 4 = FL's parameter list).
+      (3 = VST3 component state, 2 = controller state, 4 = FL's parameter list); for a VST2:
+      i32 -9, i32, u8, u32 chunk size, 8 bytes, then the plugin's own chunk.
 */
 namespace flimport
 {
@@ -44,7 +61,8 @@ namespace flimport
         bool isVST = false, isVST3 = false;
         bool missingInFL = false;      // FL couldn't load it either: only its name was saved
         juce::MemoryBlock vst3ClassID;                     // 16 bytes, VST3 only
-        juce::MemoryBlock componentState, controllerState; // VST3 only
+        juce::MemoryBlock componentState, controllerState; // VST3; or (stateFromVST2) a VST2's chunk
+        bool stateFromVST2 = false;    // FL used the VST2: its chunk is offered to the VST3 here
         bool enabled = true;
         double mix = 1.0;              // wet amount 0..1 (FL's per-slot mix knob)
 
@@ -73,6 +91,51 @@ namespace flimport
         juce::String displayName() const;
     };
 
+    /** A channel of FL's channel rack. */
+    struct Channel
+    {
+        enum Type { sampler = 0, generator = 2, layer = 3, audioClip = 4, automation = 5 };   // generator: an instrument plugin
+
+        int index = 0;                 // FL's channel number (notes and playlist items refer to it)
+        int type = sampler;
+        juce::String name, kind;       // kind: "Fruity Wrapper" (a VST), "" (sampler), or FL's own ("3x Osc", "FLEX")
+        juce::String samplePath;       // as FL saved it ("%FLStudioFactoryData%\\Projects\\...\\808.wav")
+        juce::File sampleFile;         // found on this PC (see findSamples)
+        Effect plugin;                 // a VST instrument (kind "Fruity Wrapper")
+        int insert = -1;               // FL mixer insert it plays through (0 = master), -1 = not said
+        double volume = 1.0;           // FL's volume (1 = its default 78%)
+        double pan = 0.0;              // -1..1
+        bool volumeEnvelope = false;   // FL's volume envelope on: the sound ends with its note
+
+        bool needsSample() const noexcept       { return (type == sampler || type == audioClip) && samplePath.isNotEmpty(); }
+    };
+
+    struct Note
+    {
+        int channel = 0;
+        double beat = 0.0, length = 0.0;
+        int key = 60, velocity = 100;           // key: 60 = C5 (the same here)
+        int pan = 0, fine = 0, release = 64;    // -100..100, cents, 0..127
+    };
+
+    struct Pattern
+    {
+        int number = 0;                // FL's pattern number (1-based)
+        juce::String name;
+        std::vector<Note> notes;
+    };
+
+    /** An item on the playlist (of the arrangement FL had open). */
+    struct Item
+    {
+        int track = 0;                 // 0-based playlist track
+        double start = 0.0, length = 0.0;   // beats
+        int pattern = 0;               // FL pattern number, 0 = a channel item
+        int channel = -1;              // FL channel (audio or automation clip)
+        double patternOffset = 0.0;    // beats into the pattern it starts at
+        double audioOffset = 0.0;      // seconds into the audio file it starts at
+    };
+
     struct Project
     {
         juce::String flVersion;
@@ -81,6 +144,22 @@ namespace flimport
         juce::Array<Insert> inserts;   // index = FL insert number (0 = master)
         juce::StringArray trackNames;  // playlist track names, index = track - 1 ("" = unnamed)
         juce::Array<juce::Colour> trackColours;   // same index; transparent = FL's default grey
+
+        // The beat
+        int ppq = 96;                  // ticks per beat
+        std::vector<Channel> channels;
+        std::vector<Pattern> patterns;
+        std::vector<Item> items;
+
+        bool hasBeat() const noexcept  { return ! patterns.empty() || ! items.empty(); }
+        const Channel* findChannel (int index) const;
+        /** Mixer inserts FL's channels play through (part of the beat's setup). */
+        juce::Array<int> getChannelInserts() const;
+        /** The sound files the beat needs, or (foundOnly) how many of them were found. */
+        int countSamples (bool foundOnly) const;
+        /** Looks for the beat's sound files: where FL saved them (with FL's folders worked
+            out), then by name next to the .flp and in these folders (and theirs). */
+        void findSamples (const juce::File& flpFile, const juce::Array<juce::File>& moreFolders = {});
 
         /** True if the insert has a name, effects, or routing other than straight to the master. */
         bool isUsed (int insertNumber) const;
@@ -103,6 +182,8 @@ namespace flimport
         bool namesOnPlaylist = true;   // the playlist track names
         bool tempo = true;
         bool skipOffEffects = false;   // leave out effects that were switched off in FL (less CPU and memory)
+        bool beat = true;              // channels, patterns and the playlist (if the .flp has them)
+        AssetStore* assets = nullptr;  // where the beat's sounds go (needed for them)
     };
 
     struct Report
@@ -113,6 +194,9 @@ namespace flimport
         juce::StringArray defaultSettings;  // loaded, but without FL's settings
         juce::StringArray leftOutOff;       // off in FL, left out (Options::skipOffEffects)
         juce::StringArray notes;            // anything else worth knowing
+        int channelsMade = 0, patternsMade = 0, clipsMade = 0, notesMade = 0;
+        juce::StringArray missingSounds;        // "808.wav (Sad ass 808)"
+        juce::StringArray instrumentsMissing;   // VSTs not installed, FL's own instruments
 
         juce::String toText() const;
     };

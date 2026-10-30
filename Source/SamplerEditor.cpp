@@ -53,9 +53,18 @@ SamplerEditor::SamplerEditor (SamplerPlugin& p) : plugin (p)
         plugin.cutValue = ! plugin.cutValue.get();
         refreshCutButton();
     };
+    noteLengthButton.setButtonText (TRANS ("Note length"));
+    noteLengthButton.setTooltip (TRANS ("Stop at note end: the sound plays only as long as its note (shorten the note, shorten the 808). "
+                                        "Off: the whole sound plays however short the note is. Also in the channel's right-click menu"));
+    noteLengthButton.onClick = [this]
+    {
+        plugin.edit.getUndoManager().beginNewTransaction();
+        plugin.noteLengthValue = ! plugin.noteLengthValue.get();
+        refreshCutButton();
+    };
     refreshCutButton();
 
-    for (auto* c : std::initializer_list<juce::Component*> { reverseToggle.get(), envelopeToggle.get(), filterChoice.get(), &cutButton })
+    for (auto* c : std::initializer_list<juce::Component*> { reverseToggle.get(), envelopeToggle.get(), filterChoice.get(), &cutButton, &noteLengthButton })
         addAndMakeVisible (c);
 
     const int width = 2 * 12 + (pad + graphW + 8 + 5 * knobW + pad) + gap + filterW;
@@ -77,6 +86,9 @@ void SamplerEditor::refreshCutButton()
     cutShown = plugin.cutValue.get();
     cutButton.setColour (juce::TextButton::buttonColourId, cutShown ? amber : well);
     cutButton.setColour (juce::TextButton::textColourOffId, cutShown ? accentText : muted);
+    noteLengthShown = plugin.noteLengthValue.get();
+    noteLengthButton.setColour (juce::TextButton::buttonColourId, noteLengthShown ? amber : well);
+    noteLengthButton.setColour (juce::TextButton::textColourOffId, noteLengthShown ? accentText : muted);
 }
 
 void SamplerEditor::resized()
@@ -107,11 +119,13 @@ void SamplerEditor::resized()
         for (auto i : which) knobs[i]->setBounds (k.removeFromLeft (w));
     };
 
-    // Sample: Reverse and Cut itself on the button row.
+    // Sample: Reverse, Cut itself and Note length on the button row.
     auto buttons = sampleArea.withTrimmedTop (titleH).reduced (pad, 0).withHeight (choiceH - 2);
     reverseToggle->setBounds (buttons.removeFromLeft (100));
     buttons.removeFromLeft (8);
     cutButton.setBounds (buttons.removeFromLeft (110));
+    buttons.removeFromLeft (8);
+    noteLengthButton.setBounds (buttons.removeFromLeft (110));
     place (knobRow (sampleArea), { 0, 1, 2, 3 });
     place (knobRow (pitchArea), { 4, 5, 6 });
 
@@ -438,10 +452,11 @@ void SamplerEditor::timerCallback()
         repaint (envelopeGraph);
     }
 
-    if (plugin.cutValue.get() != cutShown)
+    if (plugin.cutValue.get() != cutShown || plugin.noteLengthValue.get() != noteLengthShown)
     {
         refreshCutButton();
         cutButton.repaint();
+        noteLengthButton.repaint();
     }
 
     // The play lines (only repaint while something plays or just stopped).

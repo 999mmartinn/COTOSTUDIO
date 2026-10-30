@@ -854,6 +854,7 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
         const bool here = state.session.getAssetStore().has (hash);
         m.addItem (-2, TRANS ("Sound:") + " " + song::getAssetName (*edit, hash) + (here ? juce::String() : "  (" + TRANS ("still arriving...") + ")"), false);
         m.addItem (4, TRANS ("Cut itself (a new hit stops the last one, for 808s)"), true, sampler->cutValue.get());
+        m.addItem (7, TRANS ("Stop at note end (the sound lasts only as long as its note)"), true, sampler->noteLengthValue.get());
         m.addItem (5, TRANS ("Replace the sound...  (or drop one on this channel)"));
     }
 
@@ -934,6 +935,14 @@ void ChannelRack::showChannelMenu (const juce::String& channelID)
             {
                 state.beginAction();
                 sampler->cutValue = ! sampler->cutValue.get();
+            }
+        }
+        else if (result == 7)
+        {
+            if (auto* sampler = dynamic_cast<SamplerPlugin*> (song::getInstrument (*t)))
+            {
+                state.beginAction();
+                sampler->noteLengthValue = ! sampler->noteLengthValue.get();
             }
         }
         else if (result == 5)

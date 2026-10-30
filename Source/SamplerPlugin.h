@@ -8,7 +8,9 @@
     a one-shot, a loop - each time a note starts.
       - The whole sound plays, however short the step is (a one-shot), unless the
         envelope is on: then it follows attack / hold / decay / sustain and fades out
-        (release) when the note ends, like FL's channel envelope.
+        (release) when the note ends, like FL's channel envelope. "Stop at note end"
+        (no envelope needed) cuts it when the note ends, with a 10 ms fade: an 808
+        plays only as long as its note.
       - A note's distance from C5 (60) shifts it in semitones, like speeding a
         record up (higher = shorter), plus the Tune and Fine knobs.
       - Start / End trim the sound, Fade in / out soften its ends, Reverse plays it
@@ -33,7 +35,7 @@ public:
 
     static const char* getPluginName()                  { return NEEDS_TRANS ("Sampler"); }
     static const char* xmlTypeName;
-    static const juce::Identifier assetID, cutID;
+    static const juce::Identifier assetID, cutID, noteLengthID;
 
     juce::String getName() const override               { return "Sampler"; }
     juce::String getPluginType() override               { return xmlTypeName; }
@@ -79,7 +81,7 @@ public:
     /** Where each voice is playing, 0..1 across the (possibly reversed) sound; -1 = idle. */
     float getVoicePosition (int i) const                { return voicePositions[(size_t) i].load(); }
 
-    juce::CachedValue<bool> cutValue;
+    juce::CachedValue<bool> cutValue, noteLengthValue;   // Cut itself; Stop at note end
     te::AutomatableParameter *tuneParam, *fineParam, *levelParam;
     te::AutomatableParameter *startParam, *endParam, *fadeInParam, *fadeOutParam, *reverseParam;
     te::AutomatableParameter *envOnParam, *attackParam, *holdParam, *decayParam, *sustainParam, *releaseParam;
@@ -129,7 +131,7 @@ private:
     {
         juce::Range<double> region;
         double fadeIn = 0.0, fadeOut = 0.0;     // in the file's samples
-        bool reverse = false, envelope = false;
+        bool reverse = false, envelope = false, stopAtNoteEnd = false;
         float tune = 0.0f, level = 1.0f, sustain = 1.0f;
         float attackStep = 1.0f, decayStep = 1.0f, releaseSamples = 1.0f;
         int holdSamples = 0, filterType = 0;

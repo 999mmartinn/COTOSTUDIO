@@ -4,6 +4,7 @@
 #include "LimiterPlugin.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
+#include "SamplerPlugin.h"
 #include <cmath>
 #include <map>
 #include <set>
@@ -151,7 +152,8 @@ namespace
             return;   // FL couldn't load this plugin when it saved (only window data)
 
         fx.missingInFL = false;
-        fx.isVST3 = r.count (50) > 0 && r[50].getSize() >= 4 && juce::ByteOrder::littleEndianInt (r[50].getData()) == 7;
+        const auto kind = r.count (50) > 0 && r[50].getSize() >= 4 ? (int) juce::ByteOrder::littleEndianInt (r[50].getData()) : -1;
+        fx.isVST3 = kind == 7 || kind == 8;   // effect / instrument
         fx.pluginName = recordText (r, 54);
         fx.file = recordText (r, 55);
         fx.vendor = recordText (r, 56);
@@ -166,6 +168,19 @@ namespace
 
             if (states.count (3) > 0) fx.componentState = states[3];
             if (states.count (2) > 0) fx.controllerState = states[2];
+        }
+        else if (! fx.isVST3 && r.count (53) > 0 && r[53].getSize() > 21)
+        {
+            // A VST2: FL's small header, then the plugin's own chunk (often the same data its
+            // VST3 version reads).
+            auto* b = (const juce::uint8*) r[53].getData();
+            const auto chunk = (size_t) juce::ByteOrder::littleEndianInt (b + 9);
+
+            if ((int) juce::ByteOrder::littleEndianInt (b) == -9 && chunk > 0 && 21 + chunk <= r[53].getSize())
+            {
+                fx.componentState = juce::MemoryBlock (b + 21, chunk);
+                fx.stateFromVST2 = true;
+            }
         }
     }
 
@@ -222,7 +237,7 @@ bool Project::isUsed (int n) const
 
     auto& ins = inserts.getReference (n);
     const bool plainRouting = ins.routes.isEmpty() || (ins.routes.size() == 1 && ins.routes[0].to == 0);
-    return ins.name.isNotEmpty() || ! ins.effects.isEmpty() || ! plainRouting;
+    return ins.name.isNotEmpty() || ! ins.effects.isEmpty() || ! plainRouting || getChannelInserts().contains (n);
 }
 
 juce::Array<int> Project::getUsedInserts() const
@@ -248,6 +263,144 @@ juce::Array<int> Project::getUsedInserts() const
     for (auto n : used)
         result.add (n);
     return result;
+}
+
+const Channel* Project::findChannel (int index) const
+{
+    for (auto& c : channels)
+        if (c.index == index)
+            return &c;
+
+    return nullptr;
+}
+
+juce::Array<int> Project::getChannelInserts() const
+{
+    juce::Array<int> result;
+
+    for (auto& c : channels)
+        if (c.insert > 0 && c.insert < inserts.size())
+            result.addIfNotAlreadyThere (c.insert);
+
+    result.sort();
+    return result;
+}
+
+int Project::countSamples (bool foundOnly) const
+{
+    int n = 0;
+
+    for (auto& c : channels)
+        if (c.needsSample() && (! foundOnly || c.sampleFile.existsAsFile()))
+            ++n;
+
+    return n;
+}
+
+namespace
+{
+    /** The file name at the end of a path FL saved (with \ or /). */
+    juce::String fileNameOf (const juce::String& flPath)
+    {
+        return flPath.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false);
+    }
+
+    /** Where FL's folder variables ("%FLStudioFactoryData%") can point on this PC. */
+    juce::Array<juce::File> flFolderCandidates (const juce::String& variable)
+    {
+        juce::Array<juce::File> result;
+        const auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+
+        if (variable.equalsIgnoreCase ("FLStudioUserData"))
+        {
+            result.add (docs.getChildFile ("Image-Line").getChildFile ("FL Studio"));
+            result.add (docs.getChildFile ("Image-Line").getChildFile ("Data").getChildFile ("FL Studio"));
+        }
+
+        if (variable.equalsIgnoreCase ("FLStudioFactoryData"))
+        {
+            // <program files>\Image-Line\FL Studio <version>\Data (every version installed)
+            juce::Array<juce::File> programs { juce::File::getSpecialLocation (juce::File::globalApplicationsDirectory) };
+           #if JUCE_WINDOWS
+            programs.addIfNotAlreadyThere (juce::File ("C:\\Program Files"));
+            programs.addIfNotAlreadyThere (juce::File ("C:\\Program Files (x86)"));
+           #endif
+
+            for (auto& folder : programs)
+                for (auto& fl : folder.getChildFile ("Image-Line").findChildFiles (juce::File::findDirectories, false, "FL Studio*"))
+                    result.addIfNotAlreadyThere (fl.getChildFile ("Data"));
+
+            result.add (docs.getChildFile ("Image-Line").getChildFile ("Data"));
+        }
+
+        return result;
+    }
+
+    /** Files by (lower-case) name under a folder, a few levels deep. */
+    void indexFolder (const juce::File& folder, std::map<juce::String, juce::File>& byName, int depth = 4)
+    {
+        if (! folder.isDirectory() || depth < 0)
+            return;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (folder, false, "*", juce::File::findFilesAndDirectories))
+        {
+            const auto f = entry.getFile();
+
+            if (entry.isDirectory())
+                indexFolder (f, byName, depth - 1);
+            else if (f.hasFileExtension ("wav;aif;aiff;flac;mp3;ogg"))
+                byName.emplace (f.getFileName().toLowerCase(), f);
+        }
+    }
+}
+
+void Project::findSamples (const juce::File& flpFile, const juce::Array<juce::File>& moreFolders)
+{
+    std::map<juce::String, juce::File> byName;
+    bool indexed = false;
+
+    for (auto& c : channels)
+    {
+        if (! c.needsSample() || c.sampleFile.existsAsFile())
+            continue;
+
+        // 1. Where FL saved it, its "%FLStudio...%" folder worked out.
+        auto path = c.samplePath.replaceCharacter ('\\', '/');
+
+        if (path.startsWithChar ('%'))
+        {
+            const auto variable = path.substring (1).upToFirstOccurrenceOf ("%", false, false);
+            const auto rest = path.fromFirstOccurrenceOf ("%", false, false).fromFirstOccurrenceOf ("%", false, false).trimCharactersAtStart ("/");
+
+            for (auto& base : flFolderCandidates (variable))
+                if (auto f = base.getChildFile (rest); f.existsAsFile())
+                {
+                    c.sampleFile = f;
+                    break;
+                }
+        }
+        else if (juce::File::isAbsolutePath (path) && juce::File (path).existsAsFile())
+        {
+            c.sampleFile = juce::File (path);
+        }
+
+        if (c.sampleFile.existsAsFile())
+            continue;
+
+        // 2. By name: next to the .flp (its Samples / Audio folders...) and the folders given.
+        if (! indexed)
+        {
+            indexed = true;
+
+            for (auto& folder : moreFolders)
+                indexFolder (folder, byName);
+
+            indexFolder (flpFile.getParentDirectory(), byName, 3);
+        }
+
+        if (auto it = byName.find (fileNameOf (c.samplePath).toLowerCase()); it != byName.end())
+            c.sampleFile = it->second;
+    }
 }
 
 double flLevelToDb (int value)
@@ -297,9 +450,23 @@ juce::String parse (const juce::MemoryBlock& file, Project& project)
         return "This FL Studio project could not be read (made with a newer FL Studio?)";
 
     //==============================================================================
+    project.ppq = juce::jmax (1, (int) juce::ByteOrder::littleEndianShort (d + 12));
+    const double ppq = project.ppq;
+
     std::map<int, Insert> inserts;
     std::map<int, juce::Array<bool>> routing;
     const Event* params = nullptr;
+
+    // The beat: which channel / pattern the events belong to.
+    enum class Context { none, channel, pattern };
+    Context context = Context::none;
+    int channelAt = -1;             // index in project.channels
+    int envelopes = 0;              // envelope records of the current channel so far
+    bool channelNamed = false;
+    std::map<int, Pattern> patterns;
+    int patternNumber = 0;
+    const Event* playlist = nullptr;
+    int arrangement = -1, wantedArrangement = -1;
     int current = 0;          // the mixer insert the events belong to (0 = master)
     int lastTrack = -1;       // playlist track of the last 238 event
 
@@ -349,14 +516,112 @@ juce::String parse (const juce::MemoryBlock& file, Project& project)
                 fx.kind = e.text();
                 fx.isVST = fx.missingInFL = fx.kind == "Fruity Wrapper";   // its data says which plugin (event 213)
                 inEffect = true;
+
+                if (context == Context::channel && ! inMixer)
+                    project.channels[(size_t) channelAt].kind = fx.kind;
                 break;
 
-            case 203: if (inEffect) fx.displayName = e.text(); break;
-            case 213: if (inEffect && fx.kind == "Fruity Wrapper") readWrapper (e, fx); break;
+            case 203:
+                if (inEffect)
+                    fx.displayName = e.text();
+
+                if (context == Context::channel && ! inMixer && ! channelNamed)
+                {
+                    project.channels[(size_t) channelAt].name = e.text();
+                    channelNamed = true;
+                }
+                break;
+
+            case 213:
+                if (inEffect && fx.kind == "Fruity Wrapper")
+                {
+                    readWrapper (e, fx);
+
+                    if (context == Context::channel && ! inMixer)
+                        project.channels[(size_t) channelAt].plugin = fx;
+                }
+                break;
 
             case 236:   // an insert's header ends; its effect slots follow
                 inMixer = true;
                 inEffect = false;
+                context = Context::none;
+                break;
+
+            //==============================================================================
+            // The beat
+            case 64:    // a channel starts
+            {
+                Channel c;
+                c.index = (int) e.u32();
+                project.channels.push_back (c);
+                channelAt = (int) project.channels.size() - 1;
+                context = Context::channel;
+                envelopes = 0;
+                channelNamed = false;
+                inEffect = false;
+                break;
+            }
+
+            case 21:  if (context == Context::channel) project.channels[(size_t) channelAt].type = (int) e.u32(); break;
+            case 196: if (context == Context::channel) project.channels[(size_t) channelAt].samplePath = e.text(); break;
+            case 104: if (context == Context::channel) project.channels[(size_t) channelAt].insert = (int) e.u32(); break;
+
+            case 219:   // levels: i32 pan (0..12800, 6400 = centre), i32 volume (10000 = FL's default)
+                if (context == Context::channel && e.size >= 8)
+                {
+                    auto& c = project.channels[(size_t) channelAt];
+                    c.pan = juce::jlimit (-1.0, 1.0, ((int) juce::ByteOrder::littleEndianInt (e.data) - 6400) / 6400.0);
+                    c.volume = juce::jmax (0.0, (int) juce::ByteOrder::littleEndianInt (e.data + 4) / 10000.0);
+                }
+                break;
+
+            case 218:   // envelopes: panning, volume, mod X, mod Y, pitch; u32 #1 = -1 when on
+                if (context == Context::channel)
+                {
+                    if (envelopes == 1 && e.size >= 8)
+                        project.channels[(size_t) channelAt].volumeEnvelope = juce::ByteOrder::littleEndianInt (e.data + 4) == 0xffffffffu;
+
+                    ++envelopes;
+                }
+                break;
+
+            case 65:    // a pattern (its notes, or later its name)
+                patternNumber = (int) e.u32();
+                patterns[patternNumber].number = patternNumber;
+                context = Context::pattern;
+                break;
+
+            case 193: if (context == Context::pattern) patterns[patternNumber].name = e.text(); break;
+
+            case 224:   // a pattern's notes
+                if (context == Context::pattern)
+                {
+                    auto& pat = patterns[patternNumber];
+
+                    for (size_t i = 0; i + 24 <= e.size; i += 24)
+                    {
+                        auto* n = e.data + i;
+                        Note note;
+                        note.beat = juce::ByteOrder::littleEndianInt (n) / ppq;
+                        note.channel = juce::ByteOrder::littleEndianShort (n + 6);
+                        note.length = juce::ByteOrder::littleEndianInt (n + 8) / ppq;
+                        note.key = juce::jlimit (0, 127, (int) juce::ByteOrder::littleEndianShort (n + 12));
+                        note.fine = juce::jlimit (-100, 100, juce::roundToInt ((n[16] - 120) * 100.0 / 120.0));
+                        note.release = juce::jlimit (0, 127, (int) n[18]);
+                        note.pan = juce::jlimit (-100, 100, juce::roundToInt ((n[20] - 64) * 100.0 / 64.0));
+                        note.velocity = juce::jlimit (1, 127, (int) n[21]);
+                        pat.notes.push_back (note);
+                    }
+                }
+                break;
+
+            case 100: wantedArrangement = (int) e.u32(); break;   // the arrangement FL had open
+            case 99:  arrangement = (int) e.u32(); context = Context::none; break;
+
+            case 233:   // playlist items of the current arrangement (the open one, else the first)
+                if (playlist == nullptr || arrangement == wantedArrangement)
+                    playlist = &e;
                 break;
 
             case 98:    // an effect slot of the current insert ends (empty or not)
@@ -389,6 +654,45 @@ juce::String parse (const juce::MemoryBlock& file, Project& project)
 
     if (routing.empty())
         return "No mixer found in this FL Studio project";
+
+    //==============================================================================
+    // The beat's patterns and playlist
+    for (auto& [number, pat] : patterns)
+        if (! pat.notes.empty())
+            project.patterns.push_back (pat);
+
+    if (playlist != nullptr)
+    {
+        const size_t itemSize = playlist->size % 88 == 0 ? 88 : playlist->size % 60 == 0 ? 60 : 32;
+
+        for (size_t i = 0; i + itemSize <= playlist->size; i += itemSize)
+        {
+            auto* r = playlist->data + i;
+            Item item;
+            const auto base = (int) juce::ByteOrder::littleEndianShort (r + 4);
+            const auto what = (int) juce::ByteOrder::littleEndianShort (r + 6);
+            item.start = juce::ByteOrder::littleEndianInt (r) / ppq;
+            item.length = juce::ByteOrder::littleEndianInt (r + 8) / ppq;
+            item.track = 499 - (int) juce::ByteOrder::littleEndianShort (r + 12);
+
+            if (base > 0 && what > base)
+            {
+                item.pattern = what - base;
+                const auto startTicks = (int) juce::ByteOrder::littleEndianInt (r + 24);
+                item.patternOffset = startTicks > 0 ? startTicks / ppq : 0.0;
+            }
+            else
+            {
+                item.channel = what;
+                float startMs = 0.0f;
+                std::memcpy (&startMs, r + 24, 4);   // (little-endian float, as on Windows)
+                item.audioOffset = startMs > 0.0f ? startMs / 1000.0 : 0.0;
+            }
+
+            if (item.length > 0.0 && juce::isPositiveAndBelow (item.track, 500))
+                project.items.push_back (item);
+        }
+    }
 
     //==============================================================================
     // Values from the mixer's parameter table
@@ -622,6 +926,24 @@ juce::String describeFile (const juce::File& file)
             tracks.add (juce::String (i + 1) + " " + p.trackNames[i]);
     lines.add ("playlist: " + tracks.joinIntoString (", "));
 
+    if (p.hasBeat())
+    {
+        p.findSamples (file);
+        size_t notes = 0;
+        for (auto& pat : p.patterns) notes += pat.notes.size();
+
+        lines.add ("beat: " + juce::String ((int) p.channels.size()) + " channels, " + juce::String ((int) p.patterns.size()) + " patterns ("
+                   + juce::String ((int) notes) + " notes), " + juce::String ((int) p.items.size()) + " playlist items, ppq " + juce::String (p.ppq)
+                   + ", sounds found " + juce::String (p.countSamples (true)) + "/" + juce::String (p.countSamples (false)));
+
+        for (auto& c : p.channels)
+            lines.add ("  ch " + juce::String (c.index) + " [" + juce::String (c.type) + "] " + c.name
+                       + (c.kind.isNotEmpty() ? " (" + c.kind + (c.plugin.pluginName.isNotEmpty() ? ": " + c.plugin.pluginName : juce::String()) + ")" : juce::String())
+                       + " -> insert " + juce::String (c.insert) + ", vol " + juce::String (c.volume, 2) + ", pan " + juce::String (c.pan, 2)
+                       + (c.volumeEnvelope ? ", note length" : "")
+                       + (c.samplePath.isNotEmpty() ? ", sound " + (c.sampleFile.existsAsFile() ? c.sampleFile.getFullPathName() : "NOT FOUND: " + c.samplePath) : juce::String()));
+    }
+
     auto used = p.getUsedInserts();
     used.insert (0, 0);
 
@@ -670,9 +992,33 @@ juce::String dryRun (te::Engine& engine, const juce::File& file, const juce::Str
     for (auto* t : te::getAudioTracks (*edit))
         edit->deleteTrack (t);
 
+    // (No sounds are copied in a dry run: no song audio store here.)
     const auto report = apply (*edit, p, options);
     juce::StringArray lines;
     lines.add (report.toText());
+
+    if (p.hasBeat())
+    {
+        lines.add ({});
+
+        for (auto& pattern : song::getPatterns (*edit))
+        {
+            juce::StringArray perChannel;
+
+            for (auto* t : song::getChannels (*edit))
+                if (auto n = song::getNotes (pattern, song::getChannelID (*t)).size(); n > 0)
+                    perChannel.add (t->getName() + " " + juce::String (n));
+
+            lines.add ("pattern \"" + pattern[song::ids::name].toString() + "\" " + juce::String (song::getBars (pattern)) + " bars: " + perChannel.joinIntoString (", "));
+        }
+
+        juce::StringArray clips;
+        for (auto& c : song::getClips (*edit))
+            if (clips.size() < 12)
+                clips.add ("track " + juce::String ((int) c[song::ids::lane] + 1) + " @" + juce::String ((double) c[song::ids::start], 2)
+                           + " len " + juce::String (song::getClipLength (*edit, c), 2) + (c.hasProperty (song::ids::poff) ? " from " + c[song::ids::poff].toString() : juce::String()));
+        lines.add ("clips: " + juce::String (song::getClips (*edit).size()) + " (first: " + clips.joinIntoString ("; ") + ")");
+    }
     lines.add ({});
     lines.add (juce::String (edit->tempoSequence.getTempo (0)->getBpm(), 2) + " BPM");
 
@@ -721,6 +1067,11 @@ juce::String Report::toText() const
                  .replace ("{N}", juce::String (insertsMade)).replace ("{E}", juce::String (effectsLoaded))
                  .replace ("{S}", juce::String (effectsWithSettings)).replace ("{X}", juce::String (sendsMade)));
 
+    if (channelsMade + patternsMade + clipsMade > 0)
+        lines.add (TRANS ("The beat: {C} channel(s), {P} pattern(s) with {N} note(s), {L} clip(s) on the playlist.")
+                     .replace ("{C}", juce::String (channelsMade)).replace ("{P}", juce::String (patternsMade))
+                     .replace ("{N}", juce::String (notesMade)).replace ("{L}", juce::String (clipsMade)));
+
     auto section = [&lines] (const juce::String& title, const juce::StringArray& items)
     {
         if (items.isEmpty())
@@ -733,6 +1084,8 @@ juce::String Report::toText() const
             lines.add ("  - " + i);
     };
 
+    section (TRANS ("Sounds not found (their channels are there, silent: drop the sound on the channel, or import again and show where they are):"), missingSounds);
+    section (TRANS ("Instruments not here (their channels keep the notes: put an instrument on them):"), instrumentsMissing);
     section (TRANS ("Not installed on this PC (left out; scan your plugins, then import again):"), notInstalled);
     section (TRANS ("FL Studio effects COTOSTUDIO doesn't have yet (left out):"), notAvailable);
     section (TRANS ("Loaded with their default settings:"), defaultSettings);
@@ -740,6 +1093,8 @@ juce::String Report::toText() const
     section (TRANS ("Good to know:"), notes);
     return lines.joinIntoString ("\n");
 }
+
+void applyBeat (te::Edit&, const Project&, const Options&, const std::map<int, te::AudioTrack*>& inserts, Report&);
 
 Report apply (te::Edit& edit, const Project& project, const Options& options)
 {
@@ -857,7 +1212,7 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
                 }
 
                 auto tree = te::ExternalPlugin::create (edit.engine, *desc);
-                const bool canUseState = fx.isVST3 && desc->pluginFormatName == "VST3" && fx.componentState.getSize() > 0;
+                const bool canUseState = desc->pluginFormatName == "VST3" && fx.componentState.getSize() > 0;
 
                 if (canUseState)
                     tree.setProperty (te::IDs::state, makeVST3State (fx.componentState, fx.controllerState).toBase64Encoding(), nullptr);
@@ -867,7 +1222,12 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
                 if (plugin != nullptr)
                 {
                     if (canUseState)
+                    {
                         ++report.effectsWithSettings;
+
+                        if (fx.stateFromVST2)
+                            report.notes.add (TRANS ("{WHAT}: FL used the VST2; its settings were given to the VST3 (check it sounds right)").replace ("{WHAT}", where));
+                    }
                     else if (fx.missingInFL)
                         report.defaultSettings.add (where + " - " + TRANS ("FL couldn't load it either, so no settings were saved"));
                     else
@@ -946,8 +1306,15 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
             tempo->setBpm (project.bpm);
 
     if (project.numerator != 4 || project.denominator != 4)
-        report.notes.add (TRANS ("FL's time signature was {SIG}; COTOSTUDIO stays in 4/4")
-                            .replace ("{SIG}", juce::String (project.numerator) + "/" + juce::String (project.denominator)));
+    {
+        const song::TimeSignature sig { project.numerator, project.denominator };
+
+        if (song::getTimeSignatureChoices().contains (sig))
+            song::setTimeSignature (edit, sig);
+        else
+            report.notes.add (TRANS ("FL's time signature was {SIG}; COTOSTUDIO doesn't have it, the song is in 4/4")
+                                .replace ("{SIG}", sig.toString()));
+    }
 
     if (options.namesOnPlaylist)
     {
@@ -982,7 +1349,234 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
         }
     }
 
+    if (options.beat && project.hasBeat())
+        applyBeat (edit, project, options, made, report);
+
     return report;
+}
+
+//==============================================================================
+void applyBeat (te::Edit& edit, const Project& project, const Options& options,
+                const std::map<int, te::AudioTrack*>& inserts, Report& report)
+{
+    const auto known = edit.engine.getPluginManager().knownPluginList.getTypes();
+    std::map<int, te::AudioTrack*> channels;       // FL channel -> our channel
+    std::map<int, juce::String> audioAssets;       // FL audio clip channel -> its file's fingerprint
+    std::map<int, AssetStore::ImportResult> imported;
+
+    auto importSound = [&] (const Channel& c) -> AssetStore::ImportResult
+    {
+        if (options.assets == nullptr || ! c.sampleFile.existsAsFile())
+        {
+            if (c.samplePath.isNotEmpty())
+                report.missingSounds.add (c.samplePath.replaceCharacter ('\\', '/').fromLastOccurrenceOf ("/", false, false)
+                                          + " (" + c.name + ")");
+            return {};
+        }
+
+        auto r = options.assets->importAudioFile (c.sampleFile);
+
+        if (! r.ok())
+            report.missingSounds.add (c.sampleFile.getFileName() + " (" + c.name + "): " + r.error);
+
+        return r;
+    };
+
+    auto routeAndLevel = [&] (te::AudioTrack& t, const Channel& c)
+    {
+        if (c.insert > 0)
+        {
+            if (auto it = inserts.find (c.insert); it != inserts.end())
+                song::setRoute (edit, t, it->second->itemID.toString());
+            else
+                report.notes.add (TRANS ("{NAME}: its insert {N} was left out, it plays to the master")
+                                    .replace ("{NAME}", c.name).replace ("{N}", juce::String (c.insert)));
+        }
+
+        if (auto* vol = song::getVolumePlugin (t))
+        {
+            vol->setVolumeDb ((float) juce::jlimit (-60.0, 6.0, juce::Decibels::gainToDecibels (c.volume, -60.0)));
+            vol->setPan ((float) c.pan);
+        }
+    };
+
+    // 1. Channels, in FL's order.
+    for (auto& c : project.channels)
+    {
+        te::AudioTrack* t = nullptr;
+
+        if (c.type == Channel::sampler)
+        {
+            const auto r = importSound (c);
+            t = r.ok() ? song::addSamplerChannel (edit, r, c.sampleFile.getFileName())
+                       : song::addEmptySamplerChannel (edit, c.name);
+
+            if (auto* sampler = dynamic_cast<SamplerPlugin*> (t != nullptr ? song::getInstrument (*t) : nullptr))
+                sampler->noteLengthValue = c.volumeEnvelope;   // FL's volume envelope on: the sound ends with its note
+        }
+        else if (c.type == Channel::generator)
+        {
+            const juce::PluginDescription* desc = c.kind == "Fruity Wrapper" ? findPlugin (known, c.plugin) : nullptr;
+
+            if (desc != nullptr)
+            {
+                // With FL's saved settings (the sound you had picked), when they can be read.
+                auto tree = te::ExternalPlugin::create (edit.engine, *desc);
+                const bool withState = desc->pluginFormatName == "VST3" && c.plugin.componentState.getSize() > 0;
+
+                if (withState)
+                    tree.setProperty (te::IDs::state, makeVST3State (c.plugin.componentState, c.plugin.controllerState).toBase64Encoding(), nullptr);
+
+                t = song::addChannel (edit, edit.getPluginCache().createNewPlugin (tree), c.name);
+
+                if (withState && c.plugin.stateFromVST2)
+                    report.notes.add (TRANS ("{NAME}: FL used the VST2; its sound was given to the VST3 (check it sounds right)").replace ("{NAME}", c.name));
+                else if (! withState)
+                    report.notes.add (TRANS ("{NAME}: loaded with its default sound (FL's settings for it don't carry over)").replace ("{NAME}", c.name));
+            }
+            else
+            {
+                // Not here (or FL's own instrument): an empty channel keeps its notes, so you can
+                // put another instrument on it.
+                t = song::addEmptySamplerChannel (edit, c.name);
+                report.instrumentsMissing.add (c.name + " - " + (c.kind == "Fruity Wrapper"
+                                                   ? (c.plugin.pluginName.isNotEmpty() ? c.plugin.pluginName + ": " : juce::String()) + TRANS ("not installed on this PC")
+                                                   : c.kind + ": " + TRANS ("an FL Studio instrument COTOSTUDIO doesn't have")));
+            }
+        }
+        else if (c.type == Channel::audioClip)
+        {
+            const auto r = importSound (c);
+
+            if (r.ok())
+            {
+                song::addAsset (edit, r, c.sampleFile.getFileName());
+                t = song::addAudioChannel (edit, c.name);
+                audioAssets[c.index] = r.hash;
+                imported[c.index] = r;
+            }
+        }
+        else if (c.type == Channel::automation)
+        {
+            report.notes.add (TRANS ("Automation clip \"{NAME}\" left out (make it again with Automate...)").replace ("{NAME}", c.name));
+        }
+        else
+        {
+            report.notes.add (TRANS ("{NAME}: FL's layer channels aren't here; its notes are left out").replace ("{NAME}", c.name));
+        }
+
+        if (t == nullptr)
+            continue;
+
+        t->setName (c.name.substring (0, 40));
+        routeAndLevel (*t, c);
+        channels[c.index] = t;
+        ++report.channelsMade;
+    }
+
+    // 2. Patterns and their notes.
+    std::map<int, juce::ValueTree> patterns;
+    const double bar = song::getBeatsPerBar (edit);
+
+    for (auto& p : project.patterns)
+    {
+        // As long as its notes, and as the longest clip of it on the playlist.
+        double end = 0.0;
+
+        for (auto& n : p.notes)
+            end = juce::jmax (end, n.beat + juce::jmax (n.length, song::stepBeats));
+
+        for (auto& item : project.items)
+            if (item.pattern == p.number)
+                end = juce::jmax (end, item.patternOffset + item.length);
+
+        const int bars = juce::jlimit (1, song::maxBars, (int) std::ceil (end / bar - 1.0e-9));
+
+        if (end > song::maxBars * bar + 1.0e-6)
+            report.notes.add (TRANS ("Pattern \"{NAME}\" is longer than {N} bars: its end is cut off").replace ("{NAME}", p.name).replace ("{N}", juce::String (song::maxBars)));
+
+        auto pattern = song::addPattern (edit, p.name.isNotEmpty() ? p.name : "Pattern " + juce::String (p.number), bars);
+        patterns[p.number] = pattern;
+        ++report.patternsMade;
+
+        for (auto& n : p.notes)
+        {
+            auto it = channels.find (n.channel);
+
+            if (it == channels.end() || song::isAudioChannel (*it->second) || n.beat >= bars * bar)
+                continue;
+
+            auto note = song::addNote (edit, pattern, song::getChannelID (*it->second), n.key, n.beat,
+                                       juce::jlimit (song::stepBeats / 4.0, bars * bar - n.beat, n.length), n.velocity);
+
+            if (! note.isValid())
+                continue;
+
+            if (n.pan != 0)       song::setNoteProperty (edit, note, song::NoteProperty::pan, n.pan);
+            if (n.fine != 0)      song::setNoteProperty (edit, note, song::NoteProperty::fine, n.fine);
+            if (n.release != 64)  song::setNoteProperty (edit, note, song::NoteProperty::release, n.release);
+            ++report.notesMade;
+        }
+    }
+
+    // 3. The playlist: pattern clips and audio clips where FL had them.
+    int automationItems = 0, beyond = 0;
+
+    for (auto& item : project.items)
+    {
+        if (item.track >= song::numLanes)
+        {
+            ++beyond;
+            continue;
+        }
+
+        if (item.pattern > 0)
+        {
+            auto it = patterns.find (item.pattern);
+
+            if (it == patterns.end())
+                continue;
+
+            auto clip = song::addClip (edit, it->second[song::ids::sid].toString(), item.track, item.start);
+
+            if (clip.isValid())
+            {
+                clip.setProperty (song::ids::length, item.length, nullptr);
+
+                if (item.patternOffset > 0.0)
+                    clip.setProperty (song::ids::poff, item.patternOffset, nullptr);
+
+                ++report.clipsMade;
+            }
+
+            continue;
+        }
+
+        auto asset = audioAssets.find (item.channel);
+
+        if (asset == audioAssets.end())
+        {
+            if (auto* c = project.findChannel (item.channel); c != nullptr && c->type == Channel::automation)
+                ++automationItems;
+
+            continue;
+        }
+
+        auto* ch = channels[item.channel];
+        const double seconds = song::beatsToSeconds (edit, item.start + item.length) - song::beatsToSeconds (edit, item.start);
+        const double offset = juce::jlimit (0.0, juce::jmax (0.0, imported[item.channel].lengthSeconds - 0.01), item.audioOffset);
+        const double duration = juce::jmin (seconds, imported[item.channel].lengthSeconds - offset);
+
+        if (ch != nullptr && duration > 0.0
+             && song::addAudioClip (edit, asset->second, song::getChannelID (*ch), item.track, item.start, offset, duration).isValid())
+            ++report.clipsMade;
+    }
+
+    if (beyond > 0)
+        report.notes.add (TRANS ("{N} clip(s) on playlist tracks after {MAX} left out").replace ("{N}", juce::String (beyond)).replace ("{MAX}", juce::String (song::numLanes)));
+
+    if (automationItems > 0)
+        report.notes.add (TRANS ("{N} automation clip(s) on the playlist left out").replace ("{N}", juce::String (automationItems)));
 }
 
 } // namespace flimport

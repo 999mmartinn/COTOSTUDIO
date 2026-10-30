@@ -416,6 +416,8 @@ MainComponent::MainComponent (te::Engine& e)
     lengthBox.addItem (TRANS ("2 bars"), 2);
     lengthBox.addItem (TRANS ("4 bars"), 4);
     lengthBox.addItem (TRANS ("8 bars"), 8);
+    lengthBox.addItem (TRANS ("16 bars"), 16);
+    lengthBox.addItem (TRANS ("32 bars"), 32);
     lengthBox.setTooltip (TRANS ("Length of the viewed pattern"));
     lengthBox.onChange = [this]
     {
@@ -484,6 +486,23 @@ MainComponent::MainComponent (te::Engine& e)
         rack.importMidiFile (f, channel != nullptr ? song::getChannelID (*channel) : juce::String());
     };
     sounds.onMidiToNewChannel = [this] (const juce::File& f) { rack.importMidiFile (f); };
+
+    // Window buttons, like FL's: what each one shows lights up.
+    auto windowButton = [this] (juce::TextButton& b, theme::Icon icon, const juce::String& tip, std::function<void()> action)
+    {
+        theme::setIcon (b, icon);
+        theme::setStyle (b, "toggle");
+        b.setClickingTogglesState (false);
+        b.setTooltip (tip);
+        b.onClick = std::move (action);
+        addAndMakeVisible (b);
+    };
+    windowButton (playlistWindowButton, theme::Icon::playlist, TRANS ("Playlist (leaves the piano roll's full screen)"),
+                  [this] { if (maximised == Maximised::pianoRoll) setMaximised (Maximised::none); });
+    windowButton (rackWindowButton, theme::Icon::rack, TRANS ("Channel rack (F6). With the piano roll full screen: shows or hides the rack above it"),
+                  [this] { toggleRack(); });
+    windowButton (pianoWindowButton, theme::Icon::pianoRoll, TRANS ("Piano roll (F7)"), [this] { showPanel (Panel::pianoRoll); });
+    windowButton (mixerWindowButton, theme::Icon::mixer, TRANS ("Mixer (F9)"), [this] { showMixer(); });
 
     soundsButton.setClickingTogglesState (false);
     soundsButton.setTooltip (TRANS ("Your folders of sounds and MIDI (Alt+F8). Only on this PC until you drag a sound into the song"));
@@ -595,6 +614,8 @@ MainComponent::MainComponent (te::Engine& e)
         bottomTabs.setCurrentTabIndex (2);
         refresh();
     };
+    tabWatcher.onChange = [this] { updateWindowButtons(); };
+    bottomTabs.getTabbedButtonBar().addChangeListener (&tabWatcher);
     bottomTabs.setTabBarDepth (32);
     bottomTabs.setOutline (0);
     bottomTabs.setIndent (0);
@@ -833,6 +854,7 @@ MainComponent::MainComponent (te::Engine& e)
 MainComponent::~MainComponent()
 {
     pluginwindows::forwardKey = nullptr;
+    bottomTabs.getTabbedButtonBar().removeChangeListener (&tabWatcher);
     stopTimer();
     saveSoundsState();
     settings()->setValue ("recordInputs", session.getRecorder().saveChoices());
@@ -1028,7 +1050,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::tabKey)                                              { toggleInstrumentWindow(); return true; }
-    if (key == juce::KeyPress::F6Key)                                               { showPanel (Panel::rack); return true; }
+    if (key == juce::KeyPress::F6Key)                                               { toggleRack(); return true; }
     if (key == juce::KeyPress::F7Key)                                               { showPanel (Panel::pianoRoll); return true; }
     if (key == juce::KeyPress::F9Key)                                               { showMixer(); return true; }
     if (key == juce::KeyPress::escapeKey && maximised != Maximised::none)           { setMaximised (Maximised::none); return true; }
@@ -1176,6 +1198,33 @@ void MainComponent::showPanel (Panel p)
     if ((p == Panel::rack && maximised != Maximised::none)
          || (p != Panel::rack && maximised == Maximised::playlist))
         setMaximised (Maximised::none);
+}
+
+void MainComponent::toggleRack()
+{
+    // With the piano roll filling the window, the rack comes in above it (and goes again),
+    // like FL's channel rack window over the piano roll. Otherwise: show it.
+    if (maximised == Maximised::pianoRoll && ! isDetached (Panel::rack))
+    {
+        rackOverPianoRoll = ! rackOverPianoRoll;
+        resized();
+        return;
+    }
+
+    showPanel (Panel::rack);
+}
+
+void MainComponent::updateWindowButtons()
+{
+    const bool rackHere = ! isDetached (Panel::rack);
+    const int tab = bottomTabs.getCurrentTabIndex();
+    const bool dockShown = maximised != Maximised::playlist;
+
+    playlistWindowButton.setToggleState (maximised != Maximised::pianoRoll, juce::dontSendNotification);
+    rackWindowButton.setToggleState (! rackHere || (maximised == Maximised::none) || (maximised == Maximised::pianoRoll && rackOverPianoRoll),
+                                     juce::dontSendNotification);
+    pianoWindowButton.setToggleState (isDetached (Panel::pianoRoll) || (dockShown && tab == 0), juce::dontSendNotification);
+    mixerWindowButton.setToggleState (isDetached (Panel::mixer) || (dockShown && tab == 1), juce::dontSendNotification);
 }
 
 void MainComponent::setPanelDetached (Panel p, bool detached)
@@ -2005,7 +2054,7 @@ void MainComponent::showFileMenu()
 
     templateMenu.addSeparator();
     templateMenu.addItem (30, TRANS ("Save this song as a template..."));
-    templateMenu.addItem (34, TRANS ("Import an FL Studio template (.flp)..."), canReplace);
+    templateMenu.addItem (34, TRANS ("Import an FL Studio project (.flp)..."), canReplace);
 
     defaultMenu.addItem (31, TRANS ("An empty song"), true, ! startFrom.existsAsFile());
 
@@ -2018,6 +2067,7 @@ void MainComponent::showFileMenu()
     m.addSubMenu (TRANS ("Templates"), templateMenu);
 
     m.addItem (item (2, TRANS ("Open..."), canReplace, "Ctrl+O"));
+    m.addItem (34, TRANS ("Import an FL Studio project (.flp)..."), canReplace);
 
     recentFiles.createPopupMenuItems (recent, 100, false, true);
 
@@ -2289,11 +2339,11 @@ void MainComponent::importFlTemplate()
         return;
     }
 
-    const auto flTemplates = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                                 .getChildFile ("Image-Line").getChildFile ("FL Studio").getChildFile ("Projects").getChildFile ("Templates");
+    const auto flProjects = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                                .getChildFile ("Image-Line").getChildFile ("FL Studio").getChildFile ("Projects");
 
-    fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Import an FL Studio template"),
-                                                       flTemplates.isDirectory() ? flTemplates : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+    fileChooser = std::make_unique<juce::FileChooser> (TRANS ("Import an FL Studio project"),
+                                                       flProjects.isDirectory() ? flProjects : juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
                                                        "*.flp");
     fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                               [this] (const juce::FileChooser& fc)
@@ -2309,23 +2359,34 @@ void MainComponent::importFlTemplate()
         if (error.isNotEmpty())
         {
             appendLog (TRANS ("Could not open {FILE}").replace ("{FILE}", file.getFileName()) + ": " + error);
-            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Import an FL Studio template"), TRANS (error));
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, TRANS ("Import an FL Studio project"), TRANS (error));
             return;
         }
+
+        // A beat's sounds: where FL saved them, or next to the .flp (more can be shown in the dialog).
+        if (project->hasBeat())
+            project->findSamples (file);
 
         if (engine.getPluginManager().knownPluginList.getNumTypes() == 0)
             appendLog (TRANS ("No plugins scanned yet: scan them first (Settings > Find my plugins) so the import finds your VST3 effects"));
 
-        FlpImportDialog::show (*project, file.getFileName(), [this, project, file] (const flimport::Options& options)
+        FlpImportDialog::show (*project, file, [this, file] (const flimport::Project& chosen, const flimport::Options& chosenOptions)
         {
+            auto project = std::make_shared<flimport::Project> (chosen);   // (with the sounds found in the dialog)
+            auto options = chosenOptions;
+            options.assets = &session.getAssetStore();
+
             askToSaveChanges ([this, project, file, options]
             {
                 flimport::Report report;
                 const auto name = file.getFileNameWithoutExtension();
+                const bool beat = options.beat && project->hasBeat();
                 const auto error = session.newProject ([&] (te::Edit& e)
                 {
                     report = flimport::apply (e, *project, options);
-                    song::addPattern (e, "Pattern 1", 1);
+
+                    if (song::getPatterns (e).isEmpty())
+                        song::addPattern (e, "Pattern 1", 1);
                 }, name);
 
                 if (error.isNotEmpty())
@@ -2341,9 +2402,19 @@ void MainComponent::importFlTemplate()
                 refresh();
 
                 appendLog (TRANS ("Imported \"{NAME}\" from FL Studio").replace ("{NAME}", name));
+
+                // A beat plays its arrangement: SONG mode, from the start.
+                if (beat)
+                {
+                    session.setSongMode (true);
+                    state.songStartBeat = 0.0;
+                    refresh();
+                }
+
                 FlpImportDialog::showText (TRANS ("Imported from FL Studio"),
                                            report.toText() + "\n\n"
-                                           + TRANS ("Next: in the mixer, pick the input of the insert you record on and arm it, then File > Templates > Save this song as a template."));
+                                           + (beat ? TRANS ("Next: press Play (SONG mode) to hear it, then save it (Ctrl+S). Sounds and plugins listed above need your attention.")
+                                                   : TRANS ("Next: in the mixer, pick the input of the insert you record on and arm it, then File > Templates > Save this song as a template.")));
             });
         });
     });
@@ -3074,6 +3145,7 @@ void MainComponent::resized()
         return (x.logo > 0 ? x.logo + 10 : 0) + 74 + 6 + x.sounds + 6 + (x.separators ? 10 : 0)
                + 50 + x.song + 10 + 48 + 4 + 36 + 4 + x.click + 10 + x.lcd + 10
                + x.pattern + 4 + 30 + 4 + 30 + 4 + x.length + 8
+               + 4 * 28 + 3 * 2 + 8
                + 32 + 4 + (x.undoRedo ? 32 + 4 + 32 + 10 : 0) + (x.separators ? 10 : 0)
                + x.session + 10 + x.focus + 6 + x.share + 6;
     };
@@ -3145,6 +3217,10 @@ void MainComponent::resized()
     place (newPatternButton, 30, 4);
     place (patternMenuButton, 30, 4);
     place (lengthBox, x.length, 8);
+    place (playlistWindowButton, 28, 2);
+    place (rackWindowButton, 28, 2);
+    place (pianoWindowButton, 28, 2);
+    place (mixerWindowButton, 28, 8);
 
     // From the right: settings, undo/redo, session, focus, share.
     placeRight (settingsButton, 32, 4);
@@ -3197,8 +3273,10 @@ void MainComponent::resized()
     divider2.setVisible (normal && rackHere);
     dividerNoRack.setVisible (normal && ! rackHere);
 
+    const bool rackOverRoll = rackHere && maximised == Maximised::pianoRoll && rackOverPianoRoll;
+
     if (rackHere)
-        rack.setVisible (normal);
+        rack.setVisible (normal || rackOverRoll);
 
     if (rackStrip != nullptr)
     {
@@ -3214,6 +3292,13 @@ void MainComponent::resized()
     }
     else if (maximised == Maximised::pianoRoll)
     {
+        // The rack above it if asked for (F6 / the rack button), at most 45% of the height.
+        if (rackOverRoll)
+        {
+            rack.setBounds (r.removeFromTop (juce::jmax (140, juce::roundToInt (r.getHeight() * 0.45))));
+            r.removeFromTop (8);
+        }
+
         dock->setBounds (r);
     }
     else if (rackHere)
@@ -3228,4 +3313,5 @@ void MainComponent::resized()
     }
 
     bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
+    updateWindowButtons();
 }

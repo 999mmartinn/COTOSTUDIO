@@ -28,13 +28,13 @@ private:
     juce::OwnedArray<fxui::ParamKnob> knobs;
     std::unique_ptr<fxui::ParamToggle> reverseToggle, envelopeToggle;
     std::unique_ptr<fxui::ParamChoice> filterChoice;
-    juce::TextButton cutButton;
+    juce::TextButton cutButton, noteLengthButton;
     juce::Rectangle<int> header, wave, sampleArea, pitchArea, envelopeArea, envelopeGraph, filterArea;
 
     juce::Image waveImage;           // the waveform with the trim and fades (redrawn when they change)
     juce::String waveKey, envelopeKey;
     std::array<float, SamplerPlugin::maxVoices> shownVoices {};
-    bool cutShown = false;
+    bool cutShown = false, noteLengthShown = false;
 
     enum class Handle { none, start, end, fadeIn, fadeOut };
     Handle dragging = Handle::none;

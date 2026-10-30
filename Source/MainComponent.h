@@ -146,6 +146,11 @@ private:
     SamplePreviewer previewer { engine };
     SoundBrowser sounds { previewer };
     juce::TextButton soundsButton { "Sounds" };
+    // FL-style window buttons (top bar): playlist, channel rack, piano roll, mixer.
+    juce::TextButton playlistWindowButton, rackWindowButton, pianoWindowButton, mixerWindowButton;
+    bool rackOverPianoRoll = false;   // the rack shown above the full-screen piano roll (this PC)
+    void toggleRack();
+    void updateWindowButtons();
     bool soundsVisible = true;
     void setSoundsVisible (bool);
 
@@ -188,6 +193,11 @@ private:
     AutomationEditor automationEditor { state };
     void createAutomation (const juce::String& pluginID, const juce::String& paramID);
     juce::TabbedComponent bottomTabs { juce::TabbedButtonBar::TabsAtTop };   // Piano roll (F7) / Mixer (F9)
+    struct TabWatcher  : juce::ChangeListener
+    {
+        std::function<void()> onChange;
+        void changeListenerCallback (juce::ChangeBroadcaster*) override   { if (onChange) onChange(); }
+    } tabWatcher;   // (lights the window buttons when the tab changes)
     class Dock;
     std::unique_ptr<Dock> dock;   // the panel around the tabs
     juce::TextEditor logView;     // every message (shown in its own window from the status bar)

@@ -26,6 +26,43 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.10
+
+* **808s (and any sampler sound) can stop when their note ends.** Turn on **Note
+  length** in the channel's *Edit sound* window, or right-click the channel → *Stop at
+  note end*. Then a short note plays a short 808, a long note a long one (a 10 ms fade,
+  no click). It works together with *Cut itself*. Off (the default), the whole sound
+  plays however short the note is, which is what you want for drums from the step
+  sequencer.
+* **Window buttons in the top bar** (like FL's): **Playlist**, **Channel rack**,
+  **Piano roll**, **Mixer**. The one you're looking at lights up.
+  * With the **piano roll full screen**, the **Channel rack** button (or **F6**) shows
+    the rack above it, and hides it again. You can switch instruments or tweak steps
+    without leaving full screen.
+  * **Playlist** leaves the piano roll's full screen.
+* **Import your FL Studio beats** (File → *Import an FL Studio project (.flp)...*). Your
+  project comes in as a new song:
+  * **Channels:** sampler sounds, and VST3 instruments (Serum 2, ZENOLOGY, JV-1080...)
+    **with the sound you had picked**. A channel whose VST2 isn't hosted here gets its
+    VST3 version, with FL's settings offered to it (Omnisphere keeps its patch this way
+    when the plugin accepts it). Volume, pan, and the mixer insert each channel plays
+    through come too.
+  * **Patterns with all their notes** (velocity, pan, fine pitch, release), up to 32
+    bars long (patterns can now be 16 or 32 bars).
+  * **The playlist:** every pattern clip and audio clip where you had it, trims
+    included, on the same tracks, with the track names and colours.
+  * **The mixer:** inserts, effects (VST3 with their settings), routing, sends, faders.
+  * The tempo and time signature. The song opens in SONG mode, ready to play.
+  * **Sounds:** COTOSTUDIO looks for them where FL saved them, and next to the .flp
+    (its *Samples* and *Audio* folders). The dialog says how many were found; **Find
+    missing sounds...** lets you point at a folder (your sample packs, or the
+    project's folder) and looks inside it.
+  * 808s (and other sounds) that had FL's volume envelope on come in with *Note
+    length* on, so they stop with their notes as in FL.
+  * Not imported yet: automation clips, FL's own instruments (3x Osc, FLEX, Sytrus...:
+    their channels come in empty with their notes, so you can put another instrument
+    on them), layer channels. The report at the end lists what needs your attention.
+
 ## What's new in 1.9
 
 Fixes you asked for:
@@ -572,6 +609,10 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   clip on a ducked insert renders the clip before the mixer, so the bounce isn't
   ducked (the new audio goes through the same insert and gets ducked as before).
   A VST3's sidechain input is offered only if the plugin turns it on by default.
+* FL beat import: FL's own instruments and effects (3x Osc, Sytrus, Fruity Soft
+  Clipper...) can't come with their settings; automation clips and layer channels are
+  left out; only the arrangement FL had open is imported. Sounds FL couldn't find either
+  can't be found here.
 * Track groups are runs of tracks next to each other (no groups inside groups).
   If two people group overlapping tracks at the same moment, the first group wins
   and the other one is hidden until it's moved or ungrouped.
@@ -630,7 +671,11 @@ and 1.9: a pattern opening on the instrument last edited in it, the sidechain
 comes back, and passes untouched with nothing to listen to; sources that would
 loop are refused), track groups and track mute (shared, and their clips really
 leave what plays), and markers (added, renamed, moved, coloured, deleted, the same
-everywhere, the song unchanged).
+everywhere, the song unchanged),
+and 1.10: a sampler stopping at its note's end (measured: half volume 5 ms after,
+silent from 10 ms), and importing a beat from an .flp written the way FL writes it (its
+sounds found next to it, a sampler with FL's volume envelope, notes with their pan and
+fine pitch, a trimmed pattern clip, an audio clip with its start inside the file).
 The self-test never touches your data folder. The Windows build on GitHub runs
 it automatically.
 
