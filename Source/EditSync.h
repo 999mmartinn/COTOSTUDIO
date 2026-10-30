@@ -127,6 +127,14 @@ public:
     /** Flushes plugin states and returns a copy of the shared state. */
     juce::ValueTree createSnapshot();
 
+    /** A fresh copy of the song from the host, merged into this PC's song in place:
+        only what differs changes, so plugins that are the same stay loaded (no reload
+        of every plugin, which froze the app for seconds with big instruments). A
+        plugin's saved chunk ("state") is kept as it is here: it doesn't count as a
+        difference (see hashExcludedProperties) and reloading it is what is slow.
+        Returns false if the copies still differ afterwards (then reload the song). */
+    bool applySnapshotInPlace (const juce::ValueTree& snapshot);
+
     struct Stats { int sent = 0, applied = 0, failed = 0, paramsSent = 0, paramsApplied = 0; };
     Stats getStats() const noexcept                      { return stats; }
 
@@ -146,6 +154,9 @@ public:
     /** The last third-party plugin knob moved by hand on this PC: "pluginID|paramID". */
     juce::String getLastTweakedParameter() const    { return lastTweaked; }
     static juce::String describeFirstDifference (const juce::ValueTree& a, const juce::ValueTree& b);
+
+private:
+    void mergeNodeInPlace (juce::ValueTree& local, const juce::ValueTree& incoming);
 
 private:
     te::Edit& edit;

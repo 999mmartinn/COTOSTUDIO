@@ -408,6 +408,7 @@ void Session::attachSync()
 
 //==============================================================================
 // People and chat
+static const juce::Identifier songNumberID ("song");
 static const juce::Identifier ROSTER ("ROSTER"), PERSON ("PERSON"), LINE ("LINE"),
                               viewingID ("viewing"), recordingID ("recording"), colourID ("colour"),
                               hostID ("host"), yourID ("yourId"), textID ("text"), systemID ("system"), timeID ("time"),
@@ -841,8 +842,18 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         else if (type == "ops")
         {
             from.lastSeqApplied = (int) msg[ids::seq];
-            applyOps (msg, &from);
-            broadcast (msg, &from);     // relay to everyone else
+
+            // Changes made to the song before this one (sent while the new one was on its
+            // way): nothing to apply them to. Dropping them is right, they died with it.
+            if ((int) msg[songNumberID] != songNumber)
+                return;
+
+            auto applied = applyOps (msg, &from);
+
+            // Relay only what applied here: a change the host couldn't apply would fail on
+            // everyone else too, and make each of them fetch a fresh copy.
+            if (applied.getNumChildren() > 0)
+                broadcast (applied, &from);     // relay to everyone else
         }
         else if (type == "transport")
         {
@@ -990,7 +1001,10 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
     if (type == "snapshot")
         loadSnapshot (msg);
     else if (type == "ops")
-        applyOps (msg, nullptr);
+    {
+        if ((int) msg[songNumberID] == songNumber)   // (not changes to the song before)
+            applyOps (msg, nullptr);
+    }
     else if (type == "transport")
         applyTransport (msg);
     else if (type == "hash" && editSync != nullptr && mode == Mode::joined)
@@ -1055,6 +1069,7 @@ void Session::flushOutgoing()
     msg.setProperty (ids::type, "ops", nullptr);
     msg.setProperty (ids::seq, ++localSeq, nullptr);
     msg.setProperty (ids::peer, peerIndex, nullptr);
+    msg.setProperty (songNumberID, songNumber, nullptr);
 
     for (int i = 0; i < pendingOps.getNumChildren(); ++i)
         msg.appendChild (pendingOps.getChild (i).createCopy(), nullptr);
@@ -1080,15 +1095,23 @@ void Session::broadcast (const juce::ValueTree& msg, PeerConnection* except)
             c->sendTree (msg);
 }
 
-void Session::applyOps (const juce::ValueTree& msg, PeerConnection* from)
+juce::ValueTree Session::applyOps (const juce::ValueTree& msg, PeerConnection* from)
 {
+    auto applied = msg.createCopy();
+    applied.removeAllChildren (nullptr);
+
     if (editSync == nullptr)
-        return;
+        return applied;
 
     bool allOk = true;
 
     for (const auto& op : msg)
-        allOk = editSync->applyRemote (op) && allOk;
+    {
+        if (editSync->applyRemote (op))
+            applied.appendChild (op.createCopy(), nullptr);
+        else
+            allOk = false;
+    }
 
     if (! allOk)
     {
@@ -1100,6 +1123,8 @@ void Session::applyOps (const juce::ValueTree& msg, PeerConnection* from)
 
     if (onRemoteChange)
         onRemoteChange();
+
+    return applied;
 }
 
 void Session::applyTransport (const juce::ValueTree& msg)
@@ -2037,6 +2062,7 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason, con
     msg.setProperty (ids::type, "snapshot", nullptr);
     msg.setProperty (ids::peer, c.peerIndex, nullptr);
     msg.setProperty (ids::reason, reason, nullptr);
+    msg.setProperty (songNumberID, songNumber, nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);   // a starting pattern for newcomers
 
     if (premade.isValid())
@@ -2090,6 +2116,7 @@ juce::String Session::replaceSong (std::unique_ptr<te::Edit> newEdit, const juce
     installEdit (std::move (newEdit), true);
     compiler->setSongMode (wasSongMode);
     compiler->compileNow();
+    ++songNumber;   // changes still on their way for the old song won't touch this one
 
     if (mode == Mode::hosting)
     {
@@ -2294,6 +2321,32 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
         ++resyncCount;
         log ("Fresh copy received (" + reason + "). First difference was at "
               + EditSync::describeFirstDifference (edit->state, state));
+    }
+
+    songNumber = (int) msg[songNumberID];
+
+    // A fresh copy of the song we already have: merge it in place. Only what differs
+    // changes, so the plugins stay loaded (reloading the whole song reloads every
+    // plugin - seconds of freeze with big instruments). If the copies still differ
+    // afterwards, reload it as before.
+    if (reason != "join" && reason != "newSong" && edit != nullptr && editSync != nullptr)
+    {
+        pendingOps.removeAllChildren (nullptr);
+
+        if (editSync->applySnapshotInPlace (state))
+        {
+            pendingOps.removeAllChildren (nullptr);
+            ++inPlaceResyncs;
+            hashMismatchCount = 0;
+            lastHashMatched = true;
+            lastReplaceReason = reason;
+            compiler->compileNow();
+            log ("Fresh copy merged into your song (no reload)");
+            statusChanged();
+            return;
+        }
+
+        log ("Merging the fresh copy left a difference; reloading the song");
     }
 
     peerIndex = (int) msg[ids::peer];

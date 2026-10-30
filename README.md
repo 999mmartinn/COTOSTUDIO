@@ -29,6 +29,25 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.12.2
+
+* **No more freezes on the people who join when their copy gets out of step.**
+  Every few seconds each joiner checks that its copy of the song matches the
+  host's. When it didn't, COTOSTUDIO used to throw the whole song away and load
+  the host's copy, which reloads every plugin (Omnisphere, Auto-Tune...): a
+  freeze of seconds, and only on the joiners. Now the host's copy is merged into
+  the song you already have: only what differs changes and the plugins stay
+  loaded. (The full reload is still there as a fallback if merging can't make
+  the copies match.)
+* **Fewer of those checks fail in the first place, especially with 3 or more
+  people.** Right after a song is opened or a new one started, each PC sends a
+  few tidy-up changes. If they arrived after the host had switched to another
+  song (a template, say), they didn't fit, so the host and the others asked for
+  a fresh copy, and the host passed those changes on to everyone, so they failed
+  there too. Now every change says which song it belongs to (changes for an old
+  song are dropped), and the host only passes on changes it could apply itself.
+* Everyone in a session needs 1.12.2 (protocol 10).
+
 ## What's new in 1.12.1
 
 * **Right-click an audio clip → Make unique**, like FL: the clip gets its own

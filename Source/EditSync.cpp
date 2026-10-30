@@ -985,6 +985,113 @@ juce::int64 EditSync::computeContentHash() const
     return (copy.toXmlString() + parts.joinIntoString ("\n")).hashCode64();
 }
 
+bool EditSync::applySnapshotInPlace (const juce::ValueTree& snapshot)
+{
+    flushNow();   // (whatever was collected describes the old copy; the caller drops it)
+
+    {
+        ScopedApplying sa (*this);
+        auto local = root;
+        mergeNodeInPlace (local, snapshot);
+    }
+
+    const auto automated = findAutomatedPlugins (root);
+    return filteredCopy (root, true, &automated).toXmlString() == filteredCopy (snapshot, true, &automated).toXmlString();
+}
+
+void EditSync::mergeNodeInPlace (juce::ValueTree& local, const juce::ValueTree& incoming)
+{
+    // Properties: the host's, except per-PC ones and a plugin's saved chunk (kept as it is here).
+    for (int i = 0; i < incoming.getNumProperties(); ++i)
+    {
+        const auto name = incoming.getPropertyName (i);
+
+        if (isLocalProperty (local, name, false) || name == stateProperty)
+            continue;
+
+        if (! local.hasProperty (name) || local.getProperty (name) != incoming.getProperty (name))
+            local.setProperty (name, incoming.getProperty (name), nullptr);
+    }
+
+    for (int i = local.getNumProperties(); --i >= 0;)
+    {
+        const auto name = local.getPropertyName (i);
+
+        if (! isLocalProperty (local, name, false) && name != stateProperty && ! incoming.hasProperty (name))
+            local.removeProperty (name, nullptr);
+    }
+
+    // Children: matched like a "children" change (by ID, or by position among siblings
+    // without one); matched ones are merged, missing ones added, the rest removed -
+    // the host's copy is the truth here.
+    juce::Array<juce::ValueTree> existing, desired;
+
+    for (const auto& c : local)
+        if (! isLocalNode (c))
+            existing.add (c);
+
+    std::map<juce::String, int> occurrence;
+
+    for (const auto& inc : incoming)
+    {
+        if (isLocalNode (inc))
+            continue;
+
+        juce::ValueTree match;
+        const auto key = stableKeyOf (inc);
+
+        if (key.isNotEmpty())
+        {
+            for (auto& c : existing)
+                if (stableKeyOf (c) == key && ! desired.contains (c))
+                    { match = c; break; }
+        }
+        else
+        {
+            const auto type = inc.getType();
+            const int wanted = occurrence[type.toString()]++;
+            int n = 0;
+
+            for (auto& c : existing)
+            {
+                if (c.hasType (type) && stableKeyOf (c).isEmpty())
+                {
+                    if (n == wanted)
+                        { match = c; break; }
+
+                    ++n;
+                }
+            }
+        }
+
+        if (match.isValid())
+        {
+            mergeNodeInPlace (match, inc);
+            desired.add (match);
+        }
+        else
+        {
+            desired.add (inc.createCopy());
+        }
+    }
+
+    for (auto& c : existing)
+        if (! desired.contains (c))
+            local.removeChild (c, nullptr);
+
+    for (int i = 0; i < desired.size(); ++i)
+    {
+        auto child = desired.getReference (i);
+        const int target = actualIndexForSynced (local, i);
+        const int current = local.indexOf (child);
+
+        if (current < 0)
+            local.addChild (child, target, nullptr);
+        else if (current != target && target < local.getNumChildren())
+            local.moveChild (current, target, nullptr);
+    }
+}
+
 juce::ValueTree EditSync::createSnapshot()
 {
     // Write every plugin's current state into the tree. These writes are sent

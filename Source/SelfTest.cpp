@@ -250,6 +250,7 @@ public:
             if (a.startsWith ("--dump="))     dumpDir = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
             if (a.startsWith ("--only="))     onlySteps = a.fromFirstOccurrenceOf ("=", false, false).unquoted();
             if (a.startsWith ("--plugin2="))  vst2File = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
+            if (a.startsWith ("--flp="))      probeFlp = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
         }
 
         // The test plugin's VST2 build sits next to its VST3 one (.../VST3/x.vst3 -> .../VST/).
@@ -302,7 +303,8 @@ public:
 private:
     te::Engine& engine;
     std::function<void (int)> finished;
-    juce::File pluginFile, vst2File, dumpDir;
+    juce::File pluginFile, vst2File, dumpDir, probeFlp;
+    int probeResyncs = 0;
     juce::String onlySteps;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     std::unique_ptr<SamplePreviewer> previewer;       // the sound browser's preview (on the simulated card)
@@ -345,6 +347,9 @@ private:
     bool saveDone = false, openDone = false;
     juce::String openError { "not done" }, newError { "not done" };
     int resyncsBefore = 0, channelsBefore = 0, clipsBefore = 0, insertsBefore = 0;
+    int inPlaceBefore = 0;
+    te::Edit* driftEdit = nullptr;
+    te::Plugin* driftPlugin = nullptr;
     bool eqEdited = false, limiterEdited = false, delayEdited = false, reverbEdited = false;
 
     // Tempo approval, sharing playback
@@ -1104,6 +1109,56 @@ private:
             [this] { dump ("host-after-join", H()); dump ("peer1-after-join", P1()); },
             [this] { return hashesEqual() && peer1.getResyncCount() == 0 && peer2.getResyncCount() == 0; },
             8000, 4000 });
+
+        // 1.12.2: a copy that drifted gets the host's copy merged in place: the song isn't
+        // reloaded (that reloads every plugin - the freeze people saw with 3 PCs).
+        steps.push_back ({ "1.12.2: peer 1's copy drifts -> the fresh copy is merged in place (same song object, same plugins, no reload) and copies agree",
+            [this]
+            {
+                driftEdit = &P1();
+                driftPlugin = nullptr;
+
+                for (auto* t : te::getAudioTracks (P1()))
+                    if (t->getName() == "Kick")
+                        driftPlugin = t->pluginList[0];
+
+                inPlaceBefore = peer1.getInPlaceResyncCount();
+                resyncsBefore = peer1.getResyncCount();
+
+                // A change on peer 1 that never leaves it (as if lost on the way).
+                auto* sync = peer1.getSync();
+                auto send = sync->onLocalOp;
+                sync->onLocalOp = [] (const juce::ValueTree&) {};
+
+                for (auto* t : te::getAudioTracks (P1()))
+                    if (t->getName() == "Clap")
+                        t->setName ("Clap (only here)");
+
+                sync->flushNow();
+                sync->onLocalOp = send;
+            },
+            [this]
+            {
+                bool clapBack = false;
+
+                for (auto* t : te::getAudioTracks (P1()))
+                    clapBack = clapBack || t->getName() == "Clap";
+
+                bool samePlugin = false;
+
+                for (auto* t : te::getAudioTracks (P1()))
+                    if (t->getName() == "Kick")
+                        samePlugin = driftPlugin != nullptr && t->pluginList[0] == driftPlugin;
+
+                const bool ok = hashesEqual() && clapBack && &P1() == driftEdit && samePlugin
+                             && peer1.getInPlaceResyncCount() == inPlaceBefore + 1 && peer1.getResyncCount() == resyncsBefore + 1;
+
+                if (ok)
+                    std::cout << "    merged in place: same song object, Kick's instrument still loaded, Clap renamed back" << std::endl;
+
+                return ok;
+            },
+            12000 });
 
         //==============================================================================
         // People and chat
@@ -5822,6 +5877,38 @@ private:
 
         //==============================================================================
         // 1.12: the master volume's automation clip (its knob is "master volume" in the engine)
+        //==============================================================================
+        // Developer probe (--flp=<file>): the host imports a real FL template, the others get it;
+        // nobody touches anything for 15 s, then copies must still agree with no fresh copies.
+        if (probeFlp.existsAsFile())
+        {
+            steps.push_back ({ "Probe: a real FL template on 3 PCs stays in step while idle (no fresh copies)",
+                [this]
+                {
+                    flimport::Project project;
+                    const auto error = flimport::parse (probeFlp, project);
+                    std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << std::endl;
+                    flimport::Options options;
+                    options.inserts = project.getUsedInserts();
+                    host.newProject ([&] (te::Edit& e) { flimport::apply (e, project, options); }, "probe");
+                    probeResyncs = peer1.getResyncCount() + peer2.getResyncCount();
+                },
+                [this]
+                {
+                    const int resyncs = peer1.getResyncCount() + peer2.getResyncCount() - probeResyncs;
+                    std::cout << "    after 15 s: hashes equal " << hashesEqual() << ", fresh copies " << resyncs << std::endl;
+
+                    if (! hashesEqual())
+                    {
+                        std::cout << "    peer1 vs host: " << collab::EditSync::describeFirstDifference (H().state, P1().state) << std::endl;
+                        std::cout << "    peer2 vs host: " << collab::EditSync::describeFirstDifference (H().state, P2().state) << std::endl;
+                    }
+
+                    return hashesEqual() && resyncs == 0;
+                },
+                16000, 15000 });
+        }
+
         steps.push_back ({ "1.12 master automation: 'Create automation clip' on the master fader makes a clip for the master volume -> on every PC",
             [this]
             {
@@ -6200,6 +6287,27 @@ private:
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },
             [this] { return hashesEqual() && compiledEqualEverywhere() && engineRoutingMatchesEverywhere(); }, 4000, 1600 });
+
+        // 1.12.2 (after the final check: it replaces the song): the host starts a new song and,
+        // a moment later, another one - the others' follow-up changes to the first one arrive
+        // after the second. They used to fail there and make everyone fetch a fresh copy.
+        steps.push_back ({ "1.12.2: the host starts two new songs in a row -> late changes to the first one are dropped, nobody needs a fresh copy",
+            [this]
+            {
+                resyncsBefore = peer1.getResyncCount() + peer2.getResyncCount();
+                host.newProject();
+                juce::Timer::callAfterDelay (40, [this]
+                {
+                    // A different song (no channels, other track IDs): the late changes can't land on it.
+                    host.newProject ([] (te::Edit& e) { song::addInsert (e, "Vox"); }, "Second song");
+                });
+            },
+            [this]
+            {
+                return hashesEqual() && peer1.getResyncCount() + peer2.getResyncCount() == resyncsBefore
+                    && everywhere ([] (te::Edit& e) { return song::getTitle (e) == "Second song"; });
+            },
+            8000, 4000 });
     }
 
     void timerCallback() override

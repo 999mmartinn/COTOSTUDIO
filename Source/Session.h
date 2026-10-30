@@ -95,6 +95,8 @@ public:
     int getNumConnectedPeers() const;
     juce::String getStatusText() const;
     int getResyncCount() const noexcept          { return resyncCount; }
+    /** Of those, how many were merged into the song in place (no reload of every plugin). */
+    int getInPlaceResyncCount() const noexcept   { return inPlaceResyncs; }
     bool isInSync() const noexcept               { return lastHashMatched; }
 
     /** Playback (PAT/SONG, play/stop, position, which pattern plays) belongs to each PC:
@@ -288,7 +290,8 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 9;   // 9 (1.2): 200 playlist tracks instead of 16
+    static constexpr int protocolVersion = 10;  // 9 (1.2): 200 playlist tracks instead of 16
+                                                // 10 (1.12.2): changes carry the song's number; fresh copies merge in place
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -323,6 +326,8 @@ private:
     int localSeq = 0;
     int hashMismatchCount = 0;
     int resyncCount = 0;
+    int songNumber = 0;          // which song changes belong to (the host counts up on every new song)
+    int inPlaceResyncs = 0;      // fresh copies merged without reloading the song
     bool lastHashMatched = true;
     juce::uint32 lastResyncRequestTime = 0;
     juce::ValueTree pendingOps { ids::MSG };
@@ -404,7 +409,8 @@ private:
     void sendLocalOp (const juce::ValueTree& op);
     void flushOutgoing();
     void broadcast (const juce::ValueTree& msg, PeerConnection* except);
-    void applyOps (const juce::ValueTree& msg, PeerConnection* from);
+    /** Applies the changes in an "ops" message; returns the ones that applied (to relay). */
+    juce::ValueTree applyOps (const juce::ValueTree& msg, PeerConnection* from);
     void applyTransport (const juce::ValueTree& msg);
     /** Sends this PC's playback to the people following its share (only while sharing).
         to: one person's roster id, or "" for everyone. */
