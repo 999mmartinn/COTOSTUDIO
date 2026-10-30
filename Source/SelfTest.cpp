@@ -5877,37 +5877,6 @@ private:
 
         //==============================================================================
         // 1.12: the master volume's automation clip (its knob is "master volume" in the engine)
-        //==============================================================================
-        // Developer probe (--flp=<file>): the host imports a real FL template, the others get it;
-        // nobody touches anything for 15 s, then copies must still agree with no fresh copies.
-        if (probeFlp.existsAsFile())
-        {
-            steps.push_back ({ "Probe: a real FL template on 3 PCs stays in step while idle (no fresh copies)",
-                [this]
-                {
-                    flimport::Project project;
-                    const auto error = flimport::parse (probeFlp, project);
-                    std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << std::endl;
-                    flimport::Options options;
-                    options.inserts = project.getUsedInserts();
-                    host.newProject ([&] (te::Edit& e) { flimport::apply (e, project, options); }, "probe");
-                    probeResyncs = peer1.getResyncCount() + peer2.getResyncCount();
-                },
-                [this]
-                {
-                    const int resyncs = peer1.getResyncCount() + peer2.getResyncCount() - probeResyncs;
-                    std::cout << "    after 15 s: hashes equal " << hashesEqual() << ", fresh copies " << resyncs << std::endl;
-
-                    if (! hashesEqual())
-                    {
-                        std::cout << "    peer1 vs host: " << collab::EditSync::describeFirstDifference (H().state, P1().state) << std::endl;
-                        std::cout << "    peer2 vs host: " << collab::EditSync::describeFirstDifference (H().state, P2().state) << std::endl;
-                    }
-
-                    return hashesEqual() && resyncs == 0;
-                },
-                16000, 15000 });
-        }
 
         steps.push_back ({ "1.12 master automation: 'Create automation clip' on the master fader makes a clip for the master volume -> on every PC",
             [this]
@@ -6308,6 +6277,38 @@ private:
                     && everywhere ([] (te::Edit& e) { return song::getTitle (e) == "Second song"; });
             },
             8000, 4000 });
+
+        //==============================================================================
+        // Developer probe (--flp=<file>; last, as it replaces the song): the host imports a real FL template, the others get it;
+        // nobody touches anything for 15 s, then copies must still agree with no fresh copies.
+        if (probeFlp.existsAsFile())
+        {
+            steps.push_back ({ "Probe: a real FL template on 3 PCs stays in step while idle (no fresh copies)",
+                [this]
+                {
+                    flimport::Project project;
+                    const auto error = flimport::parse (probeFlp, project);
+                    std::cout << "    parse: " << (error.isEmpty() ? "ok" : error) << std::endl;
+                    flimport::Options options;
+                    options.inserts = project.getUsedInserts();
+                    host.newProject ([&] (te::Edit& e) { flimport::apply (e, project, options); }, "probe");
+                    probeResyncs = peer1.getResyncCount() + peer2.getResyncCount();
+                },
+                [this]
+                {
+                    const int resyncs = peer1.getResyncCount() + peer2.getResyncCount() - probeResyncs;
+                    std::cout << "    after 15 s: hashes equal " << hashesEqual() << ", fresh copies " << resyncs << std::endl;
+
+                    if (! hashesEqual())
+                    {
+                        std::cout << "    peer1 vs host: " << collab::EditSync::describeFirstDifference (H().state, P1().state) << std::endl;
+                        std::cout << "    peer2 vs host: " << collab::EditSync::describeFirstDifference (H().state, P2().state) << std::endl;
+                    }
+
+                    return hashesEqual() && resyncs == 0;
+                },
+                16000, 15000 });
+        }
     }
 
     void timerCallback() override
