@@ -500,6 +500,7 @@ typedef struct fstPinProperties_ {
   FST_UNKNOWN(int) flags; /* ? kVstPinIsActive | kVstPinUseSpeaker | kVstPinIsStereo */
   FST_UNKNOWN(int) arrangementType; /* ? */
   char shortLabel[8];
+  char _future[48]; /* COTOSTUDIO change: the room plugins expect (some clear the whole struct) */
 } FST_UNKNOWN(t_fstPinProperties);
 
 

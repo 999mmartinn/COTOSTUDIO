@@ -5318,6 +5318,7 @@ private:
                         vst2 = f;
 
                 juce::OwnedArray<juce::PluginDescription> found;
+                std::cout << "    .. VST2 file: " << vst2File.getFullPathName() << std::endl;
 
                 if (vst2 != nullptr)
                     vst2->findAllTypesForFile (found, vst2File.getFullPathName());
@@ -5329,6 +5330,7 @@ private:
                 }
 
                 const auto desc = *found[0];
+                std::cout << "    .. scanned: " << desc.name << " (" << desc.pluginFormatName << ", id " << desc.uniqueId << ")" << std::endl;
 
                 // The plugin's own chunk with the knob at 0.35 (what FL saves, inside its header).
                 juce::MemoryBlock chunk;
@@ -5336,9 +5338,11 @@ private:
 
                 if (auto instance = vst2->createInstanceFromDescription (desc, 44100.0, 512, error))
                 {
+                    std::cout << "    .. instance made" << std::endl;
                     instance->getParameters()[0]->setValue (0.35f);
                     juce::MemoryBlock fxb;
                     instance->getStateInformation (fxb);
+                    std::cout << "    .. state: " << (int) fxb.getSize() << " bytes" << std::endl;
 
                     if (fxb.getSize() > 160)
                         chunk = juce::MemoryBlock (addBytesToPointer (fxb.getData(), 160), fxb.getSize() - 160);
@@ -5386,7 +5390,9 @@ private:
 
                 flimport::Options options;
                 options.inserts = project.getUsedInserts();
+                std::cout << "    .. importing" << std::endl;
                 const auto report = flimport::apply (*edit, project, options);
+                std::cout << "    .. imported" << std::endl;
 
                 auto* keys = insert (*edit, "Keys");
                 auto effects = keys != nullptr ? song::getInsertEffects (*keys) : juce::Array<te::Plugin*>();
@@ -5406,6 +5412,7 @@ private:
                     for (int c = 0; c < 2; ++c)
                         juce::FloatVectorOperations::fill (buffer.getWritePointer (c), 0.5f, 256);
 
+                    std::cout << "    .. playing" << std::endl;
                     pi->prepareToPlay (44100.0, 256);
                     pi->processBlock (buffer, midi);
                     out = buffer.getSample (0, 100);
@@ -5416,6 +5423,7 @@ private:
 
                 if (ext != nullptr)
                 {
+                    std::cout << "    .. saving" << std::endl;
                     pi->getParameters()[0]->setValue (0.6f);
                     ext->flushPluginStateToValueTree();
                     juce::MemoryBlock saved;
