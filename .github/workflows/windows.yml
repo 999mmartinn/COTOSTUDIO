@@ -67,6 +67,11 @@ jobs:
           # about 10 per step, so just failures, totals and measurements).
           Get-Content selftest.txt | Select-String -Pattern "FAIL|passed,|resyncs|step arrived|the take starts|mp3: |mix: |error: " |
             ForEach-Object { Write-Output "::notice::$($_.Line.Trim())" }
+          # If it failed (or stopped early), its last lines as one readable note.
+          if ($p.ExitCode -ne 0) {
+            $tail = (Get-Content selftest.txt -Tail 40 | ForEach-Object { $_.Replace('%', '%25') }) -join '%0A'
+            Write-Output "::error title=selftest.txt (last 40 lines, exit code $($p.ExitCode))::$tail"
+          }
           exit $p.ExitCode
 
       # Makes the important error lines readable without downloading logs.
