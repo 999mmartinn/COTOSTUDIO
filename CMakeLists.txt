@@ -71,6 +71,7 @@ target_sources(COTOSTUDIO PRIVATE
     Source/DelayEditor.cpp
     Source/SidechainPlugin.cpp
     Source/SidechainEditor.cpp
+    Source/MoreFx.cpp
     Source/ReverbPlugin.cpp
     Source/ReverbEditor.cpp
     Source/SamplerEditor.cpp

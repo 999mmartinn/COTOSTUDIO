@@ -29,6 +29,40 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.12
+
+* **Your recording template comes over complete.** Four new effects of our own stand in
+  for the FL effects it was missing, and an FL import gives them **your settings**:
+  * **Compressor** (for Fruity Compressor): threshold, ratio, gain, attack, release and
+    the type (Hard ... Soft, and RMS versions that follow loudness rather than peaks).
+  * **Enhancer** (for Soundgoodizer): one Amount knob and four flavours, A-D. It makes a
+    sound fuller and louder by bringing quiet parts of its lows, mids and highs up, with
+    a safety limiter at the end. It's our own take, not a copy of Soundgoodizer: check it
+    by ear.
+  * **Flanger** (for Fruity Flangus): order (how many swept copies), depth, speed,
+    delay, stereo spread, cross feedback, and dry / wet that can go below zero.
+  * **Filter** (for Fruity Love Philter): a resonant filter (1-3 stages) with low / band
+    / high mix, input and output volume and pan. Only the Love Philter's first unit
+    comes over (its envelopes and other units don't).
+  * **Fruity Limiter** now also comes with its settings (limiter, compressor and the
+    noise gate your vocal chains use).
+  * FL's **mix knob** of an effect slot (e.g. Flangus at 33%) now goes into our Delay's,
+    Reverb's and Flanger's dry / wet.
+  * All of them are in the mixer's *Built-in* list too. The engine's plain compressor is
+    now called *Compressor (simple)*.
+* **Track buttons on the playlist, like FL's:** each track has
+  * **Arm** (the dot): Rec records your input on this track, through the track's insert
+    (the insert with the track's name, or the one chosen in its right-click menu). The
+    first time it asks which insert and which input.
+  * **Monitor** (the speaker): hear your input through that insert while recording, or
+    not (crossed out = off, e.g. when your interface's direct monitor already lets you
+    hear yourself). Arm and monitor are this PC's own, like your mic.
+  * **Mute** (the green light): click mutes or unmutes the track; right-click solos it
+    (only it plays), and right-click again brings every track back.
+* **Fixed:** *Create automation clip* on the master's volume or pan did nothing (the
+  master's knobs have other names inside the engine). Now it makes the clip, and the
+  master follows it in SONG mode.
+
 ## What's new in 1.11
 
 * **VST2 plugins** load too, like VST3 ones: instruments (Omnisphere...) and effects.
@@ -632,7 +666,8 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   become sends. FL's fader curve isn't published: levels are converted from its
   ends (0 dB and +5.6 dB) and can be a dB or two off in between, so check them by
   ear. Plugin settings carry over for VST3 and VST2 plugins, and for Fruity Delay 3,
-  Reeverb 2 and Parametric EQ 2 (into ours; knobs whose units FL doesn't show, such as
+  Reeverb 2, Parametric EQ 2, Limiter, Compressor, Flangus, Love Philter (first unit) and
+  Soundgoodizer (into ours; knobs whose units FL doesn't show, such as
   the delay's feedback, land on the same knob position, so check them by ear).
 * Time-stretching (a speed other than 100% with *Keep the pitch*): a clip that plays
   up to the very end of its file loses its last tenth of a second or so (the
@@ -646,8 +681,8 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   clip on a ducked insert renders the clip before the mixer, so the bounce isn't
   ducked (the new audio goes through the same insert and gets ducked as before).
   A VST3's sidechain input is offered only if the plugin turns it on by default.
-* FL beat import: FL's own instruments and most of its effects (3x Osc, Sytrus, Fruity
-  Soft Clipper, Fruity Limiter...) can't come with their settings; automation clips and layer channels are
+* FL beat import: FL's own instruments and the FL effects we have no version of (3x Osc,
+  Sytrus, Fruity Soft Clipper...) can't come with their settings; automation clips and layer channels are
   left out; only the arrangement FL had open is imported. Sounds FL couldn't find either
   can't be found here.
 * Track groups are runs of tracks next to each other (no groups inside groups).
@@ -719,6 +754,10 @@ and 1.10: a sampler stopping at its note's end (measured: half volume 5 ms after
 silent from 10 ms), and importing a beat from an .flp written the way FL writes it (its
 sounds found next to it, a sampler with FL's volume envelope, notes with their pan and
 fine pitch, a trimmed pattern clip, an audio clip with its start inside the file),
+and 1.12: the Compressor, Filter, Enhancer and Flanger measured on test tones, a vocal
+chain from a real FL template (Limiter with its gate, Compressor, Soundgoodizer, Love
+Philter, Flangus at a 33% slot mix) imported with its settings, a track's monitor switch,
+and the master volume's automation clip,
 and 1.11: VST2 hosting (the test plugin's VST2 build loads from an FL beat, found by
 the path FL saved, with FL's saved chunk: its knob arrives, a test signal comes out at
 the right level, and its state saves and reloads), and FL effects (a real Fruity Delay 3,

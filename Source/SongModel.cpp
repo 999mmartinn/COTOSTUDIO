@@ -4,6 +4,7 @@
 #include "ParametricEQPlugin.h"
 #include "LimiterPlugin.h"
 #include "SidechainPlugin.h"
+#include "MoreFx.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 
@@ -1803,8 +1804,12 @@ juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
     list.add ({ DelayPlugin::xmlTypeName,          "Delay" });
     list.add ({ SidechainPlugin::xmlTypeName,      "Sidechain (duck to the kick)" });
     list.add ({ ReverbPlugin::xmlTypeName,         "Reverb" });
+    list.add ({ CompressorFxPlugin::xmlTypeName,   "Compressor" });
+    list.add ({ EnhancerPlugin::xmlTypeName,       "Enhancer (A-D: fuller, louder)" });
+    list.add ({ FlangerPlugin::xmlTypeName,        "Flanger" });
+    list.add ({ FilterFxPlugin::xmlTypeName,       "Filter (low / band / high)" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
-    list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor" });
+    list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor (simple)" });
     list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb (simple)" });
     list.add ({ te::DelayPlugin::xmlTypeName,      "Delay (simple)" });
     list.add ({ te::ChorusPlugin::xmlTypeName,     "Chorus" });

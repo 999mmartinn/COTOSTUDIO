@@ -65,7 +65,7 @@ struct EditorState
         {
             if (auto* p = getPlugin())
                 if (createAutomation)
-                    createAutomation (p->itemID.toString(), paramID);
+                    createAutomation (p->itemID.toString(), automationParamID (*p, paramID));
         };
 
         auto previous = knob.onDragStart;
@@ -75,8 +75,21 @@ struct EditorState
                 previous();
 
             if (auto* p = getPlugin())
-                lastTweaked = p->itemID.toString() + "|" + paramID;
+                lastTweaked = p->itemID.toString() + "|" + automationParamID (*p, paramID);
         };
+    }
+
+    /** The real ID of a volume / pan knob: the master's are "master volume" / "master pan"
+        in the engine (1.12 fix: its automation clip was never made). */
+    static juce::String automationParamID (te::Plugin& plugin, const juce::String& paramID)
+    {
+        if (auto* v = dynamic_cast<te::VolumeAndPanPlugin*> (&plugin))
+        {
+            if (paramID == "volume")  return v->volParam->paramID;
+            if (paramID == "pan")     return v->panParam->paramID;
+        }
+
+        return paramID;
     }
 
     te::Edit* getEdit() const                { return session.getEdit(); }

@@ -2006,13 +2006,50 @@ private:
 
 //==============================================================================
 class Playlist::LaneHeader  : public juce::Component,
-                              public juce::SettableTooltipClient
+                              public juce::TooltipClient
 {
 public:
-    LaneHeader (Playlist& p) : owner (p)
+    LaneHeader (Playlist& p) : owner (p) {}
+
+    // A track's buttons, like FL's (1.12): arm and monitor (this PC's recording), and the
+    // mute light (shared; right-click it: solo).
+    juce::Rectangle<int> armBox (int y, int indent) const      { return { 8 + indent, y + 16, 16, 12 }; }
+    juce::Rectangle<int> monitorBox (int y, int indent) const  { return { 8 + indent + 19, y + 16, 16, 12 }; }
+    juce::Rectangle<int> ledBox (int y) const                  { return { getWidth() - 15, y + laneHeight - 14, 10, 10 }; }
+
+    /** The insert this track records into ("" = none: takes on it play through the master). */
+    juce::String recordInsert (int lane) const
     {
-        setTooltip (TRANS ("Double-click a track to name it. Right-click: name, colour, mute, and the insert that takes dropped on it play through. "
-                           "Drag over several tracks, then right-click: group them (everyone sees all of this)"));
+        auto* edit = owner.state.getEdit();
+
+        if (edit == nullptr)
+            return {};
+
+        const auto target = getLaneTarget (*edit, lane);
+        return target.routes && findInsert (*edit, target.insertID) != nullptr ? target.insertID : juce::String();
+    }
+
+    juce::String getTooltip() override
+    {
+        const auto pos = getMouseXYRelative();
+        const auto* row = rowPtr (pos.y);
+
+        if (row != nullptr && row->lane >= 0)
+        {
+            const int y = rowAt (pos.y) * laneHeight - owner.viewport->getViewPositionY();
+            const int indent = row->group.isValid() ? 6 : 0;
+
+            if (armBox (y, indent).expanded (2).contains (pos))
+                return TRANS ("Arm for recording: Rec records your input on this track (through its insert). "
+                              "The first time it asks which insert and which input");
+            if (monitorBox (y, indent).expanded (2).contains (pos))
+                return TRANS ("Monitor: hear your input through this track's insert while you record (off if your interface's direct monitor already lets you hear yourself)");
+            if (ledBox (y).expanded (3).contains (pos))
+                return TRANS ("Mute: green = plays. Click: mute or unmute. Right-click: solo (only this track plays; again: all back)");
+        }
+
+        return TRANS ("Double-click a track to name it. Right-click: name, colour, mute, and the insert that takes dropped on it play through. "
+                      "Drag over several tracks, then right-click: group them (everyone sees all of this)");
     }
 
     int rowAt (int y) const      { return owner.rowAtY (y + owner.viewport->getViewPositionY()); }
@@ -2099,37 +2136,77 @@ public:
                     g.drawText (juce::String::fromUTF8 ("\xe2\x86\x92") + badge, box.toNearestInt(), juce::Justification::centred, false);
                 }
 
-                // Muted (its clips don't play): a small "M" in the corner.
-                if (isLaneMuted (*edit, lane))
+                // The mute light: green = plays (like FL's), dark = muted.
+                const auto led = ledBox (y).toFloat();
+                const bool muted = isLaneMuted (*edit, lane);
+                g.setColour (muted ? theme::colours::well : theme::colours::green);
+                g.fillEllipse (led);
+                g.setColour (muted ? theme::colours::dim : theme::colours::green.brighter (0.4f));
+                g.drawEllipse (led, 1.0f);
+
+                // Arm and monitor (this PC's recording, through the track's insert).
+                const auto insertID = recordInsert (lane);
+                auto& rec = owner.state.session.getRecorder();
+                const bool hasInput = insertID.isNotEmpty() && rec.getInputFor (insertID).isNotEmpty();
+                const bool armed = hasInput && rec.isArmed (insertID);
+                const bool monitored = ! hasInput || rec.isMonitored (insertID);
+                const float dimmed = hasInput ? 1.0f : 0.45f;
+
+                auto arm = armBox (y, indent).toFloat();
+                g.setColour (armed ? theme::colours::red.withAlpha (0.25f) : theme::colours::well.withAlpha (0.8f));
+                g.fillRoundedRectangle (arm, 3.0f);
+                g.setColour (armed ? theme::colours::red : theme::colours::muted.withMultipliedAlpha (dimmed));
+                const auto dot = arm.withSizeKeepingCentre (7.0f, 7.0f);
+
+                if (armed)
+                    g.fillEllipse (dot);
+                else
+                    g.drawEllipse (dot, 1.2f);
+
+                auto mon = monitorBox (y, indent).toFloat();
+                g.setColour (theme::colours::well.withAlpha (0.8f));
+                g.fillRoundedRectangle (mon, 3.0f);
+                const auto c = (hasInput && monitored ? theme::colours::text : theme::colours::muted).withMultipliedAlpha (dimmed);
+                g.setColour (c);
+                juce::Path speaker;
+                const float sx = mon.getX() + 3.5f, sy = mon.getCentreY();
+                speaker.startNewSubPath (sx, sy - 2.0f);
+                speaker.lineTo (sx + 2.5f, sy - 2.0f);
+                speaker.lineTo (sx + 5.5f, sy - 4.5f);
+                speaker.lineTo (sx + 5.5f, sy + 4.5f);
+                speaker.lineTo (sx + 2.5f, sy + 2.0f);
+                speaker.lineTo (sx, sy + 2.0f);
+                speaker.closeSubPath();
+                g.fillPath (speaker);
+
+                if (hasInput && ! monitored)
                 {
-                    auto box = juce::Rectangle<float> ((float) getWidth() - 15.0f, (float) y + laneHeight - 13.0f, 11.0f, 10.0f);
-                    g.setColour (theme::colours::red.withAlpha (0.85f));
-                    g.fillRoundedRectangle (box, 2.5f);
-                    g.setColour (theme::colours::accentText);
-                    g.setFont (theme::mono (8.0f, true));
-                    g.drawText ("M", box.toNearestInt(), juce::Justification::centred, false);
+                    g.setColour (theme::colours::red);
+                    g.drawLine (sx + 7.0f, sy - 2.5f, sx + 11.0f, sy + 2.5f, 1.3f);
+                    g.drawLine (sx + 7.0f, sy + 2.5f, sx + 11.0f, sy - 2.5f, 1.3f);
+                }
+                else
+                {
+                    juce::Path wave;
+                    wave.addCentredArc (sx + 6.0f, sy, 3.5f, 3.5f, 0.0f, 0.6f, 2.5f, true);
+                    g.strokePath (wave, juce::PathStrokeType (1.1f));
                 }
             }
 
             const auto name = edit != nullptr ? getLaneName (*edit, lane) : juce::String();
             const float alpha = audible[(size_t) lane] ? 1.0f : 0.45f;
+            const int nameRight = getWidth() - 28;   // (the insert badge is top right)
 
-            if (name.isEmpty())
-            {
-                g.setFont (theme::ui (11.0f, theme::Weight::semibold));
-                g.setColour (theme::colours::muted.withMultipliedAlpha (alpha));
-                g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10 + indent, y, getWidth() - 12 - indent, laneHeight, juce::Justification::centredLeft);
-            }
-            else
-            {
-                // The track's name, its number small above it.
-                g.setFont (theme::mono (9.0f));
-                g.setColour (theme::colours::dim.withMultipliedAlpha (alpha));
-                g.drawText (juce::String (lane + 1), 8 + indent, y + 2, getWidth() - 10 - indent, 10, juce::Justification::centredLeft);
-                g.setFont (theme::ui (11.0f, theme::Weight::semibold));
-                g.setColour (theme::colours::text.withMultipliedAlpha (alpha));
-                g.drawFittedText (name, 8 + indent, y + 11, getWidth() - 10 - indent, laneHeight - 13, juce::Justification::centredLeft, 1, 0.7f);
-            }
+            // The track's number small, then its name, on the top line.
+            g.setFont (theme::mono (9.0f));
+            g.setColour (theme::colours::dim.withMultipliedAlpha (alpha));
+            const auto number = juce::String (lane + 1);
+            const int numberWidth = 6 * number.length() + 3;
+            g.drawText (number, 8 + indent, y + 2, numberWidth, 13, juce::Justification::centredLeft);
+            g.setFont (theme::ui (11.0f, theme::Weight::semibold));
+            g.setColour ((name.isEmpty() ? theme::colours::muted : theme::colours::text).withMultipliedAlpha (alpha));
+            g.drawFittedText (name.isEmpty() ? TRANS ("Track") + " " + number : name, 8 + indent + numberWidth, y + 2,
+                              nameRight - 8 - indent - numberWidth, 13, juce::Justification::centredLeft, 1, 0.7f);
         }
 
         g.setColour (theme::colours::line);
@@ -2209,6 +2286,30 @@ public:
             return;
         }
 
+        {
+            const int y = rowAt (e.y) * laneHeight - owner.viewport->getViewPositionY();
+            const int indent = row->group.isValid() ? 6 : 0;
+
+            if (ledBox (y).expanded (3).contains (e.getPosition()))
+            {
+                if (e.mods.isPopupMenu())  soloLane (row->lane);
+                else                       toggleLaneMute (row->lane);
+                return;
+            }
+
+            if (! e.mods.isPopupMenu() && armBox (y, indent).expanded (2).contains (e.getPosition()))
+            {
+                armLane (row->lane);
+                return;
+            }
+
+            if (! e.mods.isPopupMenu() && monitorBox (y, indent).expanded (2).contains (e.getPosition()))
+            {
+                toggleMonitor (row->lane);
+                return;
+            }
+        }
+
         if (e.mods.isPopupMenu())
         {
             showLaneMenu (row->lane);
@@ -2233,6 +2334,137 @@ public:
             selLast = row->lane;
             repaint();
         }
+    }
+
+    void toggleLaneMute (int lane)
+    {
+        if (auto* e = owner.state.getEdit())
+        {
+            owner.state.beginAction();
+            setLaneMuted (*e, lane, ! isLaneMuted (*e, lane));
+            owner.refresh();
+        }
+    }
+
+    /** FL's solo: only this track plays; on a track already soloed, every track plays again.
+        (It mutes the others, so it is shared and undoable like muting.) */
+    void soloLane (int lane)
+    {
+        auto* e = owner.state.getEdit();
+
+        if (e == nullptr)
+            return;
+
+        bool alreadySolo = ! isLaneMuted (*e, lane);
+
+        for (int i = 0; i < numLanes && alreadySolo; ++i)
+            if (i != lane && ! isLaneMuted (*e, i) && laneHasClips (*e, i))
+                alreadySolo = false;
+
+        owner.state.beginAction();
+
+        for (int i = 0; i < numLanes; ++i)
+        {
+            const bool mute = alreadySolo ? false : i != lane;
+
+            if (isLaneMuted (*e, i) != mute)
+                setLaneMuted (*e, i, mute);
+        }
+
+        owner.refresh();
+    }
+
+    static bool laneHasClips (te::Edit& e, int lane)
+    {
+        for (auto c : getClips (e))
+            if ((int) c[ids::lane] == lane)
+                return true;
+
+        return false;
+    }
+
+    void armLane (int lane)
+    {
+        auto* edit = owner.state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        auto& rec = owner.state.session.getRecorder();
+        const auto insertID = recordInsert (lane);
+
+        if (insertID.isEmpty())
+        {
+            // Which insert does this track record into? (shared: it's where its takes play)
+            juce::PopupMenu m;
+            m.addSectionHeader (TRANS ("Record this track through which insert?"));
+            const auto inserts = getInserts (*edit);
+
+            for (int i = 0; i < inserts.size(); ++i)
+                m.addItem (i + 1, juce::String (getInsertNumber (*edit, *inserts[i])) + ". " + inserts[i]->getName());
+
+            if (inserts.isEmpty())
+                m.addItem (-1, TRANS ("No inserts yet: add one in the mixer (+ Insert)"), false);
+
+            m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                             [safe = juce::Component::SafePointer<LaneHeader> (this), lane, inserts] (int r)
+            {
+                if (safe == nullptr || r <= 0 || r > inserts.size())
+                    return;
+
+                if (auto* e = safe->owner.state.getEdit(); e != nullptr && getInserts (*e).contains (inserts[r - 1]))
+                {
+                    safe->owner.state.beginAction();
+                    setLaneInsertSetting (*e, lane, inserts[r - 1]->itemID.toString());
+                    safe->owner.refresh();
+                    safe->armLane (lane);
+                }
+            });
+            return;
+        }
+
+        if (rec.getInputFor (insertID).isEmpty())
+        {
+            // Which input (mic) feeds it? (this PC only)
+            juce::PopupMenu m;
+            m.addSectionHeader (TRANS ("Record which input?"));
+            const auto inputs = rec.getInputs();
+
+            for (int i = 0; i < inputs.size(); ++i)
+                m.addItem (i + 1, inputs[i].name);
+
+            if (inputs.isEmpty())
+                m.addItem (-1, TRANS ("No inputs: choose your sound card in Settings > Sound card and MIDI"), false);
+
+            m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                             [safe = juce::Component::SafePointer<LaneHeader> (this), insertID, inputs] (int r)
+            {
+                if (safe == nullptr || r <= 0 || r > inputs.size())
+                    return;
+
+                safe->owner.state.session.getRecorder().setInputFor (insertID, inputs[r - 1].id);   // (arms it)
+                safe->repaint();
+            });
+            return;
+        }
+
+        rec.setArmed (insertID, ! rec.isArmed (insertID));
+        repaint();
+    }
+
+    void toggleMonitor (int lane)
+    {
+        auto& rec = owner.state.session.getRecorder();
+        const auto insertID = recordInsert (lane);
+
+        if (insertID.isEmpty() || rec.getInputFor (insertID).isEmpty())
+        {
+            armLane (lane);   // (nothing to hear yet: set it up first)
+            return;
+        }
+
+        rec.setMonitored (insertID, ! rec.isMonitored (insertID));
+        repaint();
     }
 
     void toggleGroupMute (const juce::String& sid)
@@ -3229,6 +3461,28 @@ void Playlist::setZoom (float newPixelsPerBeat, float anchorX)
 void Playlist::timerCallback()
 {
     auto* edit = state.getEdit();
+
+    // The tracks' arm / monitor buttons follow changes made elsewhere (Rec's menu, the mixer).
+    if (++ticksSinceArmCheck >= 10 && edit != nullptr)
+    {
+        ticksSinceArmCheck = 0;
+        auto& rec = state.session.getRecorder();
+        juce::String sig;
+
+        for (auto* t : getInserts (*edit))
+        {
+            const auto id = t->itemID.toString();
+            sig << id.getLastCharacters (4) << (rec.getInputFor (id).isNotEmpty() ? "i" : "") << (rec.isArmed (id) ? "a" : "")
+                << (rec.isMonitored (id) ? "" : "m") << (rec.isMonitoring() ? "" : "M") << ";";
+        }
+
+        if (sig != armSignature)
+        {
+            armSignature = sig;
+            header->repaint();
+        }
+    }
+
     const bool playing = edit != nullptr && edit->getTransport().isPlaying() && state.session.isSongMode();
 
     if (playing || playing != wasPlaying)

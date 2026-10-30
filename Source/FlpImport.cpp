@@ -5,6 +5,7 @@
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 #include "SamplerPlugin.h"
+#include "MoreFx.h"
 #include <cmath>
 #include <map>
 #include <set>
@@ -1051,6 +1052,121 @@ bool applyFlSettings (te::Plugin& p, const Effect& fx, double bpm)
         return true;
     }
 
+    if (fx.kind == "Fruity Limiter" && dynamic_cast<LimiterPlugin*> (&p) != nullptr)
+    {
+        // Version 7: limiter gain, saturation, ceiling, attack, (curve), release, (curve), sustain,
+        // then the compressor's threshold, knee, ratio, attack, release, (curve), sustain, then the
+        // gate's gain, threshold, release. Levels: 1000 = 0 dB (x1); times 0..10000 (knob position).
+        if (v.size() < 19 || v[0] != 7)
+            return false;
+
+        auto db = [] (int x) { return x <= 0 ? -100.0 : 20.0 * std::log10 (x / 1000.0); };
+        auto knob = [] (int x) { return juce::jlimit (0.0, 1.0, x / 10000.0); };
+
+        setValue (p, "limGain", db (v[1]));
+        setKnob  (p, "saturation", 1.0 - v[2] / 1000.0);        // FL: 1000 = none
+        setValue (p, "ceiling", db (v[3]));
+        setKnob  (p, "limAttack", knob (v[4]));
+        setKnob  (p, "limRelease", knob (v[6]));
+        setKnob  (p, "limSustain", knob (v[8]));
+        setValue (p, "compThresh", db (v[9]));
+        setValue (p, "compKnee", 24.0 * v[10] / 1000.0);
+        setValue (p, "compRatio", 1.0 + 29.0 * std::pow (juce::jlimit (0.0, 1.0, v[11] / 1000.0), 2.0));
+        setKnob  (p, "compAttack", knob (v[12]));
+        setKnob  (p, "compRelease", knob (v[13]));
+        setKnob  (p, "compSustain", knob (v[15]));
+        setValue (p, "gateGain", juce::jlimit (0.0, 1.0, v[16] / 1000.0));
+        setValue (p, "gateThresh", juce::jmax (-80.0, db (v[17])));
+        setKnob  (p, "gateRelease", knob (v[18]));
+        return true;
+    }
+
+    if (fx.kind == "Fruity Compressor" && dynamic_cast<CompressorFxPlugin*> (&p) != nullptr)
+    {
+        // Version 3: threshold (0.1 dB), ratio (x10), gain (0.1 dB), attack (0.1 ms), release (ms), type.
+        if (v.size() < 7 || v[0] != 3)
+            return false;
+
+        setValue (p, "threshold", v[1] / 10.0);
+        setValue (p, "ratio", v[2] / 10.0);
+        setValue (p, "gain", v[3] / 10.0);
+        setValue (p, "attack", v[4] / 10.0);
+        setValue (p, "release", v[5]);
+        setValue (p, "compType", juce::jlimit (0, 7, v[6]));
+        return true;
+    }
+
+    if (fx.kind == "Soundgoodizer" && dynamic_cast<EnhancerPlugin*> (&p) != nullptr)
+    {
+        // Version 3: mode (0 = A ... 3 = D), amount (0..1000).
+        if (v.size() < 3 || v[0] != 3)
+            return false;
+
+        setValue (p, "mode", juce::jlimit (0, 3, v[1]));
+        setValue (p, "amount", v[2] / 1000.0);
+        return true;
+    }
+
+    if (fx.kind == "Fruity Flangus" && dynamic_cast<FlangerPlugin*> (&p) != nullptr)
+    {
+        // Order, depth (0..1024), speed (0..1024), delay (0..128), spread (0..128), cross, dry, wet (-128..128).
+        if (v.size() < 8)
+            return false;
+
+        setValue (p, "order", juce::jlimit (1, FlangerPlugin::maxOrder, v[0]));
+        setValue (p, "depth", v[1] / 1024.0);
+        setValue (p, "speed", v[2] / 1024.0);
+        setValue (p, "delay", v[3] / 128.0);
+        setValue (p, "spread", v[4] / 128.0);
+        setValue (p, "cross", v[5] / 128.0);
+        setValue (p, "dry", v[6] / 128.0);
+        setValue (p, "wet", v[7] / 128.0);
+        return true;
+    }
+
+    if (fx.kind == "Fruity Love Philter" && dynamic_cast<FilterFxPlugin*> (&p) != nullptr)
+    {
+        // u32 version, then zlib: ..., byte 62 = length of a UTF-16 text (preset name), the
+        // text, then the first unit: knobs 0..256 (128 = 50%, volumes 128 = 100%), the low /
+        // band / high sliders (0..128), ..., the filter type (0 off, 1 single, 2 dual,
+        // 3 triple, 4 alt dual, 5 alt triple). Only the first unit comes over.
+        if (fx.flData.getSize() < 8)
+            return false;
+
+        juce::MemoryOutputStream unpacked;
+
+        {
+            juce::MemoryInputStream packed (juce::addBytesToPointer (fx.flData.getData(), 4), fx.flData.getSize() - 4, false);
+            juce::GZIPDecompressorInputStream zlib (&packed, false, juce::GZIPDecompressorInputStream::zlibFormat);
+            unpacked.writeFromInputStream (zlib, 1 << 20);
+        }
+
+        auto* d = (const juce::uint8*) unpacked.getData();
+        const auto size = unpacked.getDataSize();
+
+        if (size < 64)
+            return false;
+
+        const size_t start = 63 + 2 * (size_t) d[62];
+
+        if (start + 14 * 4 > size)
+            return false;
+
+        auto at = [d, start] (int i) { return (int) juce::ByteOrder::littleEndianInt (d + start + 4 * (size_t) i); };
+        auto gainDb = [] (int x) { return x <= 0 ? -24.0 : 20.0 * std::log10 (x / 128.0); };
+        static constexpr int stageCounts[] = { 0, 1, 2, 3, 2, 3 };
+
+        setValue (p, "inVol", gainDb (at (0)));
+        setKnob  (p, "cutoff", at (2) / 256.0);
+        setKnob  (p, "resonance", juce::jlimit (0.0, 1.0, (at (6) - 64) / 128.0));
+        setValue (p, "low", at (3) / 128.0);
+        setValue (p, "band", at (4) / 128.0);
+        setValue (p, "high", at (5) / 128.0);
+        setValue (p, "outVol", gainDb (at (9)));
+        setValue (p, "stages", stageCounts[juce::jlimit (0, 5, at (12))]);
+        return true;
+    }
+
     return false;
 }
 
@@ -1363,6 +1479,20 @@ static void scanFlVST2s (te::Engine& engine, const Project& project)
         check (c.plugin);
 }
 
+/** COTOSTUDIO's own effect standing in for one of FL's: { type, name }, or empty. */
+static std::pair<juce::String, juce::String> ourVersionOf (const juce::String& flKind)
+{
+    if (flKind == "Fruity Parametric EQ 2")  return { ParametricEQPlugin::xmlTypeName, TRANS ("Parametric EQ") };
+    if (flKind == "Fruity Limiter")          return { LimiterPlugin::xmlTypeName, TRANS ("Limiter") };
+    if (flKind == "Fruity Delay 3")          return { DelayPlugin::xmlTypeName, TRANS ("Delay") };
+    if (flKind == "Fruity Reeverb 2")        return { ReverbPlugin::xmlTypeName, TRANS ("Reverb") };
+    if (flKind == "Fruity Compressor")       return { CompressorFxPlugin::xmlTypeName, TRANS ("Compressor") };
+    if (flKind == "Soundgoodizer")           return { EnhancerPlugin::xmlTypeName, TRANS ("Enhancer") };
+    if (flKind == "Fruity Flangus")          return { FlangerPlugin::xmlTypeName, TRANS ("Flanger") };
+    if (flKind == "Fruity Love Philter")     return { FilterFxPlugin::xmlTypeName, TRANS ("Filter") };
+    return {};
+}
+
 Report apply (te::Edit& edit, const Project& project, const Options& options)
 {
     Report report;
@@ -1502,33 +1632,36 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
                                             .replace ("{WHAT}", where).replace ("{P}", juce::String (juce::roundToInt (fx.mix * 100.0))));
                 }
             }
-            else if (fx.kind == "Fruity Parametric EQ 2" || fx.kind == "Fruity Limiter"
-                     || fx.kind == "Fruity Delay 3" || fx.kind == "Fruity Reeverb 2")
+            else if (auto ours = ourVersionOf (fx.kind); ours.first.isNotEmpty())
             {
-                // Our own versions, with FL's settings where they can be read (not yet for the
-                // Limiter: it starts from its defaults).
-                const bool limiter = fx.kind == "Fruity Limiter", delay = fx.kind == "Fruity Delay 3",
-                           eq = fx.kind == "Fruity Parametric EQ 2";
-                const juce::String ours = limiter ? TRANS ("Limiter") : delay ? TRANS ("Delay") : eq ? TRANS ("Parametric EQ") : TRANS ("Reverb");
-                plugin = song::createEffect (edit, limiter ? LimiterPlugin::xmlTypeName
-                                                           : delay ? DelayPlugin::xmlTypeName
-                                                           : eq ? ParametricEQPlugin::xmlTypeName : ReverbPlugin::xmlTypeName, nullptr);
+                // Our own versions, with FL's settings where they can be read.
+                plugin = song::createEffect (edit, ours.first, nullptr);
 
                 if (plugin != nullptr)
                 {
-                    if (! limiter && applyFlSettings (*plugin, fx, project.bpm))
+                    if (applyFlSettings (*plugin, fx, project.bpm))
                     {
                         ++report.effectsWithSettings;
                         report.notes.add (TRANS ("{OURS} (ours) in place of {FL}, with your settings from FL")
-                                            .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+                                            .replace ("{OURS}", ours.second).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
                     }
                     else
                     {
                         report.defaultSettings.add (TRANS ("{OURS} (ours) in place of {FL} - set it again")
-                                                      .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+                                                      .replace ("{OURS}", ours.second).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
                     }
 
-                    if (fx.mix < 0.995)
+                    // FL's slot mix (dry sound + this much of the effect's output) goes into our
+                    // dry / wet knobs where the effect has them.
+                    auto dryParam = plugin->getAutomatableParameterByID ("dry"), wetParam = plugin->getAutomatableParameterByID ("wet");
+
+                    if (fx.mix < 0.995 && dryParam != nullptr && wetParam != nullptr)
+                    {
+                        const auto m = (float) juce::jlimit (0.0, 1.0, fx.mix);
+                        dryParam->setParameter ((1.0f - m) + m * dryParam->getCurrentValue(), juce::sendNotification);
+                        wetParam->setParameter (m * wetParam->getCurrentValue(), juce::sendNotification);
+                    }
+                    else if (fx.mix < 0.995)
                         report.notes.add (TRANS ("{WHAT}: FL mixed it in at {P}% - here it is at 100%")
                                             .replace ("{WHAT}", where).replace ("{P}", juce::String (juce::roundToInt (fx.mix * 100.0))));
                 }

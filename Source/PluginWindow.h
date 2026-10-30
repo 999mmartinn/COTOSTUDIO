@@ -8,6 +8,7 @@
 #include "DelayEditor.h"
 #include "ReverbEditor.h"
 #include "SidechainEditor.h"
+#include "MoreFx.h"
 #include "SamplerEditor.h"
 
 #if JUCE_WINDOWS
@@ -147,6 +148,9 @@ public:
             content = std::make_unique<SidechainEditor> (*sidechain);
         else if (auto* sampler = dynamic_cast<SamplerPlugin*> (&plugin))
             content = std::make_unique<SamplerEditor> (*sampler);
+        else if (dynamic_cast<CompressorFxPlugin*> (&plugin) != nullptr || dynamic_cast<EnhancerPlugin*> (&plugin) != nullptr
+                  || dynamic_cast<FlangerPlugin*> (&plugin) != nullptr || dynamic_cast<FilterFxPlugin*> (&plugin) != nullptr)
+            content = std::make_unique<MoreFxEditor> (*dynamic_cast<CotoFxPlugin*> (&plugin));
 
         if (content == nullptr)
             content = std::make_unique<GenericPluginPanel> (plugin);

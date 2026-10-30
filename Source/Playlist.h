@@ -47,7 +47,7 @@ public:
     static constexpr int headerHeight = 36;
 
     // The ruler: bar numbers, tempo tags and punch range on top, markers in a strip below.
-    static constexpr int laneHeight = 30, laneHeaderWidth = 78, rulerBarsHeight = 20, rulerHeight = 34;
+    static constexpr int laneHeight = 30, laneHeaderWidth = 118, rulerBarsHeight = 20, rulerHeight = 34;
 
     /** Full screen: the playlist fills the main window (set up by the main window). */
     std::function<void()> onFullScreenToggle;
@@ -87,6 +87,8 @@ private:
     std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbnails;
     juce::AudioThumbnail* getThumbnail (const juce::String& hash);
     float pixelsPerBeat = 22.0f;
+    juce::String armSignature;   // the tracks' arm / monitor state last painted (repaints when it changes)
+    int ticksSinceArmCheck = 0;
     static constexpr float minPixelsPerBeat = 1.0f;   // 4 pixels a bar in 4/4: 300 bars in 1200 pixels
     bool wasPlaying = false;
 

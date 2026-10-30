@@ -54,6 +54,11 @@ public:
     void setMonitoring (bool);
     bool isMonitoring() const noexcept                   { return monitoring; }
 
+    /** Monitoring of one insert's input (the playlist track's speaker button, 1.12): heard
+        only while this and the overall monitoring are both on. On by default. */
+    bool isMonitored (const juce::String& insertID) const;
+    void setMonitored (const juce::String& insertID, bool);
+
     /** Which input feeds which insert, as text (kept in your settings and in templates).
         Inserts are matched by ID and name, so another song's inserts are never picked up.
         onlyThisSong: just the current song's inserts (for a template). */
@@ -110,7 +115,10 @@ private:
         bool armed = false;
         juce::String insertName;   // to tell this song's insert from another song's with the same ID
         bool live = false;         // matched to an insert of the current song
+        bool monitored = true;     // heard through the insert (with the overall monitoring on)
     };
+    /** The monitor mode an input should have: on if any insert it feeds is monitored. */
+    bool inputMonitored (const juce::String& inputID) const;
     void enableInput (const juce::String& inputID);
     /** The choice for an insert of the current song, or nullptr. */
     const Choice* liveChoice (const juce::String& insertID) const;

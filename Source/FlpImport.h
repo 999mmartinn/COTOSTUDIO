@@ -47,6 +47,16 @@ namespace te = tracktion;
         20 Hz..20 kHz on a log scale), 7 widths, 7 types (0 off, 1 low pass, 2 band pass,
         3 high pass, 4 notch, 5 low shelf, 6 peaking, 7 high shelf), 7 slopes, main level
         (0.01 dB); then the same again (FL's compare slot).
+    1.12, from a second calibration project and the user's template:
+      Fruity Limiter (v7): 1 gain, 2 saturation (1000 = none), 3 ceiling (1000 = 0 dB), 4 attack,
+        6 release, 8 sustain, 9 comp threshold, 10 knee, 11 ratio (0 = 1:1), 12 attack, 13 release,
+        15 sustain, 16 gate gain (1000 = no gating), 17 gate threshold, 18 gate release.
+      Fruity Compressor (v3): threshold (0.1 dB), ratio (x10), gain (0.1 dB), attack (0.1 ms),
+        release (ms), type (3 = Soft).  Soundgoodizer (v3): mode (0 = A), amount (0..1000).
+      Fruity Flangus: order, depth, speed (0..1024), delay, spread (0..128), cross, dry, wet
+        (-128..128).  Fruity Love Philter: u32, then zlib; byte 62 = length of a UTF-16 preset
+        name; after it the first unit's knobs (0..256, 128 = 50% / volumes 100%), low / band /
+        high (0..128), the filter type at int 12.
     The beat (1.10):
       channels: 64 = channel index (a new channel), 21 type (0 sampler, 2 plugin,
         3 layer, 4 audio clip, 5 automation), 201 plugin kind ("Fruity Wrapper" = VST),
@@ -237,7 +247,8 @@ namespace flimport
     juce::String dryRun (te::Engine&, const juce::File&, const juce::StringArray& args);
 
     /** Gives one of our effects the settings of the FL effect it stands in for (Fruity
-        Delay 3, Fruity Reeverb 2, Fruity Parametric EQ 2). Returns false if the FL data
+        Delay 3, Reeverb 2, Parametric EQ 2, Limiter, Compressor, Flangus, Love Philter and
+        Soundgoodizer). Returns false if the FL data
         isn't in a layout it knows (the effect then keeps its defaults). */
     bool applyFlSettings (te::Plugin& ours, const Effect& fl, double bpm);
 

@@ -151,8 +151,8 @@ void Recorder::applyChoices()
         if (idi == nullptr)
             continue;
 
-        // Heard through the insert's effects (like FL), unless monitoring is off.
-        idi->getInputDevice().setMonitorMode (monitoring ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
+        // Heard through the insert's effects (like FL), unless monitoring is off (overall or for it).
+        idi->getInputDevice().setMonitorMode (inputMonitored (choice.inputID) ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
 
         if (! idi->getTargets().contains (insert->itemID))
             if (auto dest = idi->setTarget (insert->itemID, true, nullptr); ! dest)
@@ -220,7 +220,7 @@ void Recorder::setInputFor (const juce::String& insertID, const juce::String& in
     }
 
     enableInput (inputID);
-    choices[insertID] = { inputID, true, insert != nullptr ? insert->getName() : juce::String(), true };
+    choices[insertID] = { inputID, true, insert != nullptr ? insert->getName() : juce::String(), true, true };
     applyChoices();
 }
 
@@ -293,7 +293,36 @@ void Recorder::setMonitoring (bool shouldMonitor)
     for (auto& [insertID, choice] : choices)
         if (choice.live)
             if (auto* idi = findInstance (choice.inputID))
-                idi->getInputDevice().setMonitorMode (monitoring ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
+                idi->getInputDevice().setMonitorMode (inputMonitored (choice.inputID) ? te::InputDevice::MonitorMode::on : te::InputDevice::MonitorMode::off);
+}
+
+bool Recorder::inputMonitored (const juce::String& inputID) const
+{
+    if (! monitoring)
+        return false;
+
+    for (auto& [insertID, choice] : choices)
+        if (choice.live && choice.inputID == inputID && choice.monitored)
+            return true;
+
+    return false;
+}
+
+bool Recorder::isMonitored (const juce::String& insertID) const
+{
+    auto* c = liveChoice (insertID);
+    return c == nullptr || c->monitored;
+}
+
+void Recorder::setMonitored (const juce::String& insertID, bool shouldBeMonitored)
+{
+    auto it = choices.find (insertID);
+
+    if (it == choices.end() || ! it->second.live)
+        return;
+
+    it->second.monitored = shouldBeMonitored;
+    applyChoices();
 }
 
 juce::String Recorder::saveChoices (bool onlyThisSong) const
@@ -302,7 +331,8 @@ juce::String Recorder::saveChoices (bool onlyThisSong) const
 
     for (auto& [insertID, choice] : choices)
         if (choice.live || ! onlyThisSong)
-            lines.add (insertID + "\t" + choice.insertName + "\t" + choice.inputID + "\t" + (choice.armed ? "1" : "0"));
+            lines.add (insertID + "\t" + choice.insertName + "\t" + choice.inputID + "\t" + (choice.armed ? "1" : "0")
+                         + (choice.monitored ? juce::String() : juce::String ("\tm0")));   // (1.12: monitoring off)
 
     return lines.joinIntoString ("\n");
 }
@@ -320,7 +350,7 @@ void Recorder::restoreChoices (const juce::String& text)
         if (auto it = choices.find (parts[0]); it != choices.end() && it->second.live)
             continue;
 
-        choices[parts[0]] = { parts[2], parts[3] == "1", parts[1], false };
+        choices[parts[0]] = { parts[2], parts[3] == "1", parts[1], false, parts[4] != "m0" };
         enableInput (parts[2]);
     }
 

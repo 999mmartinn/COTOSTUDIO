@@ -27,6 +27,7 @@
 #include "FileImport.h"
 #include "AppData.h"
 #include "FlpImport.h"
+#include "MoreFx.h"
 
 namespace
 {
@@ -371,6 +372,7 @@ private:
     // FL Studio template import
     bool flpCheck = false, cleanupCheck = false, backupCheck = false;
     std::map<juce::String, bool> checks;   // results worked out once, in a step's action
+    juce::String masterAutoSid;
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -5545,6 +5547,310 @@ private:
             }(); },
             [this] { return checks["flfx"]; },
             10000 });
+
+        //==============================================================================
+        // 1.12: four more effects of our own (measured), and FL's versions of them imported
+        steps.push_back ({ "1.12 effects measured: Compressor turns a loud tone down by its ratio, Filter muffles highs, Enhancer brings a quiet sound up, Flanger sweeps",
+            {},
+            [this]
+            {
+                const double sr = 44100.0;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi && ! std::isnan (got);
+                    std::cout << "    " << what << ": " << juce::String (got, 4) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                auto edit = te::createEmptyEdit (engine, juce::File());
+
+                // A sine through a plugin for a second; returns the peak of the last 0.2 s.
+                auto peakThrough = [&] (te::Plugin& plugin, double hz, float level, std::vector<float>* all = nullptr)
+                {
+                    plugin.initialise ({ te::TimePosition(), sr, 512 });
+                    plugin.reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    float peak = 0.0f;
+                    const int total = (int) sr;
+
+                    for (int pos = 0; pos < total; pos += 512)
+                    {
+                        for (int i = 0; i < 512; ++i)
+                            for (int c = 0; c < 2; ++c)
+                                buffer.setSample (c, i, level * (float) std::sin (juce::MathConstants<double>::twoPi * hz * (pos + i) / sr));
+
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        plugin.applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                        {
+                            if (pos + i > total - (int) (0.2 * sr))
+                                peak = juce::jmax (peak, std::abs (buffer.getSample (0, i)));
+
+                            if (all != nullptr)
+                                all->push_back (buffer.getSample (0, i));
+                        }
+                    }
+
+                    return peak;
+                };
+                auto set = [] (te::Plugin& p, const char* id, float v) { p.getAutomatableParameterByID (id)->setParameter (v, juce::sendNotificationSync); };
+                auto db = [] (float g) { return juce::Decibels::gainToDecibels (g, -100.0f); };
+
+                auto comp = edit->getPluginCache().createNewPlugin (CompressorFxPlugin::xmlTypeName, {});
+                set (*comp, "threshold", -20.0f);  set (*comp, "ratio", 4.0f);  set (*comp, "compType", 0.0f);
+                set (*comp, "attack", 1.0f);  set (*comp, "release", 50.0f);  set (*comp, "gain", 0.0f);
+                // A 0 dB peak sine is 20 dB over: 4:1 leaves 5 dB over, so about -15 dB.
+                check ("compressor 4:1 at -20 dB, 0 dB in -> dB out", db (peakThrough (*comp, 200.0, 1.0f)), -16.5, -13.5);
+                check ("compressor, -30 dB in (under the threshold) -> dB out", db (peakThrough (*comp, 200.0, juce::Decibels::decibelsToGain (-30.0f))), -30.5, -29.5);
+
+                auto filter = edit->getPluginCache().createNewPlugin (FilterFxPlugin::xmlTypeName, {});
+                set (*filter, "cutoff", 500.0f);  set (*filter, "resonance", 0.0f);  set (*filter, "stages", 2.0f);
+                check ("filter low pass 500 Hz x2: 100 Hz -> dB", db (peakThrough (*filter, 100.0, 0.5f) / 0.5f), -2.0, 1.0);
+                check ("filter low pass 500 Hz x2: 5 kHz -> dB", db (peakThrough (*filter, 5000.0, 0.5f) / 0.5f), -100.0, -30.0);
+                set (*filter, "low", 0.0f);  set (*filter, "high", 1.0f);
+                check ("filter high pass 500 Hz x2: 100 Hz -> dB", db (peakThrough (*filter, 100.0, 0.5f) / 0.5f), -100.0, -20.0);
+
+                auto enhancer = edit->getPluginCache().createNewPlugin (EnhancerPlugin::xmlTypeName, {});
+                set (*enhancer, "amount", 0.0f);
+                const float quietPlain = peakThrough (*enhancer, 1000.0, 0.03f);
+                set (*enhancer, "amount", 1.0f);  set (*enhancer, "mode", 2.0f);
+                const float quietUp = peakThrough (*enhancer, 1000.0, 0.03f);
+                check ("enhancer amount 0: a -30 dB tone comes out at (dB)", db (quietPlain) - db (0.03f), -0.5, 0.5);
+                check ("enhancer C 100%: the same tone comes up by (dB)", db (quietUp) - db (0.03f), 3.0, 14.0);
+                check ("enhancer C 100%: a 0 dB tone stays under the ceiling (peak)", peakThrough (*enhancer, 1000.0, 1.0f), 0.5, 0.99);
+
+                auto flanger = edit->getPluginCache().createNewPlugin (FlangerPlugin::xmlTypeName, {});
+                std::vector<float> swept;
+                peakThrough (*flanger, 3000.0, 0.5f, &swept);
+                // A comb filter sweeping over the tone: its loudness goes up and down over time.
+                float lo = 10.0f, hi = 0.0f;
+
+                for (size_t start = (size_t) (0.2 * sr); start + 441 < swept.size(); start += 441)
+                {
+                    float p = 0.0f;
+                    for (size_t i = start; i < start + 441; ++i) p = juce::jmax (p, std::abs (swept[i]));
+                    lo = juce::jmin (lo, p);  hi = juce::jmax (hi, p);
+                }
+
+                check ("flanger: a steady tone swings by (dB)", db (hi) - db (juce::jmax (1.0e-6f, lo)), 3.0, 100.0);
+                return ok;
+            },
+            15000 });
+
+        steps.push_back ({ "1.12 FL effects: a vocal chain's Limiter (gate), Compressor, Soundgoodizer, Flangus (33% mix) and Love Philter come in as ours with their settings",
+            [this] { checks["flfx2"] = [this]
+            {
+                auto ints = [] (std::initializer_list<int> values)
+                {
+                    juce::MemoryOutputStream o;
+                    for (auto v : values)
+                        o.writeInt (v);
+                    return o.getMemoryBlock();
+                };
+
+                // From the user's template (FL 26.1.5): the Adlib insert's chain.
+                auto limiter = ints ({ 7, 1000, 1000, 1000, 1115, 3, 5000, 3, 2882, 1000, 568, 386, 0, 6666, 1, 650, 0, 39, 6523,
+                                       1000, 1000, 1000, 1115, 3, 5000, 3, 2882, 1000, 0, 0, 0, 6666, 1, 650, 1000, 0, 4187 });
+                auto compressor = ints ({ 3, -181, 80, 71, 99, 493, 3, 1, 0 });
+                auto goodizer = ints ({ 3, 2, 467 });
+                auto flangus = ints ({ 4, 512, 768, 8, 128, -32, 96, 96 });
+
+                // Love Philter: u32 version, then zlib: 62 bytes, a preset name, the first unit.
+                juce::MemoryOutputStream philter;
+                philter.writeInt (786435);
+                {
+                    juce::MemoryOutputStream raw;
+                    raw.writeRepeatedByte (0, 62);
+                    const juce::String name ("Preset name");
+                    raw.writeByte ((char) name.length());
+                    for (auto p = name.getCharPointer(); ! p.isEmpty();)
+                        raw.writeShort ((short) p.getAndAdvance());
+                    for (int v : { 128, 128, 128, 128, 0, 0, 128, 128, 0, 128, 128, 0, 1, 0 })
+                        raw.writeInt (v);
+                    raw.writeRepeatedByte (0, 64);
+
+                    juce::GZIPCompressorOutputStream zlib (philter, 9, juce::GZIPCompressorOutputStream::windowBitsRaw + 15);
+                    zlib.write (raw.getData(), raw.getDataSize());
+                }
+
+                FlpWriter w;
+                w.dwordEvent (156, 156000);
+                auto header = [&w] (const juce::String& name) { w.textEvent (204, name); w.dataEvent (236, juce::MemoryBlock (12, true)); };
+                auto routing = [&w] (bool toMaster) { juce::MemoryBlock r (8, true); r[0] = toMaster ? 1 : 0; w.dataEvent (235, r); };
+                header ("Master");  for (int i = 0; i < 10; ++i) w.wordEvent (98, i);  routing (false);
+                header ("Adlib");
+                int slot = 0;
+
+                for (auto [kind, data] : { std::pair<const char*, juce::MemoryBlock> { "Fruity Limiter", limiter }, { "Fruity Compressor", compressor },
+                                           { "Soundgoodizer", goodizer }, { "Fruity Love Philter", philter.getMemoryBlock() }, { "Fruity Flangus", flangus } })
+                {
+                    w.textEvent (201, kind);
+                    w.dataEvent (213, data);
+                    w.wordEvent (98, slot++);
+                }
+
+                for (int i = slot; i < 10; ++i) w.wordEvent (98, i);
+                routing (true);
+
+                // The Flangus at 33% (FL's slot mix, in the mixer's parameter table: slot 4 mix).
+                juce::MemoryOutputStream params;
+                params.writeInt (0);  params.writeByte (1);  params.writeByte (0x1f);
+                params.writeShort ((short) (0x7000 + 1 * 64 + 4));  params.writeInt (4224);
+                w.dataEvent (225, params.getMemoryBlock());
+
+                flimport::Project project;
+                const auto parseError = flimport::parse (w.finish(), project);
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                for (auto* t : te::getAudioTracks (*edit))
+                    edit->deleteTrack (t);
+
+                flimport::Options options;
+                options.inserts = project.getUsedInserts();
+                const auto report = flimport::apply (*edit, project, options);
+
+                auto* adlib = insert (*edit, "Adlib");
+                auto fx = adlib != nullptr ? song::getInsertEffects (*adlib) : juce::Array<te::Plugin*>();
+                auto value = [&fx] (int index, const char* id) -> float
+                {
+                    if (auto* p = fx[index])
+                        if (auto param = p->getAutomatableParameterByID (id))
+                            return param->getCurrentValue();
+                    return -1000.0f;
+                };
+                auto near = [] (float a, float b, float within) { return std::abs (a - b) <= within; };
+                const double flangusMix = project.inserts[1].effects.size() == 5 ? project.inserts[1].effects[4].mix : -1.0;
+
+                const bool kinds = fx.size() == 5 && dynamic_cast<LimiterPlugin*> (fx[0]) != nullptr && dynamic_cast<CompressorFxPlugin*> (fx[1]) != nullptr
+                                && dynamic_cast<EnhancerPlugin*> (fx[2]) != nullptr && dynamic_cast<FilterFxPlugin*> (fx[3]) != nullptr
+                                && dynamic_cast<FlangerPlugin*> (fx[4]) != nullptr;
+                const bool limiterOk = kinds && near (value (0, "gateGain"), 0.0f, 0.001f) && near (value (0, "gateThresh"), -28.2f, 0.2f)
+                                    && near (value (0, "limGain"), 0.0f, 0.01f) && near (value (0, "ceiling"), 0.0f, 0.01f);
+                const bool compOk = kinds && near (value (1, "threshold"), -18.1f, 0.01f) && near (value (1, "ratio"), 8.0f, 0.01f)
+                                 && near (value (1, "gain"), 7.1f, 0.01f) && near (value (1, "attack"), 9.9f, 0.05f)
+                                 && near (value (1, "release"), 493.0f, 0.5f) && value (1, "compType") == 3.0f;
+                const bool goodOk = kinds && value (2, "mode") == 2.0f && near (value (2, "amount"), 0.467f, 0.001f);
+                const bool filterOk = kinds && value (3, "stages") == 1.0f && near (value (3, "low"), 1.0f, 0.001f) && near (value (3, "band"), 0.0f, 0.001f)
+                                   && near (fx[3]->getAutomatableParameterByID ("cutoff")->getCurrentNormalisedValue(), 0.5f, 0.01f)
+                                   && near (value (3, "inVol"), 0.0f, 0.01f) && near (value (3, "outVol"), 0.0f, 0.01f);
+                const float m = (float) flangusMix;
+                const bool flangerOk = kinds && value (4, "order") == 4.0f && near (value (4, "depth"), 0.5f, 0.001f)
+                                    && near (value (4, "wet"), 0.75f * m, 0.01f) && near (value (4, "dry"), (1.0f - m) + 0.75f * m, 0.01f);
+
+                std::cout << "    parse: " << (parseError.isEmpty() ? "ok" : parseError) << ", ours: " << (kinds ? "yes" : "NO")
+                          << ", limiter " << (limiterOk ? "right" : "WRONG") << " (gate " << value (0, "gateThresh") << " dB)"
+                          << ", compressor " << (compOk ? "right" : "WRONG") << ", enhancer " << (goodOk ? "right" : "WRONG")
+                          << ", filter " << (filterOk ? "right" : "WRONG") << ", flanger " << (flangerOk ? "right" : "WRONG")
+                          << " (slot mix " << flangusMix << ", wet " << value (4, "wet") << "), with settings " << report.effectsWithSettings << std::endl;
+
+                return parseError.isEmpty() && limiterOk && compOk && goodOk && filterOk && flangerOk && report.effectsWithSettings == 5
+                    && report.notAvailable.isEmpty();
+            }(); },
+            [this] { return checks["flfx2"]; },
+            10000 });
+
+        //==============================================================================
+        // 1.12: a playlist track's arm and monitor buttons (this PC's recording)
+        steps.push_back ({ "1.12 track buttons: peer 2's track 'Vocals' records through its insert; its monitor switch turns the input's monitoring off and on, and is remembered",
+            {},
+            [this]
+            {
+                auto& rec = peer2.getRecorder();
+                auto inputs = rec.getInputs();
+
+                if (inputs.isEmpty() || insert (P2(), "Vocals") == nullptr)
+                {
+                    std::cout << "    no input or no Vocals insert" << std::endl;
+                    return false;
+                }
+
+                if (rec.getInputFor (vocalsID).isEmpty())
+                    rec.setInputFor (vocalsID, inputs[0].id);
+
+                // The track named like the insert records through it (what the header's arm uses).
+                song::setLaneName (P2(), 40, "Vocals");
+                const auto target = song::getLaneTarget (P2(), 40);
+                song::setLaneName (P2(), 40, {});
+
+                auto monitorMode = [this, &rec]
+                {
+                    for (auto* d : engine.getDeviceManager().getWaveInputDevices())
+                        if (d->getDeviceID() == rec.getInputFor (vocalsID))
+                            return d->getMonitorMode();
+
+                    return te::InputDevice::MonitorMode::automatic;
+                };
+
+                const bool wasOn = monitorMode() == te::InputDevice::MonitorMode::on;
+                rec.setMonitored (vocalsID, false);
+                const bool off = monitorMode() == te::InputDevice::MonitorMode::off && ! rec.isMonitored (vocalsID);
+                const auto saved = rec.saveChoices();
+                rec.setMonitored (vocalsID, true);
+                const bool backOn = monitorMode() == te::InputDevice::MonitorMode::on && rec.isMonitored (vocalsID);
+
+                std::cout << "    track -> insert: " << (target.routes && target.insertID == vocalsID ? "Vocals" : "WRONG")
+                          << ", monitoring on / off / on: " << (wasOn ? "on" : "OFF") << " / " << (off ? "off" : "ON") << " / " << (backOn ? "on" : "OFF")
+                          << ", remembered: " << (saved.contains ("\tm0") ? "yes" : "NO") << std::endl;
+
+                return target.routes && target.insertID == vocalsID && wasOn && off && backOn && saved.contains ("\tm0");
+            },
+            8000 });
+
+        //==============================================================================
+        // 1.12: the master volume's automation clip (its knob is "master volume" in the engine)
+        steps.push_back ({ "1.12 master automation: 'Create automation clip' on the master fader makes a clip for the master volume -> on every PC",
+            [this]
+            {
+                host.setSongMode (true);
+                auto& master = *H().getMasterVolumePlugin();
+                const auto paramID = EditorState::automationParamID (master, "volume");
+                auto clip = song::addAutomationClip (H(), master.itemID.toString(), paramID, song::findFreeLane (H(), 1000.0, 4.0), 1000.0, 4.0, 1.0f);
+                masterAutoSid = clip[song::ids::sid].toString();
+                song::moveAutomationPoint (H(), song::getAutomationPoints (clip).getLast(), 4.0, 0.0f);
+            },
+            [this]
+            {
+                return hashesEqual() && everywhere ([this] (te::Edit& e)
+                {
+                    for (auto c : song::getClips (e))
+                        if (c[song::ids::sid].toString() == masterAutoSid)
+                            return song::findAutomationTarget (e, c) == e.getMasterVolumePlugin()->volParam.get();
+
+                    return false;
+                });
+            },
+            8000, 600 });
+
+        steps.push_back ({ "1.12 master automation: ...the master volume follows it in SONG mode (then the clip goes)",
+            {},
+            [this]
+            {
+                auto& vol = *H().getMasterVolumePlugin()->volParam;
+                const auto curve = host.getCompiler()->describeCompiledAutomation (vol);
+
+                if (curve.size() < 2)
+                    return false;
+
+                const float original = vol.getCurrentValue();
+                vol.updateToFollowCurve (te::TimePosition::fromSeconds (timeOfBeat (H(), 1000.5)));
+                const float early = vol.getCurrentNormalisedValue();
+                vol.updateToFollowCurve (te::TimePosition::fromSeconds (timeOfBeat (H(), 1003.5)));
+                const float late = vol.getCurrentNormalisedValue();
+                std::cout << "    master volume at beat 1000.5: " << early << ", at 1003.5: " << late << std::endl;
+
+                for (auto c : song::getClips (H()))
+                    if (c[song::ids::sid].toString() == masterAutoSid)
+                    {
+                        song::removeClip (H(), c);
+                        break;
+                    }
+
+                vol.setParameter (original, juce::dontSendNotification);
+                return std::abs (early - 0.875f) < 0.02f && std::abs (late - 0.125f) < 0.02f;
+            },
+            8000, 600 });
 
         //==============================================================================
         // 1.9: the playlist opens a pattern on the instrument last edited in it

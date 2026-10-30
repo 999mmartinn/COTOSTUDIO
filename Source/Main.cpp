@@ -6,6 +6,7 @@
 #include "ParametricEQPlugin.h"
 #include "LimiterPlugin.h"
 #include "SidechainPlugin.h"
+#include "MoreFx.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 #include "AppData.h"
@@ -359,6 +360,10 @@ private:
         engine->getPluginManager().createBuiltInType<DelayPlugin>();
         engine->getPluginManager().createBuiltInType<ReverbPlugin>();
         engine->getPluginManager().createBuiltInType<SidechainPlugin>();
+        engine->getPluginManager().createBuiltInType<CompressorFxPlugin>();
+        engine->getPluginManager().createBuiltInType<EnhancerPlugin>();
+        engine->getPluginManager().createBuiltInType<FlangerPlugin>();
+        engine->getPluginManager().createBuiltInType<FilterFxPlugin>();
 
         // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
         engine->getDeviceManager().setAllWaveInputsToNumChannels (1);
