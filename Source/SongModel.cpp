@@ -1647,7 +1647,90 @@ bool routeTakeToLane (te::Edit& edit, const juce::ValueTree& clip)
     if (! target.routes || channel == nullptr || getRoute (*channel) == target.insertID)
         return false;
 
+    if (! canRouteTo (edit, *channel, target.insertID))
+        return false;
+
+    // Other clips of the same channel (a duplicated clip) that stay on tracks going
+    // somewhere else keep their insert: this clip gets a channel of its own first.
+    const auto channelID = getChannelID (*channel);
+
+    for (auto& other : getClips (edit))
+    {
+        if (other == clip || ! isAudioClip (other) || other[ids::ch].toString() != channelID)
+            continue;
+
+        const auto there = getLaneTarget (edit, other[ids::lane]);
+
+        if (! there.routes || there.insertID != target.insertID)
+        {
+            channel = makeAudioClipUnique (edit, clip);
+
+            if (channel == nullptr)
+                return false;
+
+            break;
+        }
+    }
+
     return setRoute (edit, *channel, target.insertID);
+}
+
+te::AudioTrack* makeAudioClipUnique (te::Edit& edit, const juce::ValueTree& clip)
+{
+    if (! isAudioClip (clip))
+        return nullptr;
+
+    auto* channel = findChannel (edit, clip[ids::ch].toString());
+
+    if (channel == nullptr || countClipsOfChannel (edit, getChannelID (*channel)) < 2)
+        return nullptr;   // nothing to separate it from
+
+    // "Name #2", "Name #3"... the first free one.
+    const auto base = channel->getName().upToLastOccurrenceOf (" #", false, false).isNotEmpty()
+                      && channel->getName().fromLastOccurrenceOf (" #", false, false).containsOnly ("0123456789")
+                        ? channel->getName().upToLastOccurrenceOf (" #", false, false) : channel->getName();
+    juce::StringArray names;
+
+    for (auto* t : getChannels (edit))
+        names.add (t->getName());
+
+    int n = 2;
+
+    while (names.contains (base + " #" + juce::String (n)))
+        ++n;
+
+    auto* copy = addAudioChannel (edit, base + " #" + juce::String (n));
+
+    if (copy == nullptr)
+        return nullptr;
+
+    // Same file, same insert, same volume and pan: it sounds the same until you change it.
+    copy->state.setProperty (ids::asset, getChannelAsset (edit, *channel), um (edit));
+
+    if (getRoute (*channel).isNotEmpty())
+        setRoute (edit, *copy, getRoute (*channel));
+
+    if (auto* from = getVolumePlugin (*channel))
+        if (auto* to = getVolumePlugin (*copy))
+        {
+            to->volParam->setParameter (from->volParam->getCurrentValue(), juce::sendNotification);
+            to->panParam->setParameter (from->panParam->getCurrentValue(), juce::sendNotification);
+        }
+
+    auto c = clip;
+    c.setProperty (ids::ch, getChannelID (*copy), um (edit));
+    return copy;
+}
+
+int countClipsOfChannel (te::Edit& edit, const juce::String& channelID)
+{
+    int n = 0;
+
+    for (auto& c : getClips (edit))
+        if (isAudioClip (c) && c[ids::ch].toString() == channelID)
+            ++n;
+
+    return n;
 }
 
 //==============================================================================

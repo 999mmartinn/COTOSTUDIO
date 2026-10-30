@@ -3200,9 +3200,31 @@ private:
 
                 std::cout << "    chorus " << (onChorus == chorusID) << ", keep " << (onKeep == chorusID) << ", verse " << (onVerse == verseID)
                           << ", plain track " << (onPlain == verseID) << ", master " << onMaster.isEmpty() << ", new take on track " << (recordedLane + 1) << std::endl;
+
+                // 1.12.1: a duplicated take (same channel) moved to a track going elsewhere gets a
+                // channel of its own; the first clip keeps its insert. "Make unique" does it by hand.
+                routeAfterMoveTo (3);   // the first clip: VERSO 1
+                const auto takeID = song::getChannelID (*take);
+                auto dup = song::addAudioClip (*edit, "0123456789abcdef0123456789abcdef", takeID, 3, 8.0, 0.0, 2.0);
+                auto same = song::addAudioClip (*edit, "0123456789abcdef0123456789abcdef", takeID, 3, 16.0, 0.0, 2.0);
+                same.setProperty (song::ids::lane, 7, nullptr);   // a track linked to nothing: no split
+                const bool sameKept = ! song::routeTakeToLane (*edit, same) && same[song::ids::ch].toString() == takeID;
+                same.setProperty (song::ids::lane, 3, nullptr);
+                dup.setProperty (song::ids::lane, 2, nullptr);
+                song::routeTakeToLane (*edit, dup);
+                auto* dupChannel = song::findChannel (*edit, dup[song::ids::ch].toString());
+                const bool split = dupChannel != nullptr && dupChannel != take && song::getRoute (*dupChannel) == chorusID
+                                && song::getRoute (*take) == verseID && dupChannel->getName() == "GRABAR VOCALES take 1 #2"
+                                && song::getChannelAsset (*edit, *dupChannel) == "0123456789abcdef0123456789abcdef";
+                const bool aloneStays = song::makeAudioClipUnique (*edit, dup) == nullptr;   // already its own
+                auto* byHand = song::makeAudioClipUnique (*edit, same);
+                const bool madeByHand = byHand != nullptr && byHand->getName() == "GRABAR VOCALES take 1 #3"
+                                     && song::getRoute (*byHand) == verseID && song::countClipsOfChannel (*edit, takeID) == 1;
+                std::cout << "    duplicate moved: own channel " << split << ", same-insert move kept " << sameKept
+                          << ", lone clip left alone " << aloneStays << ", make unique " << madeByHand << std::endl;
                 edit = nullptr;
                 return onChorus == chorusID && onKeep == chorusID && onVerse == verseID && onPlain == verseID
-                    && onMaster.isEmpty() && recordedLane == 1;
+                    && onMaster.isEmpty() && recordedLane == 1 && split && sameKept && aloneStays && madeByHand;
             } });
 
         steps.push_back ({ "Scale helper: notes snap to the scale (C major, A minor, C minor pentatonic), off-scale ties go down unless dragging up",

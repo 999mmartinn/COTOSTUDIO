@@ -29,6 +29,17 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.12.1
+
+* **Right-click an audio clip → Make unique**, like FL: the clip gets its own
+  channel (named "take 1 #2", same file, insert, volume and pan), so it can go
+  through another insert than the clips it was duplicated from.
+* **Moving a duplicated clip to a track that goes to another insert does this
+  for you**: before, the copy and the original shared one channel, so moving
+  the copy re-routed the original too. Now the original keeps its insert and
+  the status bar says the copy got its own channel. Copies moved to tracks
+  going to the same insert (or to tracks linked to no insert) stay as they are.
+
 ## What's new in 1.12
 
 * **Your recording template comes over complete.** Four new effects of our own stand in

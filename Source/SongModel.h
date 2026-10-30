@@ -366,6 +366,14 @@ namespace song
     /** An audio clip was put on a track: its channel now plays through that track's insert.
         True if the route changed. */
     bool routeTakeToLane (te::Edit&, const juce::ValueTree& clip);
+    /** Gives an audio clip a channel of its own (FL's "Make unique"): a copy of its channel
+        (same file, insert, volume and pan) that only this clip uses, so it can go through
+        another insert than the clips it was duplicated from. Also done by routeTakeToLane
+        when such a clip is moved to a track going elsewhere. nullptr if the clip already
+        has its channel to itself. */
+    te::AudioTrack* makeAudioClipUnique (te::Edit&, const juce::ValueTree& clip);
+    /** How many audio clips play through this channel. */
+    int countClipsOfChannel (te::Edit&, const juce::String& channelID);
 
     //==============================================================================
     // Mixer. Routing is stored as the destination insert's ID ("" = master) in our

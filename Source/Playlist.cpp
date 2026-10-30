@@ -59,8 +59,18 @@ static void routeTakeAndTell (EditorState& state, const juce::ValueTree& clip)
 {
     auto* edit = state.getEdit();
 
-    if (edit == nullptr || ! routeTakeToLane (*edit, clip))
+    if (edit == nullptr)
         return;
+
+    const auto channelBefore = clip[ids::ch].toString();
+
+    if (! routeTakeToLane (*edit, clip))
+        return;
+
+    if (clip[ids::ch].toString() != channelBefore)
+        if (auto* channel = findChannel (*edit, clip[ids::ch].toString()))
+            state.session.logMessage (TRANS ("{TAKE} is used by other clips too: this one now has its own channel, the others keep their insert")
+                                        .replace ("{TAKE}", channel->getName()));
 
     if (auto* channel = findChannel (*edit, clip[ids::ch].toString()))
     {
@@ -1146,6 +1156,8 @@ public:
                 m.addSubMenu (TRANS ("Insert") + ": " + (now != nullptr ? now->getName() : TRANS ("Master")), inserts);
             }
 
+            m.addItem (8, TRANS ("Make unique (its own channel, so it can use another insert)"),
+                       channel != nullptr && countClipsOfChannel (*edit, getChannelID (*channel)) > 1);
             m.addItem (5, TRANS ("Properties (volume, fades, pitch, speed)..."));
             m.addItem (6, TRANS ("Cut here"));
             m.addItem (7, TRANS ("Bounce to audio (apply its fades, volume, pitch and speed)"), owner.bouncer == nullptr || ! owner.bouncer->isRunning());
@@ -1212,6 +1224,19 @@ public:
             {
                 safe->owner.bounceClip (clipSid);
                 return;
+            }
+            else if (r == 8 && isAudioClip (target))
+            {
+                st.beginAction();
+
+                if (auto* copy = makeAudioClipUnique (*e, target))
+                {
+                    st.selectedChannel = getChannelID (*copy);
+                    st.session.logMessage (TRANS ("This clip now has its own channel: {NAME}").replace ("{NAME}", copy->getName()));
+
+                    if (st.onSelectionChanged)
+                        st.onSelectionChanged();
+                }
             }
             else if (r == 1 && pattern.isValid())
             {
