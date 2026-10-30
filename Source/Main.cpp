@@ -5,6 +5,7 @@
 #include "SamplerPlugin.h"
 #include "ParametricEQPlugin.h"
 #include "LimiterPlugin.h"
+#include "SidechainPlugin.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 #include "AppData.h"
@@ -356,6 +357,7 @@ private:
         engine->getPluginManager().createBuiltInType<LimiterPlugin>();
         engine->getPluginManager().createBuiltInType<DelayPlugin>();
         engine->getPluginManager().createBuiltInType<ReverbPlugin>();
+        engine->getPluginManager().createBuiltInType<SidechainPlugin>();
 
         // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
         engine->getDeviceManager().setAllWaveInputsToNumChannels (1);

@@ -54,8 +54,8 @@ void PatternCompiler::changed (const juce::ValueTree& v)
     // Ignore anything happening inside our own generated clips, and knob values
     // (automation moves them all the time while playing; they don't change what's compiled).
     for (auto t = v; t.isValid(); t = t.getParent())
-        if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN))
-            return;
+        if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN) || t.hasType (song::ids::MARKERS))
+            return;   // (markers are only notes on the ruler)
 
     triggerAsyncUpdate();
 }
@@ -154,8 +154,13 @@ void PatternCompiler::compileNow()
 
     if (songMode)
     {
+        const auto audible = song::getAudibleLanes (edit);   // (muted tracks and groups don't play)
+
         for (auto& c : song::getClips (edit))
         {
+            if (! audible[(size_t) juce::jlimit (0, song::numLanes - 1, (int) c[song::ids::lane])])
+                continue;
+
             auto p = song::findPattern (edit, c[song::ids::pattern].toString());
 
             if (p.isValid())
@@ -270,9 +275,12 @@ void PatternCompiler::compileAudio (te::AudioTrack& track)
 
     if (songMode)
     {
+        const auto audible = song::getAudibleLanes (edit);
+
         for (auto& c : song::getClips (edit))
         {
-            if (! song::isAudioClip (c) || c[song::ids::ch].toString() != channelID)
+            if (! song::isAudioClip (c) || c[song::ids::ch].toString() != channelID
+                 || ! audible[(size_t) juce::jlimit (0, song::numLanes - 1, (int) c[song::ids::lane])])
                 continue;
 
             const auto hash = c[song::ids::asset].toString();
@@ -408,9 +416,12 @@ void PatternCompiler::compileAutomation()
     struct Clip { double start, end; juce::ValueTree tree; };
     std::map<juce::String, std::vector<Clip>> byTarget;
 
+    const auto audible = song::getAudibleLanes (edit);
+
     if (songMode)
         for (auto& c : song::getClips (edit))
-            if (song::isAutomationClip (c) && ! song::getAutomationPoints (c).isEmpty())
+            if (song::isAutomationClip (c) && ! song::getAutomationPoints (c).isEmpty()
+                 && audible[(size_t) juce::jlimit (0, song::numLanes - 1, (int) c[song::ids::lane])])
             {
                 const double start = c[song::ids::start];
                 byTarget[c[song::ids::plugin].toString() + "|" + c[song::ids::param].toString()]

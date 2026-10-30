@@ -3,6 +3,7 @@
 #include "SamplerPlugin.h"
 #include "ParametricEQPlugin.h"
 #include "LimiterPlugin.h"
+#include "SidechainPlugin.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 
@@ -956,6 +957,121 @@ bool feeds (te::Edit& edit, const juce::String& fromID, const juce::String& toID
 }
 
 //==============================================================================
+// Sidechain
+juce::Array<te::AudioTrack*> getSidechainSources (te::Edit& edit, te::Plugin& plugin)
+{
+    juce::Array<te::AudioTrack*> candidates;
+    candidates.addArray (getChannels (edit));
+    candidates.addArray (getInserts (edit));
+
+    auto* own = dynamic_cast<te::AudioTrack*> (plugin.getOwnerTrack());
+
+    if (own == nullptr)
+        return candidates;   // a master effect: everything comes before it
+
+    // Everything the plugin's track reaches: routes, sends, and tracks with an effect that
+    // listens to it (their sound waits for it). Listening to one of those would loop.
+    juce::StringArray toVisit { own->itemID.toString() }, reached;
+
+    while (! toVisit.isEmpty())
+    {
+        const auto id = toVisit[toVisit.size() - 1];
+        toVisit.remove (toVisit.size() - 1);
+
+        if (reached.contains (id) || reached.size() > 1000)
+            continue;
+
+        reached.add (id);
+        te::AudioTrack* track = nullptr;
+
+        for (auto* t : candidates)
+            if (t->itemID.toString() == id)
+                track = t;
+
+        if (track == nullptr)
+            continue;
+
+        if (auto* next = resolveRoute (edit, *track))
+            toVisit.add (next->itemID.toString());
+
+        for (auto send : getSendsFrom (edit, id))
+            toVisit.add (send[ids::to].toString());
+
+        for (auto* p : edit.getPluginCache().getPlugins())
+            if (p != &plugin && p->getSidechainSourceID() == track->itemID)
+                if (auto* listener = dynamic_cast<te::AudioTrack*> (p->getOwnerTrack()))
+                    toVisit.add (listener->itemID.toString());
+    }
+
+    juce::Array<te::AudioTrack*> result;
+
+    for (auto* t : candidates)
+        if (! reached.contains (t->itemID.toString()))
+            result.add (t);
+
+    return result;
+}
+
+bool setSidechainSource (te::Edit& edit, te::Plugin& plugin, te::AudioTrack* source)
+{
+    if (! plugin.canSidechain())
+        return false;
+
+    auto* um = &edit.getUndoManager();
+
+    // Rewire: inputs 1-2 are the plugin's own track, the rest come from the source
+    // (its left / right).
+    while (plugin.getNumWires() > 0)
+        if (auto* w = plugin.getWire (0))
+            plugin.breakConnection (w->sourceChannelIndex, w->destChannelIndex);
+        else
+            break;
+
+    if (source == nullptr)
+    {
+        plugin.state.removeProperty (te::IDs::sidechainSourceID, um);
+        return true;
+    }
+
+    if (! getSidechainSources (edit, plugin).contains (source))
+        return false;
+
+    plugin.setSidechainSourceID (source->itemID);
+    juce::StringArray ins;
+    plugin.getChannelNames (&ins, nullptr);
+
+    for (int i = 0; i < juce::jmin (2, ins.size()); ++i)
+        plugin.makeConnection (i, i, um);
+
+    for (int i = 2; i < ins.size(); ++i)
+        plugin.makeConnection (2 + (i - 2) % 2, i, um);
+
+    // The engine's own compressor only listens to its trigger input when told to.
+    if (auto* comp = dynamic_cast<te::CompressorPlugin*> (&plugin))
+        comp->useSidechainTrigger = true;
+
+    return true;
+}
+
+te::AudioTrack* getSidechainSource (te::Edit& edit, te::Plugin& plugin)
+{
+    const auto id = plugin.getSidechainSourceID();
+
+    if (! id.isValid())
+        return nullptr;
+
+    for (auto* t : getChannels (edit))
+        if (t->itemID == id)
+            return t;
+
+    for (auto* t : getInserts (edit))
+        if (t->itemID == id)
+            return t;
+
+    return nullptr;
+}
+
+//==============================================================================
 // Automation clips
 static const juce::String autoKind ("auto");
 
@@ -1137,7 +1253,8 @@ static void setLaneProperty (te::Edit& edit, int lane, const juce::Identifier& i
             l.setProperty (id, value, um (edit));
 
         // Nothing left to remember about this track: drop its entry.
-        if (l[ids::name].toString().isEmpty() && l[ids::colour].toString().isEmpty() && l[ids::insert].toString().isEmpty())
+        if (l[ids::name].toString().isEmpty() && l[ids::colour].toString().isEmpty() && l[ids::insert].toString().isEmpty()
+             && l[ids::muted].toString().isEmpty())
             l.getParent().removeChild (l, um (edit));
 
         return;
@@ -1191,6 +1308,282 @@ juce::String getLaneInsertSetting (te::Edit& edit, int lane)
 void setLaneInsertSetting (te::Edit& edit, int lane, const juce::String& setting)
 {
     setLaneProperty (edit, lane, ids::insert, setting);
+}
+
+bool isLaneMuted (te::Edit& edit, int lane)
+{
+    return (bool) findLaneNode (edit, lane)[ids::muted];
+}
+
+void setLaneMuted (te::Edit& edit, int lane, bool muted)
+{
+    setLaneProperty (edit, lane, ids::muted, muted ? "1" : "");
+}
+
+//==============================================================================
+static juce::ValueTree getOrCreateList (te::Edit& edit, const juce::Identifier& type)
+{
+    auto model = getModel (edit);
+    auto list = model.getChildWithName (type);
+
+    if (! list.isValid())
+    {
+        list = juce::ValueTree (type);
+        model.appendChild (list, um (edit));
+    }
+
+    return list;
+}
+
+static LaneGroup laneGroupFrom (const juce::ValueTree& g)
+{
+    LaneGroup r;
+    r.sid = g[ids::sid].toString();
+    r.name = g[ids::name].toString();
+    const auto c = g[ids::colour].toString();
+    r.colour = c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack;
+    r.first = juce::jlimit (0, numLanes - 1, (int) g[ids::first]);
+    r.count = juce::jlimit (1, numLanes - r.first, (int) g.getProperty (ids::count, 1));
+    r.muted = (bool) g[ids::muted];
+    return r;
+}
+
+static juce::ValueTree findLaneGroupNode (te::Edit& edit, const juce::String& sid)
+{
+    if (sid.isNotEmpty())
+        for (auto g : getModel (edit).getChildWithName (ids::LANEGROUPS))
+            if (g.hasType (ids::LANEGROUP) && g[ids::sid].toString() == sid)
+                return g;
+
+    return {};
+}
+
+juce::Array<LaneGroup> getLaneGroups (te::Edit& edit)
+{
+    juce::Array<LaneGroup> result;
+
+    for (auto g : getModel (edit).getChildWithName (ids::LANEGROUPS))
+        if (g.hasType (ids::LANEGROUP) && g[ids::sid].toString().isNotEmpty())
+            result.add (laneGroupFrom (g));
+
+    std::sort (result.begin(), result.end(), [] (const LaneGroup& a, const LaneGroup& b)
+               { return a.first != b.first ? a.first < b.first : a.sid < b.sid; });
+
+    // Two people may group overlapping tracks at the same moment: the first one wins (on
+    // every PC alike), the other is left out until it's moved or removed.
+    juce::Array<LaneGroup> clean;
+
+    for (auto& g : result)
+        if (clean.isEmpty() || g.first > clean.getLast().last())
+            clean.add (g);
+
+    return clean;
+}
+
+LaneGroup getLaneGroup (te::Edit& edit, const juce::String& sid)
+{
+    for (auto& g : getLaneGroups (edit))
+        if (g.sid == sid)
+            return g;
+
+    return {};
+}
+
+LaneGroup getLaneGroupOf (te::Edit& edit, int lane)
+{
+    for (auto& g : getLaneGroups (edit))
+        if (g.contains (lane))
+            return g;
+
+    return {};
+}
+
+bool canGroupLanes (te::Edit& edit, int first, int count, const juce::String& exceptGroup)
+{
+    if (count < 1 || first < 0 || first + count > numLanes)
+        return false;
+
+    for (auto& g : getLaneGroups (edit))
+        if (g.sid != exceptGroup && first <= g.last() && g.first <= first + count - 1)
+            return false;
+
+    return true;
+}
+
+juce::String addLaneGroup (te::Edit& edit, int first, int count, const juce::String& name, juce::Colour colour)
+{
+    if (! canGroupLanes (edit, first, count))
+        return {};
+
+    juce::ValueTree g (ids::LANEGROUP);
+    const auto sid = newSyncID();
+    g.setProperty (ids::sid, sid, nullptr);
+    g.setProperty (ids::name, name.trim().substring (0, 60), nullptr);
+    g.setProperty (ids::first, first, nullptr);
+    g.setProperty (ids::count, count, nullptr);
+
+    if (! colour.isTransparent())
+        g.setProperty (ids::colour, colour.withAlpha (1.0f).toString(), nullptr);
+
+    getOrCreateList (edit, ids::LANEGROUPS).appendChild (g, um (edit));
+    return sid;
+}
+
+void removeLaneGroup (te::Edit& edit, const juce::String& sid)
+{
+    auto g = findLaneGroupNode (edit, sid);
+
+    if (g.isValid())
+        g.getParent().removeChild (g, um (edit));
+}
+
+void setLaneGroupName (te::Edit& edit, const juce::String& sid, const juce::String& name)
+{
+    auto g = findLaneGroupNode (edit, sid);
+
+    if (g.isValid())
+        g.setProperty (ids::name, name.trim().substring (0, 60), um (edit));
+}
+
+void setLaneGroupColour (te::Edit& edit, const juce::String& sid, juce::Colour colour)
+{
+    auto g = findLaneGroupNode (edit, sid);
+
+    if (! g.isValid())
+        return;
+
+    if (colour.isTransparent())
+        g.removeProperty (ids::colour, um (edit));
+    else
+        g.setProperty (ids::colour, colour.withAlpha (1.0f).toString(), um (edit));
+}
+
+void setLaneGroupMuted (te::Edit& edit, const juce::String& sid, bool muted)
+{
+    auto g = findLaneGroupNode (edit, sid);
+
+    if (! g.isValid() || (bool) g[ids::muted] == muted)
+        return;
+
+    if (muted)
+        g.setProperty (ids::muted, 1, um (edit));
+    else
+        g.removeProperty (ids::muted, um (edit));
+}
+
+bool setLaneGroupRange (te::Edit& edit, const juce::String& sid, int first, int count)
+{
+    auto g = findLaneGroupNode (edit, sid);
+
+    if (! g.isValid() || ! canGroupLanes (edit, first, count, sid))
+        return false;
+
+    g.setProperty (ids::first, first, um (edit));
+    g.setProperty (ids::count, count, um (edit));
+    return true;
+}
+
+std::vector<bool> getAudibleLanes (te::Edit& edit)
+{
+    std::vector<bool> audible ((size_t) numLanes, true);
+
+    for (auto l : getModel (edit).getChildWithName (ids::LANES))
+        if (l.hasType (ids::LANE) && (bool) l[ids::muted] && juce::isPositiveAndBelow ((int) l[ids::lane], numLanes))
+            audible[(size_t) (int) l[ids::lane]] = false;
+
+    for (auto& g : getLaneGroups (edit))
+        if (g.muted)
+            for (int i = g.first; i <= g.last(); ++i)
+                audible[(size_t) i] = false;
+
+    return audible;
+}
+
+bool isLaneAudible (te::Edit& edit, int lane)
+{
+    if (! juce::isPositiveAndBelow (lane, numLanes) || isLaneMuted (edit, lane))
+        return false;
+
+    const auto g = getLaneGroupOf (edit, lane);
+    return ! (g.isValid() && g.muted);
+}
+
+//==============================================================================
+juce::Array<juce::ValueTree> getMarkers (te::Edit& edit)
+{
+    juce::Array<juce::ValueTree> result;
+
+    for (auto m : getModel (edit).getChildWithName (ids::MARKERS))
+        if (m.hasType (ids::MARKER))
+            result.add (m);
+
+    std::stable_sort (result.begin(), result.end(), [] (const juce::ValueTree& a, const juce::ValueTree& b)
+                      { return getMarkerBeat (a) != getMarkerBeat (b) ? getMarkerBeat (a) < getMarkerBeat (b)
+                                                                      : a[ids::sid].toString() < b[ids::sid].toString(); });
+    return result;
+}
+
+juce::ValueTree findMarker (te::Edit& edit, const juce::String& sid)
+{
+    for (auto m : getModel (edit).getChildWithName (ids::MARKERS))
+        if (m.hasType (ids::MARKER) && m[ids::sid].toString() == sid)
+            return m;
+
+    return {};
+}
+
+juce::ValueTree addMarker (te::Edit& edit, double beat, const juce::String& text, const juce::String& author, juce::Colour colour)
+{
+    juce::ValueTree m (ids::MARKER);
+    m.setProperty (ids::sid, newSyncID(), nullptr);
+    m.setProperty (ids::b, juce::jmax (0.0, beat), nullptr);
+    m.setProperty (ids::text, text.trim().substring (0, 120), nullptr);
+
+    if (author.isNotEmpty())
+        m.setProperty (ids::author, author.substring (0, 60), nullptr);
+
+    if (! colour.isTransparent())
+        m.setProperty (ids::colour, colour.withAlpha (1.0f).toString(), nullptr);
+
+    getOrCreateList (edit, ids::MARKERS).appendChild (m, um (edit));
+    return m;
+}
+
+void setMarkerText (te::Edit& edit, juce::ValueTree m, const juce::String& text)
+{
+    if (m.isValid())
+        m.setProperty (ids::text, text.trim().substring (0, 120), um (edit));
+}
+
+void setMarkerBeat (te::Edit& edit, juce::ValueTree m, double beat)
+{
+    if (m.isValid() && std::abs (getMarkerBeat (m) - beat) > 1.0e-9)
+        m.setProperty (ids::b, juce::jmax (0.0, beat), um (edit));
+}
+
+void setMarkerColour (te::Edit& edit, juce::ValueTree m, juce::Colour colour)
+{
+    if (! m.isValid())
+        return;
+
+    if (colour.isTransparent())
+        m.removeProperty (ids::colour, um (edit));
+    else
+        m.setProperty (ids::colour, colour.withAlpha (1.0f).toString(), um (edit));
+}
+
+void removeMarker (te::Edit& edit, juce::ValueTree m)
+{
+    if (m.isValid() && m.getParent().isValid())
+        m.getParent().removeChild (m, um (edit));
+}
+
+double getMarkerBeat (const juce::ValueTree& m)        { return (double) m[ids::b]; }
+
+juce::Colour getMarkerColour (const juce::ValueTree& m)
+{
+    const auto c = m[ids::colour].toString();
+    return c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack;
 }
 
 te::AudioTrack* findInsertNamed (te::Edit& edit, const juce::String& name)
@@ -1398,6 +1791,7 @@ juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
     list.add ({ ParametricEQPlugin::xmlTypeName,   "Parametric EQ (7 band)" });
     list.add ({ LimiterPlugin::xmlTypeName,        "Limiter" });
     list.add ({ DelayPlugin::xmlTypeName,          "Delay" });
+    list.add ({ SidechainPlugin::xmlTypeName,      "Sidechain (duck to the kick)" });
     list.add ({ ReverbPlugin::xmlTypeName,         "Reverb" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
     list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor" });

@@ -16,6 +16,7 @@
 #include "LimiterPlugin.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
+#include "SidechainPlugin.h"
 #include "MixerRouter.h"
 #include "ProjectFile.h"
 #include "Scales.h"
@@ -318,6 +319,10 @@ private:
 
     // 1.8: cutting, fades, stretch
     juce::String cutsHash;
+    float duckRatio = 0.0f;
+    bool loopRuleOk = false;
+    juce::String groupSid;
+    juce::StringArray compiledBeforeMarker;
     float cutsBaseline = 0.0f;
     juce::StringArray compiledBeforeCut;
     std::unique_ptr<Bouncer> testBouncer;
@@ -5150,6 +5155,329 @@ private:
                 fourth.newProject();
             },
             [this] { return backupCheck; } });
+
+        //==============================================================================
+        // 1.9: the playlist opens a pattern on the instrument last edited in it
+        steps.push_back ({ "1.9 pattern click: a pattern opens on the instrument you last edited in it (else the first one with notes)",
+            {},
+            [this]
+            {
+                EditorState st (host);
+                auto cut = pat (H(), "Cut");
+                const auto kickID = song::getChannelID (*ch (H(), "Kick"));
+
+                // Never edited here: the first instrument with notes in it (the kick).
+                st.selectedChannel = {};
+                st.viewPattern (cut[song::ids::sid].toString());
+                const bool first = st.selectedChannel == kickID;
+
+                // Edit another instrument in it, look elsewhere, come back: that one again.
+                te::AudioTrack* other = nullptr;
+
+                for (auto* c : song::getChannels (H()))
+                    if (! song::isAudioChannel (*c) && song::getChannelID (*c) != kickID)
+                        other = c;
+
+                if (other == nullptr)
+                    return false;
+
+                st.selectedChannel = song::getChannelID (*other);
+                st.rememberChannel();
+                st.selectedChannel = kickID;
+                st.viewPattern (song::getPatterns (H()).getFirst()[song::ids::sid].toString());
+                st.viewPattern (cut[song::ids::sid].toString());
+                const bool remembered = st.selectedChannel == song::getChannelID (*other);
+                std::cout << "    first open: " << (first ? "kick" : "WRONG") << ", after editing another: "
+                          << (remembered ? other->getName() : juce::String ("WRONG")) << std::endl;
+                return first && remembered;
+            },
+            2000 });
+
+        //==============================================================================
+        // 1.9: sidechain
+        steps.push_back ({ "1.9 sidechain: peer 1 sends a tone through a 'Duck' insert with a Sidechain listening to the kick (4 hits) -> everyone has it",
+            [this]
+            {
+                auto& e = P1();
+                auto r = peer1.getAssetStore().importAudioFile (writeTestWav (testRoot.getChildFile ("duck.wav"), 4.0, 330.0, false));
+
+                if (! r.ok())
+                    return;
+
+                song::addImportedAudio (e, r, "duck.wav", 17, 440.0);
+                auto* duck = song::addInsert (e, "Duck");
+                song::setRoute (e, *ch (e, "duck"), duck->itemID.toString());
+
+                auto kicks = song::addPattern (e, "Duck kicks", 1);
+
+                for (int step : { 0, 4, 8, 12 })
+                    song::setStep (e, kicks, *ch (e, "Kick"), step, true);
+
+                song::addClip (e, kicks[song::ids::sid].toString(), 16, 440.0);
+
+                auto plugin = song::createEffect (e, SidechainPlugin::xmlTypeName, nullptr);
+                song::putEffect (e, duck, plugin, -1);
+
+                if (auto* sc = dynamic_cast<SidechainPlugin*> (plugin.get()))
+                {
+                    sc->applyPreset (2);   // hard: down to silence, back fast
+                    song::setSidechainSource (e, *sc, ch (e, "Kick"));
+                }
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    auto* duck = song::findInsertNamed (e, "Duck");
+                    auto* kick = ch (e, "Kick");
+
+                    if (duck == nullptr || kick == nullptr || ch (e, "duck") == nullptr)
+                        return false;
+
+                    for (auto* p : song::getInsertEffects (*duck))
+                        if (auto* sc = dynamic_cast<SidechainPlugin*> (p))
+                            return song::getSidechainSource (e, *sc) == kick && sc->getNumWires() == 4
+                                && std::abs (sc->amount->getCurrentValue() - 1.0f) < 1.0e-4f;
+
+                    return false;
+                }) && hashesEqual() && compiledEqualEverywhere();
+            },
+            15000 });
+
+        steps.push_back ({ "1.9 sidechain: ...the tone dips at every kick and comes back (measured), and passes untouched with nothing to listen to",
+            {},
+            [this]
+            {
+                auto& e = H();
+                auto* kick = ch (e, "Kick");
+                juce::StringArray tracks { "duck", "Duck", "Kick" };
+
+                if (kick == nullptr || ! audioReady (e, tracks))
+                    return false;
+
+                SidechainPlugin* sc = nullptr;
+
+                for (auto* p : song::getInsertEffects (*song::findInsertNamed (e, "Duck")))
+                    if (auto* s2 = dynamic_cast<SidechainPlugin*> (p))
+                        sc = s2;
+
+                if (sc == nullptr)
+                    return false;
+
+                // The kick itself is muted so only the tone is heard: a muted track still
+                // triggers a sidechain (the "ghost kick" trick).
+                const bool wasMuted = kick->isMuted (false);
+                kick->setMute (true);
+
+                const double start = song::beatsToSeconds (e, 440.0);
+                const double hit = song::beatsToSeconds (e, 441.0) - start;
+
+                // Just before the second hit, just after it, and once it's back (the release is 150 ms).
+                auto measure = [&] (float& before, float& after, float& back)
+                {
+                    const auto b = renderTracks (e, tracks, start, start + hit + 0.5);
+                    before = peakIn (b, hit - 0.12, hit - 0.02);
+                    after = peakIn (b, hit + 0.005, hit + 0.03);
+                    back = peakIn (b, hit + 0.2, hit + 0.3);
+                };
+
+                float before = 0.0f, after = 0.0f, back = 0.0f, plainBefore = 0.0f, plainAfter = 0.0f, plainBack = 0.0f;
+                measure (before, after, back);
+
+                // Nothing to listen to: no dip (then back as it was).
+                sc->setSidechainSourceID ({});
+                measure (plainBefore, plainAfter, plainBack);
+                song::setSidechainSource (e, *sc, kick);
+                kick->setMute (wasMuted);
+
+                duckRatio = before > 0.0f ? after / before : 1.0f;
+                std::cout << "    with the kick: " << before << " before the hit, " << after << " just after (x" << duckRatio
+                          << "), " << back << " once back; listening to nothing: " << plainBefore << " / " << plainAfter << std::endl;
+                return before > 0.1f && duckRatio < 0.2f && back > 0.9f * before
+                    && plainBefore > 0.1f && plainAfter > 0.85f * plainBefore && std::abs (before - plainBefore) < 0.1f * plainBefore;
+            },
+            10000, 600 });
+
+        steps.push_back ({ "1.9 sidechain: it can't listen to anything that would loop (its own track, or a track waiting for it)",
+            [this]
+            {
+                auto& e = H();
+                auto* duck = song::findInsertNamed (e, "Duck");
+                auto* kick = ch (e, "Kick");
+                SidechainPlugin* sc = nullptr;
+                loopRuleOk = false;
+
+                if (duck != nullptr)
+                    for (auto* p : song::getInsertEffects (*duck))
+                        if (auto* s2 = dynamic_cast<SidechainPlugin*> (p))
+                            sc = s2;
+
+                if (sc == nullptr || kick == nullptr)
+                    return;
+
+                const auto sources = song::getSidechainSources (e, *sc);
+
+                // A Sidechain on the kick channel itself (only for a moment): the Duck insert
+                // waits for the kick, so the kick can't wait for it.
+                auto onKick = song::createEffect (e, SidechainPlugin::xmlTypeName, nullptr);
+                kick->pluginList.insertPlugin (onKick, 0, nullptr);
+                const auto kickSources = song::getSidechainSources (e, *onKick);
+                const bool refused = ! song::setSidechainSource (e, *onKick, duck);
+                onKick->deleteFromParent();
+
+                loopRuleOk = ! sources.contains (duck) && sources.contains (kick) && sources.contains (ch (e, "duck"))
+                              && ! kickSources.contains (duck) && ! kickSources.contains (kick) && refused;
+                std::cout << "    Duck may listen to " << sources.size() << " tracks (not itself); a sidechain on the kick may not listen to Duck: "
+                          << (! kickSources.contains (duck) && refused ? "right" : "WRONG") << std::endl;
+            },
+            [this] { return loopRuleOk && hashesEqual(); },
+            8000 });
+
+        //==============================================================================
+        // 1.9: playlist track groups, track mute, markers
+        steps.push_back ({ "1.9 track groups: peer 2 groups tracks 17-18 (the Duck kicks and tone) and mutes the group -> everyone has it, and nothing on them plays",
+            [this]
+            {
+                auto& e = P2();
+                groupSid = song::addLaneGroup (e, 16, 2, "Duck", juce::Colours::orange);
+                song::setLaneGroupMuted (e, groupSid, true);
+            },
+            [this]
+            {
+                const bool shared = everywhere ([this] (te::Edit& e)
+                {
+                    const auto g = song::getLaneGroupOf (e, 17);
+                    return g.sid == groupSid && g.first == 16 && g.count == 2 && g.name == "Duck" && g.muted
+                        && ! song::isLaneAudible (e, 16) && song::isLaneAudible (e, 15) && ! song::canGroupLanes (e, 17, 2)
+                        && song::canGroupLanes (e, 18, 2);
+                });
+
+                if (! shared || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                const auto kicks = compiled (host, "Kick").joinIntoString (" | ");
+                const bool kicksGone = ! kicks.contains ("@440.000") && ! kicks.contains ("@443.000");
+                const bool toneGone = compiledAudio (host, "duck").isEmpty();
+                std::cout << "    muted group: kicks at 440 " << (kicksGone ? "gone" : "STILL THERE") << ", tone " << (toneGone ? "gone" : "STILL THERE") << std::endl;
+                return kicksGone && toneGone;
+            },
+            8000 });
+
+        steps.push_back ({ "1.9 track groups: the host unmutes the group but mutes only track 17 (the kicks) -> the tone plays again, the kicks don't",
+            [this]
+            {
+                song::setLaneGroupMuted (H(), groupSid, false);
+                song::setLaneMuted (H(), 16, true);
+            },
+            [this]
+            {
+                const bool shared = everywhere ([] (te::Edit& e)
+                {
+                    return song::isLaneMuted (e, 16) && ! song::isLaneAudible (e, 16) && song::isLaneAudible (e, 17)
+                        && ! song::getLaneGroupOf (e, 16).muted;
+                });
+
+                if (! shared || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                const bool kicksGone = ! compiled (host, "Kick").joinIntoString (" | ").contains ("@440.000");
+                const bool toneBack = ! compiledAudio (host, "duck").isEmpty();
+                std::cout << "    kicks " << (kicksGone ? "muted" : "PLAYING") << ", tone " << (toneBack ? "back" : "MISSING") << std::endl;
+                return kicksGone && toneBack;
+            },
+            8000 });
+
+        steps.push_back ({ "1.9 track groups: peer 1 unmutes the track and ungroups -> everything plays as before, the tracks keep their clips",
+            [this]
+            {
+                song::setLaneMuted (P1(), 16, false);
+                song::removeLaneGroup (P1(), groupSid);
+            },
+            [this]
+            {
+                const bool shared = everywhere ([] (te::Edit& e)
+                {
+                    bool clipsThere = false;
+
+                    for (auto& c : song::getClips (e))
+                        if ((int) c[song::ids::lane] == 16 && std::abs ((double) c[song::ids::start] - 440.0) < 1.0e-9)
+                            clipsThere = true;
+
+                    return ! song::getLaneGroupOf (e, 16).isValid() && song::isLaneAudible (e, 16) && clipsThere
+                        && song::getLaneGroups (e).isEmpty();
+                });
+
+                if (! shared || ! hashesEqual() || ! compiledEqualEverywhere())
+                    return false;
+
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                return compiled (host, "Kick").joinIntoString (" | ").contains ("@440.000") && ! compiledAudio (host, "duck").isEmpty();
+            },
+            8000 });
+
+        steps.push_back ({ "1.9 markers: the host marks bar 111 'Drop' -> everyone sees it with the host's name; the song plays the same",
+            [this]
+            {
+                compiledBeforeMarker = compiled (host, "Kick");
+                song::addMarker (H(), 440.0, "Drop", host.getUserName());
+            },
+            [this]
+            {
+                const auto author = host.getUserName();
+                const bool shared = everywhere ([author] (te::Edit& e)
+                {
+                    const auto markers = song::getMarkers (e);
+                    return markers.size() == 1 && markers[0][song::ids::text].toString() == "Drop"
+                        && std::abs (song::getMarkerBeat (markers[0]) - 440.0) < 1.0e-9 && markers[0][song::ids::author].toString() == author;
+                });
+
+                if (auto* c = host.getCompiler())
+                    c->compileNow();
+
+                return shared && hashesEqual() && compiledEqualEverywhere() && compiled (host, "Kick") == compiledBeforeMarker;
+            },
+            8000 });
+
+        steps.push_back ({ "1.9 markers: peer 1 renames it 'Drop!', moves it two bars on and colours it; peer 2 adds 'Verse' at the start -> in order everywhere",
+            [this]
+            {
+                auto m = song::getMarkers (P1()).getFirst();
+                song::setMarkerText (P1(), m, "Drop!");
+                song::setMarkerBeat (P1(), m, 448.0);
+                song::setMarkerColour (P1(), m, juce::Colours::red);
+                song::addMarker (P2(), 0.0, "Verse", peer2.getUserName());
+            },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    const auto markers = song::getMarkers (e);
+                    return markers.size() == 2 && markers[0][song::ids::text].toString() == "Verse"
+                        && markers[1][song::ids::text].toString() == "Drop!" && std::abs (song::getMarkerBeat (markers[1]) - 448.0) < 1.0e-9
+                        && song::getMarkerColour (markers[1]) == juce::Colours::red;
+                }) && hashesEqual();
+            },
+            8000 });
+
+        steps.push_back ({ "1.9 markers: the host deletes 'Verse' -> gone everywhere",
+            [this] { song::removeMarker (H(), song::getMarkers (H()).getFirst()); },
+            [this]
+            {
+                return everywhere ([] (te::Edit& e)
+                {
+                    const auto markers = song::getMarkers (e);
+                    return markers.size() == 1 && markers[0][song::ids::text].toString() == "Drop!";
+                }) && hashesEqual();
+            },
+            8000 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

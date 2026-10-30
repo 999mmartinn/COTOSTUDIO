@@ -1057,7 +1057,29 @@ public:
         m.addItem (5, TRANS ("Replace..."));
         m.addItem (6, TRANS ("Remove"));
 
-        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (button), [this, plugin, index, button] (int r)
+        // An effect with a sidechain input (our Sidechain, a VST's, the engine's compressor):
+        // what it listens to.
+        juce::Array<te::AudioTrack*> sources;
+
+        if (auto* e = mixer.state.getEdit(); e != nullptr && plugin->canSidechain())
+        {
+            sources = getSidechainSources (*e, *plugin);
+            auto* current = getSidechainSource (*e, *plugin);
+            juce::PopupMenu from;
+            from.addItem (10, TRANS ("Nothing"), true, current == nullptr);
+
+            for (int i = 0; i < sources.size(); ++i)
+            {
+                const int n = getInsertNumber (*e, *sources[i]);
+                from.addItem (100 + i, (n > 0 ? TRANS ("Insert") + " " + juce::String (n) + ": " : juce::String())
+                                         + sources[i]->getName(), true, sources[i] == current);
+            }
+
+            m.addSeparator();
+            m.addSubMenu (TRANS ("Sidechain from"), from);
+        }
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (button), [this, plugin, index, button, sources] (int r)
         {
             auto* e = mixer.state.getEdit();
 
@@ -1072,6 +1094,12 @@ public:
             else if (r == 3) moveEffect (*plugin, -1);
             else if (r == 4) moveEffect (*plugin, 1);
             else if (r == 6) plugin->deleteFromParent();
+            else if (r == 10) setSidechainSource (*e, *plugin, nullptr);
+            else if (r >= 100 && r - 100 < sources.size())
+            {
+                if (getSidechainSources (*e, *plugin).contains (sources[r - 100]))   // (still there?)
+                    setSidechainSource (*e, *plugin, sources[r - 100]);
+            }
             else if (r == 5)
             {
                 const auto insertID = mixer.state.selectedInsert;

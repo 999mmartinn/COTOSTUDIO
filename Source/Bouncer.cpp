@@ -92,6 +92,15 @@ juce::String Bouncer::start (const juce::ValueTree& songState, const juce::Strin
         if (c != clip && ! song::isAutomationClip (c))
             song::removeClip (*copy, c);
 
+    // (Even on a muted track or group: you asked for this clip's sound.)
+    {
+        const int lane = clip[song::ids::lane];
+        song::setLaneMuted (*copy, lane, false);
+
+        if (const auto g = song::getLaneGroupOf (*copy, lane); g.isValid())
+            song::setLaneGroupMuted (*copy, g.sid, false);
+    }
+
     // Each channel plays straight out in the copy: rendered on its own, a channel routed into
     // an insert would be silent (its sound goes on into the insert, which isn't rendered).
     // The new audio goes through that same insert afterwards (see apply).

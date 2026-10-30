@@ -171,6 +171,7 @@ private:
     static juce::String panelKey (Panel);
     bool isDetached (Panel p) const              { return panelWindows[(int) p] != nullptr; }
     void setPanelDetached (Panel, bool);
+    void toggleInstrumentWindow();
     void showPanel (Panel);
     void togglePanelFullScreen (Panel);
     void showMixer()                             { showPanel (Panel::mixer); }

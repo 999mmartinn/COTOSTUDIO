@@ -422,8 +422,9 @@ public:
     }
 
     //==============================================================================
-    // Note preview (local only, like FL): hear the note while you place or drag it, but only
-    // while the song is stopped (while it plays it would only confuse). The keyboard always plays.
+    // Note preview (local only, like FL): hear a note when you place it or drag it to another
+    // pitch (not when you stretch it or slide it in time), but only while the song is stopped
+    // (while it plays it would only confuse). The keyboard always plays.
     bool isPlaying() const
     {
         auto* edit = state.getEdit();
@@ -502,6 +503,7 @@ public:
 
         checkContext();
         state.beginAction();
+        state.rememberChannel();   // the playlist opens this pattern on this instrument next time
         const auto tool = state.pianoTool;
         auto hit = noteAt (e.position);
 
@@ -566,7 +568,7 @@ public:
             lastTouched = hit.createCopy();   // new notes copy its velocity, pan... (like FL)
             holdNotes (selected.contains (sid) ? selectedNotes() : juce::Array<juce::ValueTree> { hit }, hit, e.position);
             copyOnDrag = e.mods.isShiftDown() && action == Action::move;
-            startPreview (anchorP);
+            heardPitch = anchorP;   // silent: a note you only grab, stretch or slide sideways doesn't sound
         }
         else
         {
@@ -588,7 +590,8 @@ public:
             action = Action::move;
             holdNotes ({ n }, n, e.position);
             copyOnDrag = false;
-            startPreview (pitch);
+            heardPitch = pitch;
+            startPreview (pitch);   // a new note sounds
         }
 
         repaint();
@@ -670,6 +673,7 @@ public:
     double anchorB = 0.0, anchorL = 0.0, grabBeat = 0.0, lastLength = stepBeats;
     juce::ValueTree lastTouched { ids::PNOTE };   // the last note you clicked (new notes copy its properties)
     int anchorP = 60;
+    int heardPitch = -1;   // the pitch of the held note last heard (or grabbed silently)
     bool copyOnDrag = false, copied = false;
     juce::Rectangle<float> marqueeArea;
     juce::StringArray marqueeBase;
@@ -757,7 +761,13 @@ public:
                 h.note.setProperty (ids::p, p, um);
         }
 
-        startPreview (anchorP + deltaP);
+        // Sound only when the note changes pitch (dragged up or down), not when it slides in time.
+        if (anchorP + deltaP != heardPitch)
+        {
+            heardPitch = anchorP + deltaP;
+            startPreview (heardPitch);
+        }
+
         repaint();
     }
 
@@ -1751,6 +1761,7 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     {
         state.selectedChannel = channelID;
         state.placeAudioChannel = {};
+        state.rememberChannel();
 
         if (state.onSelectionChanged)
             state.onSelectionChanged();
@@ -2093,6 +2104,7 @@ void PianoRoll::stepChannel (int direction)
 
     state.selectedChannel = song::getChannelID (*list[next]);
     state.placeAudioChannel = {};
+    state.rememberChannel();
 
     if (state.onSelectionChanged)
         state.onSelectionChanged();
@@ -2138,6 +2150,7 @@ void PianoRoll::showChannelMenu()
             return;
 
         safe->state.selectedChannel = song::getChannelID (*list[r - 1]);
+        safe->state.rememberChannel();
         safe->state.placeAudioChannel = {};
 
         if (safe->state.onSelectionChanged)

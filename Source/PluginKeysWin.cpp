@@ -10,10 +10,11 @@
 namespace pluginkeys
 {
     void (*onSpace)() = nullptr;
+    void (*onTab)() = nullptr;
 
     static std::set<HWND> watched;
     static HHOOK hook = nullptr;
-    static bool tookSpaceDown = false;
+    static bool tookSpaceDown = false, tookTabDown = false;
 
     /** The keyboard is in a native window inside one of our plugin windows (the plugin's
         editor), and nobody is typing text there. */
@@ -78,6 +79,31 @@ namespace pluginkeys
             }
         }
 
+        if (code == HC_ACTION && key == VK_TAB)
+        {
+            const bool released = (flags & 0x80000000) != 0;
+            const bool repeat = (flags & 0x40000000) != 0;
+
+            if (released)
+            {
+                if (tookTabDown)
+                {
+                    tookTabDown = false;
+                    return 1;
+                }
+            }
+            else if (GetKeyState (VK_CONTROL) >= 0 && GetKeyState (VK_MENU) >= 0 && GetKeyState (VK_SHIFT) >= 0
+                      && focusIsInPluginEditor())
+            {
+                tookTabDown = true;
+
+                if (! repeat && onTab != nullptr)
+                    onTab();
+
+                return 1;
+            }
+        }
+
         return CallNextHookEx (hook, code, key, flags);
     }
 
@@ -100,7 +126,7 @@ namespace pluginkeys
         {
             UnhookWindowsHookEx (hook);
             hook = nullptr;
-            tookSpaceDown = false;
+            tookSpaceDown = tookTabDown = false;
         }
     }
 }

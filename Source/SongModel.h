@@ -26,6 +26,12 @@ namespace te = tracktion;
                                                      volume, pitch and speed (see getClipSpeed)
           ASSETS
             ASSET sid=<fingerprint> name seconds rate numChannels bytes   <- shared audio files (the bytes travel separately)
+          LANES
+            LANE sid lane name colour insert muted          <- a playlist track's settings
+          LANEGROUPS
+            LANEGROUP sid name colour first count muted    <- playlist tracks grouped together
+          MARKERS
+            MARKER sid b text colour author                 <- a note on the playlist's ruler
 
     Patterns are the truth. What the engine actually plays is generated from
     them on each PC (see PatternCompiler) and never sent over the network.
@@ -99,6 +105,16 @@ namespace song
         // Time signature (SONGMODEL), e.g. 6/8: tsNum = 6, tsDen = 8
         SONG_DECLARE_ID (tsNum)
         SONG_DECLARE_ID (tsDen)
+        // Playlist track groups, track mute and markers (1.9)
+        SONG_DECLARE_ID (LANEGROUPS)
+        SONG_DECLARE_ID (LANEGROUP)
+        SONG_DECLARE_ID (first)
+        SONG_DECLARE_ID (count)
+        SONG_DECLARE_ID (muted)
+        SONG_DECLARE_ID (MARKERS)
+        SONG_DECLARE_ID (MARKER)
+        SONG_DECLARE_ID (text)
+        SONG_DECLARE_ID (author)
         #undef SONG_DECLARE_ID
     }
 
@@ -291,6 +307,59 @@ namespace song
         juce::String insertID;    // "" = master
     };
     LaneTarget getLaneTarget (te::Edit&, int lane);
+
+    /** A playlist track muted (LANE muted = 1): its clips don't play. Shared. */
+    bool isLaneMuted (te::Edit&, int lane);
+    void setLaneMuted (te::Edit&, int lane, bool);
+
+    /** Playlist track groups (shared): a run of tracks under one name and colour, that can
+        be muted together and folded away (folding is personal: see EditorState).
+        SONGMODEL/LANEGROUPS/LANEGROUP sid name colour first count muted. They never overlap. */
+    struct LaneGroup
+    {
+        juce::String sid, name;
+        juce::Colour colour;
+        int first = 0, count = 0;
+        bool muted = false;
+
+        bool isValid() const noexcept                 { return sid.isNotEmpty(); }
+        bool contains (int lane) const noexcept       { return lane >= first && lane < first + count; }
+        int last() const noexcept                     { return first + count - 1; }
+    };
+
+    juce::Array<LaneGroup> getLaneGroups (te::Edit&);     // by first track
+    LaneGroup getLaneGroup (te::Edit&, const juce::String& sid);
+    LaneGroup getLaneGroupOf (te::Edit&, int lane);       // invalid if the track isn't in one
+    /** False if the tracks are outside the playlist or another group has some of them. */
+    bool canGroupLanes (te::Edit&, int first, int count, const juce::String& exceptGroup = {});
+    /** Returns the new group's sid ("" if it can't). */
+    juce::String addLaneGroup (te::Edit&, int first, int count, const juce::String& name, juce::Colour);
+    void removeLaneGroup (te::Edit&, const juce::String& sid);   // the tracks and their clips stay
+    void setLaneGroupName (te::Edit&, const juce::String& sid, const juce::String& name);
+    void setLaneGroupColour (te::Edit&, const juce::String& sid, juce::Colour);
+    void setLaneGroupMuted (te::Edit&, const juce::String& sid, bool);
+    /** Grows or shrinks a group (false if that would overlap another one). */
+    bool setLaneGroupRange (te::Edit&, const juce::String& sid, int first, int count);
+
+    /** True if a track's clips play: it isn't muted, nor is its group. */
+    bool isLaneAudible (te::Edit&, int lane);
+    /** The same for every track at once (index = track). */
+    std::vector<bool> getAudibleLanes (te::Edit&);
+
+    //==============================================================================
+    /** Markers on the playlist's ruler (shared): a note at a point of the song - "drop",
+        "verse 2", "fix the hats here" - so everyone finds their way around it.
+        SONGMODEL/MARKERS/MARKER sid beat text colour author. */
+    juce::Array<juce::ValueTree> getMarkers (te::Edit&);    // by beat
+    juce::ValueTree findMarker (te::Edit&, const juce::String& sid);
+    juce::ValueTree addMarker (te::Edit&, double beat, const juce::String& text, const juce::String& author,
+                               juce::Colour = juce::Colours::transparentBlack);
+    void setMarkerText (te::Edit&, juce::ValueTree marker, const juce::String& text);
+    void setMarkerBeat (te::Edit&, juce::ValueTree marker, double beat);
+    void setMarkerColour (te::Edit&, juce::ValueTree marker, juce::Colour);
+    void removeMarker (te::Edit&, juce::ValueTree marker);
+    double getMarkerBeat (const juce::ValueTree& marker);
+    juce::Colour getMarkerColour (const juce::ValueTree& marker);   // transparent = the default
     /** An audio clip was put on a track: its channel now plays through that track's insert.
         True if the route changed. */
     bool routeTakeToLane (te::Edit&, const juce::ValueTree& clip);
@@ -351,6 +420,20 @@ namespace song
 
     /** True if sound from insert fromID reaches insert toID (through routes and sends). */
     bool feeds (te::Edit&, const juce::String& fromID, const juce::String& toID);
+
+    //==============================================================================
+    // Sidechain: an effect that also listens to another track (a channel or an insert) -
+    // our Sidechain effect ducks when it hits; a VST with a sidechain input gets it there.
+    // Stored by the engine in the plugin's state (its source track's ID and its wiring),
+    // so it's shared like the rest of the plugin.
+
+    /** The channels and inserts a plugin can listen to: not its own track, nor anything its
+        sound already reaches (through routes, sends or other sidechains): that would loop. */
+    juce::Array<te::AudioTrack*> getSidechainSources (te::Edit&, te::Plugin&);
+    /** Makes a plugin listen to a track (nullptr = nothing). False if it can't. */
+    bool setSidechainSource (te::Edit&, te::Plugin&, te::AudioTrack* source);
+    /** What a plugin listens to (nullptr = nothing, or a track that's gone). */
+    te::AudioTrack* getSidechainSource (te::Edit&, te::Plugin&);
 
     /** Plugins MixerRouter builds on each PC (send/return): never sent, never an effect slot. */
     bool isGeneratedPlugin (const te::Plugin*);

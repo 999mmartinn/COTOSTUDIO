@@ -26,6 +26,77 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 1.9
+
+Fixes you asked for:
+
+* **Clicking a pattern in the playlist opens it in the piano roll**, on the instrument
+  you last edited in that pattern (the first one with notes, if you never edited it
+  on this PC). The pattern list at the top does the same.
+* **The piano roll only plays a note when you place it or drag it up / down.**
+  Stretching a note, shortening it or sliding it left / right is silent now.
+* **Tab reopens the plugin window** of the instrument you're working with (a VST or
+  a built-in one), to tweak it or pick another sound. Tab again inside that window
+  closes it.
+
+New:
+
+* **Sidechain** (a new effect: *Sidechain (duck to the kick)*). See *Sidechain, the
+  easy way* below.
+* **Effects that can listen to another track**: right-click an effect slot in the
+  mixer → *Sidechain from*. This works for our Sidechain, for the engine's
+  Compressor, and for VST3 effects with a sidechain input (FabFilter Pro-C 2,
+  Waves C1 / R-Comp...). COTOSTUDIO won't offer a track that would make a loop.
+* **Playlist track groups** (for big songs and sessions): drag over several track
+  names on the left of the playlist, right-click → *Group tracks...* and name it.
+  * A group gets a **header row** with a **fold arrow** (click it to hide or show its
+    tracks; a folded group shows its clips small) and an **M** button that **mutes
+    the whole group**.
+  * Right-click the group's row: rename, colour, mute, fold, add the track below,
+    take the last track out, ungroup (the tracks and their clips stay).
+  * Folding is yours only (each person folds what they like). The group itself, its
+    name, colour and mute are shared.
+* **Mute a single playlist track**: right-click its name → *Mute this track* (an M
+  appears; its clips go grey and don't play). Shared with everyone.
+* **Markers with text on the playlist** (for working together: "drop", "verse 2",
+  "fix the hats here"):
+  * **Add one**: double-click the new strip under the bar numbers (or right-click
+    it, or right-click the ruler → *Add a marker here...*), type the text.
+  * **Click** a marker to play from there, **drag** it to move it, **double-click**
+    it to change the text (empty = delete), **right-click** for colour and delete.
+    Hover it to see who added it.
+  * A dashed line runs down the playlist so you can see it while you work.
+  * Everyone sees them. They don't change how the song sounds.
+
+### Sidechain, the easy way
+
+*Sidechain* means an effect on one sound listens to **another** sound. The common
+use is **ducking**: every time the kick hits, the bass (or pads, or the rest of the
+music) gets quieter for a moment and comes back. The kick cuts through instead of
+fighting the bass, and with a long return you get the "pumping" of dance music.
+
+How to do it:
+
+1. In the **mixer**, select the insert the **bass** plays through (or the pads, or a
+   bus with the music). Add the effect **Sidechain (duck to the kick)**.
+2. In its window, click **Listen to** and pick the **kick** (its channel, or its
+   insert).
+3. Press play. The line in the picture dips at every kick hit. Pick a ready-made
+   setting:
+   * **Gentle**: a light dip, you hardly notice it, the mix just gets clearer.
+   * **Pumping**: the classic dance-music swell back after every kick.
+   * **Hard**: almost silent at each hit, back fast (808s and bass under a kick).
+4. Fine-tune with the knobs:
+   * **Amount**: how much quieter it gets (100% = silent for a moment).
+   * **Sensitivity**: how loud a hit must be to count. Lower it if some hits don't
+     make it dip; raise it if quiet sounds (the kick's tail, a ghost note) do.
+   * **Attack**: how fast it dips (keep it short, 0.5-5 ms).
+   * **Release**: how long until the sound is fully back. Long = more pumping.
+
+Each **hit** makes one dip of the same shape (a booming 808 tail doesn't keep the
+sound down). Tip: the kick can be **muted** and still trigger the ducking, for a
+"ghost kick" that only shapes the music.
+
 ## What's new in 1.8
 
 Features from FL Studio and Pro Tools that were missing:
@@ -497,6 +568,13 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   edits, shared and undoable, without the song tempo's "everyone accepts" question.
 * Time signatures: the ones with whole beats in a bar (no 5/8 or 7/8 yet), one for
   the whole song.
+* Sidechain: the trigger is heard as it plays in the song; a *Bounce to audio* of a
+  clip on a ducked insert renders the clip before the mixer, so the bounce isn't
+  ducked (the new audio goes through the same insert and gets ducked as before).
+  A VST3's sidechain input is offered only if the plugin turns it on by default.
+* Track groups are runs of tracks next to each other (no groups inside groups).
+  If two people group overlapping tracks at the same moment, the first group wins
+  and the other one is hidden until it's moved or ungrouped.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -546,7 +624,13 @@ pitch; resample at half speed = an octave down), time signatures and tempo chang
 the same everywhere, bouncing a pattern and an audio clip (the bounced audio sounds
 like the original in the song), note pan / fine pitch / release velocity (measured
 in the sampler and heard on the left only through the engine), and backups (their
-audio, pruning, opening one after the working copy is gone).
+audio, pruning, opening one after the working copy is gone),
+and 1.9: a pattern opening on the instrument last edited in it, the sidechain
+(measured: a tone through a Sidechain listening to a muted kick dips at the hit,
+comes back, and passes untouched with nothing to listen to; sources that would
+loop are refused), track groups and track mute (shared, and their clips really
+leave what plays), and markers (added, renamed, moved, coloured, deleted, the same
+everywhere, the song unchanged).
 The self-test never touches your data folder. The Windows build on GitHub runs
 it automatically.
 

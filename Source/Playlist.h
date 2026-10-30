@@ -22,6 +22,12 @@
       - Audio clips: drag the small squares at their top corners to fade them in / out;
         Alt + drag the right edge stretches them (time-stretch); double-click one (or
         "Properties..." in its menu) for volume, fades, pitch and speed.
+      - Track groups (drag over track names, right-click "Group tracks..."): a header row
+        that folds the group away (this PC only) and mutes it (shared). Right-click a
+        track's name to mute just that track.
+      - Markers: a strip under the bar numbers with shared notes ("drop", "verse 2");
+        click one to play from it, drag to move, double-click to edit, right-click for
+        colour / delete.
 */
 class Playlist  : public juce::Component,
                   private juce::Timer
@@ -40,7 +46,8 @@ public:
     void resized() override;
     static constexpr int headerHeight = 36;
 
-    static constexpr int laneHeight = 30, laneHeaderWidth = 78, rulerHeight = 20;
+    // The ruler: bar numbers, tempo tags and punch range on top, markers in a strip below.
+    static constexpr int laneHeight = 30, laneHeaderWidth = 78, rulerBarsHeight = 20, rulerHeight = 34;
 
     /** Full screen: the playlist fills the main window (set up by the main window). */
     std::function<void()> onFullScreenToggle;
@@ -81,6 +88,26 @@ private:
     juce::AudioThumbnail* getThumbnail (const juce::String& hash);
     float pixelsPerBeat = 22.0f;
     bool wasPlaying = false;
+
+    // Rows, top to bottom: tracks, and a header row above each group of tracks (a folded
+    // group shows only its header, with a small picture of its clips).
+    struct Row
+    {
+        int lane = -1;               // the track, or -1 for a group's header row
+        song::LaneGroup group;       // the group this row belongs to (if any)
+        bool folded = false;         // a folded group's header
+    };
+    std::vector<Row> rows;
+    std::vector<int> rowOfLane;      // index = track; a hidden track (folded) maps to its group's header
+    void updateRows();
+    int rowAtY (int y) const                  { return juce::jlimit (0, (int) rows.size() - 1, y / laneHeight); }
+    /** The track at a height: a group's header row counts as its first track. */
+    int laneAtRowY (int y) const;
+    int laneTop (int lane) const              { return rowOfLane[(size_t) juce::jlimit (0, song::numLanes - 1, lane)] * laneHeight; }
+    bool isLaneHidden (int lane) const;
+    int totalRowsHeight() const               { return (int) rows.size() * laneHeight; }
+    /** Folds or unfolds a group (this PC only). */
+    void setGroupFolded (const juce::String& groupSid, bool folded);
 
     void setZoom (float newPixelsPerBeat, float anchorX);
     void layoutContent();

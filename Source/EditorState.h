@@ -3,6 +3,8 @@
 #include "Session.h"
 #include "SongModel.h"
 #include "Look.h"
+#include <map>
+#include <set>
 
 /** What this PC is looking at. Local only: two people can view different patterns. */
 struct EditorState
@@ -133,6 +135,59 @@ struct EditorState
         auto channels = song::getChannels (*edit);
         return channels.isEmpty() ? nullptr : channels.getFirst();
     }
+
+    // Which instrument you last edited in each pattern (this PC only): clicking the pattern
+    // on the playlist opens it in the piano roll on that instrument.
+    std::map<juce::String, juce::String> lastChannelOfPattern;   // pattern sid -> channel ID
+
+    /** Notes that the selected channel is the one being edited in the viewed pattern. */
+    void rememberChannel()
+    {
+        if (auto* c = getSelectedChannel(); c != nullptr && ! song::isAudioChannel (*c))
+            if (auto p = getPattern(); p.isValid())
+                lastChannelOfPattern[p[song::ids::sid].toString()] = song::getChannelID (*c);
+    }
+
+    /** The instrument to show for a pattern: the one you last edited in it (if it still
+        exists), else the first one with notes in it, else "" (keep the current one). */
+    juce::String channelForPattern (const juce::String& patternSid) const
+    {
+        auto* edit = getEdit();
+
+        if (edit == nullptr)
+            return {};
+
+        if (auto it = lastChannelOfPattern.find (patternSid); it != lastChannelOfPattern.end())
+            if (auto* c = song::findChannel (*edit, it->second); c != nullptr && ! song::isAudioChannel (*c))
+                return it->second;
+
+        auto pattern = song::findPattern (*edit, patternSid);
+
+        if (pattern.isValid())
+            for (auto* c : song::getChannels (*edit))
+                if (! song::isAudioChannel (*c) && ! song::getNotes (pattern, song::getChannelID (*c)).isEmpty())
+                    return song::getChannelID (*c);
+
+        return {};
+    }
+
+    /** Shows a pattern in the piano roll on the instrument last edited in it. */
+    void viewPattern (const juce::String& patternSid)
+    {
+        viewedPattern = patternSid;
+        placeAudioChannel = {};
+
+        auto channel = channelForPattern (patternSid);
+
+        if (channel.isNotEmpty())
+            selectedChannel = channel;
+    }
+
+    // Playlist track groups folded on this PC (group sids): folding is personal, like scrolling.
+    std::set<juce::String> foldedGroups;
+
+    /** Brings the piano roll to the front (set by the main window). */
+    std::function<void()> showPianoRoll;
 
     /** Starts a new undo step for a user action. */
     void beginAction() const

@@ -248,7 +248,9 @@ public:
 
     float xForBeat (double beat) const   { return (float) (beat * owner.pixelsPerBeat); }
     double beatAtX (float x) const       { return juce::jmax (0.0, (double) x / owner.pixelsPerBeat); }
-    int laneAtY (float y) const          { return juce::jlimit (0, numLanes - 1, (int) (y / laneHeight)); }
+    int laneAtY (float y) const          { return owner.laneAtRowY ((int) y); }
+    /** True over a group's header row (nothing is placed there). */
+    bool isGroupRowAt (float y) const    { return ! owner.rows.empty() && owner.rows[(size_t) owner.rowAtY ((int) y)].lane < 0; }
     double snap (double beat) const        { return state.snapPlaylistBeat (beat); }
     double snapNearest (double beat) const { return state.snapPlaylistBeatNearest (beat); }
 
@@ -257,8 +259,19 @@ public:
         auto* edit = state.getEdit();
         const double start = clip[ids::start];
         const double len = edit != nullptr ? getClipLength (*edit, clip) : 4.0;
-        return { xForBeat (start), (float) ((int) clip[ids::lane] * laneHeight), xForBeat (start + len) - xForBeat (start),
-                 (float) laneHeight };
+        const int lane = juce::jlimit (0, numLanes - 1, (int) clip[ids::lane]);
+        const float x = xForBeat (start), w = xForBeat (start + len) - xForBeat (start);
+
+        // In a folded group: a thin strip per track inside the group's header row.
+        if (owner.isLaneHidden (lane))
+        {
+            const auto& row = owner.rows[(size_t) owner.rowOfLane[(size_t) lane]];
+            const float inner = (float) laneHeight - 8.0f;
+            const float h = inner / (float) juce::jmax (1, row.group.count);
+            return { x, (float) owner.laneTop (lane) + 6.0f + h * (float) (lane - row.group.first), w, juce::jmax (2.0f, h) };
+        }
+
+        return { x, (float) owner.laneTop (lane), w, (float) laneHeight };
     }
 
     juce::ValueTree clipAt (juce::Point<float> p) const
@@ -271,7 +284,7 @@ public:
         auto clips = getClips (*edit);
 
         for (int i = clips.size(); --i >= 0;)
-            if (clipBounds (clips[i]).contains (p))
+            if (! owner.isLaneHidden (clips[i][ids::lane]) && clipBounds (clips[i]).contains (p))   // (a folded group's clips can't be grabbed)
                 return clips[i];
 
         return {};
@@ -361,23 +374,41 @@ public:
             return;
 
         auto visible = g.getClipBounds();
+        owner.updateRows();
+        const auto audible = getAudibleLanes (*edit);
 
-        // Only the tracks on screen (there are 200).
-        const int firstLane = juce::jmax (0, visible.getY() / laneHeight);
-        const int lastLane = juce::jmin (numLanes - 1, visible.getBottom() / laneHeight);
+        // Only the rows on screen (there are 200 tracks).
+        const int firstRow = juce::jmax (0, visible.getY() / laneHeight);
+        const int lastRow = juce::jmin ((int) owner.rows.size() - 1, visible.getBottom() / laneHeight);
 
-        for (int lane = firstLane; lane <= lastLane; ++lane)
+        for (int r = firstRow; r <= lastRow; ++r)
         {
-            g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
-            g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
+            const auto& row = owner.rows[(size_t) r];
+            const int y = r * laneHeight;
+
+            if (row.lane < 0)
+            {
+                // A group's header row: its colour all along (a folded one shows its clips small).
+                const auto c = row.group.colour.isTransparent() ? theme::colours::accent : row.group.colour;
+                g.setColour (theme::colours::wellAlt);
+                g.fillRect (0, y, getWidth(), laneHeight);
+                g.setColour (c.withAlpha (row.folded ? 0.16f : 0.10f));
+                g.fillRect (0, y, getWidth(), laneHeight);
+                g.setColour (c.withAlpha (0.5f));
+                g.fillRect (0, y + laneHeight - 1, getWidth(), 1);
+                continue;
+            }
+
+            g.setColour (r % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
+            g.fillRect (0, y, getWidth(), laneHeight);
 
             // A coloured track (e.g. from an FL template) is tinted all along.
-            const auto tint = getLaneColour (*edit, lane);
+            const auto tint = getLaneColour (*edit, row.lane);
 
             if (! tint.isTransparent())
             {
                 g.setColour (tint.withAlpha (0.07f));
-                g.fillRect (0, lane * laneHeight, getWidth(), laneHeight);
+                g.fillRect (0, y, getWidth(), laneHeight);
             }
         }
 
@@ -398,6 +429,20 @@ public:
         {
             g.setColour (theme::colours::amber.withAlpha (0.35f));
             g.drawVerticalLine ((int) xForBeat (t.beat), 0.0f, (float) getHeight());
+        }
+
+        // Markers: a dashed line down the playlist in the marker's colour.
+        for (auto& m : getMarkers (*edit))
+        {
+            const float x = xForBeat (getMarkerBeat (m));
+
+            if (x < (float) visible.getX() - 2.0f || x > (float) visible.getRight() + 2.0f)
+                continue;
+
+            const auto c = getMarkerColour (m);
+            g.setColour ((c.isTransparent() ? theme::colours::lilac : c).withAlpha (0.45f));
+            const float dashes[] = { 5.0f, 4.0f };
+            g.drawDashedLine ({ x + 0.5f, (float) visible.getY(), x + 0.5f, (float) visible.getBottom() }, dashes, 2, 1.0f);
         }
 
         // Song end
@@ -426,6 +471,18 @@ public:
 
             if (! r.intersects (visible.toFloat()))
                 continue;
+
+            // In a folded group: just a small bar in the clip's colour.
+            if (owner.isLaneHidden (clip[ids::lane]))
+            {
+                const auto p = findPattern (*edit, clip[ids::pattern].toString());
+                const auto c = isAudioClip (clip) ? theme::colours::sky
+                             : isAutomationClip (clip) ? theme::colours::teal
+                             : (p.isValid() ? patternColour (p) : theme::colours::dim);
+                g.setColour (c.withAlpha (0.8f));
+                g.fillRoundedRectangle (clipBounds (clip).reduced (0.5f, 0.0f), 1.5f);
+                continue;
+            }
 
             if (isAudioClip (clip))
             {
@@ -492,6 +549,19 @@ public:
                         juce::Justification::centredLeft, true);
         }
 
+        // Muted tracks and groups: everything on them greyed out (their clips don't play).
+        for (int r = firstRow; r <= lastRow; ++r)
+        {
+            const auto& row = owner.rows[(size_t) r];
+            const bool muted = row.lane >= 0 ? ! audible[(size_t) row.lane] : row.group.muted;
+
+            if (muted)
+            {
+                g.setColour (theme::colours::bg.withAlpha (0.55f));
+                g.fillRect (0, r * laneHeight, getWidth(), laneHeight);
+            }
+        }
+
         // Where something dragged in (rack or browser) would land
         if (dropPreview.lane >= 0)
         {
@@ -499,7 +569,7 @@ public:
 
             if (length > 0.0)
             {
-                const juce::Rectangle<float> r (xForBeat (dropPreview.beat), (float) (dropPreview.lane * laneHeight) + 1.5f,
+                const juce::Rectangle<float> r (xForBeat (dropPreview.beat), (float) owner.laneTop (dropPreview.lane) + 1.5f,
                                                 xForBeat (dropPreview.beat + length) - xForBeat (dropPreview.beat),
                                                 (float) laneHeight - 3.0f);
                 g.setColour (theme::colours::accent.withAlpha (0.18f));
@@ -513,8 +583,8 @@ public:
         if (slice.active)
         {
             const float x = xForBeat (slice.beat);
-            const float y1 = (float) (juce::jmin (slice.lane1, slice.lane2) * laneHeight);
-            const float y2 = (float) ((juce::jmax (slice.lane1, slice.lane2) + 1) * laneHeight);
+            const float y1 = (float) owner.laneTop (juce::jmin (slice.lane1, slice.lane2));
+            const float y2 = (float) (owner.laneTop (juce::jmax (slice.lane1, slice.lane2)) + laneHeight);
             g.setColour (theme::colours::amber);
             const float dashes[] = { 4.0f, 3.0f };
             g.drawDashedLine ({ x, y1, x, y2 }, dashes, 2, 1.5f);
@@ -762,6 +832,10 @@ public:
         state.beginAction();
         auto hit = clipAt (e.position);
         grabKeyboardFocus();   // P / C pick the tool
+
+        // A group's header row: nothing goes there (its tracks are below it, or folded away).
+        if (! hit.isValid() && isGroupRowAt (e.position.y))
+            return;
 
         if (e.mods.isPopupMenu())
         {
@@ -1014,8 +1088,11 @@ public:
             }
             else
             {
-                state.viewedPattern = dragClip[ids::pattern].toString();
-                state.placeAudioChannel = {};
+                // A pattern opens in the piano roll, on the instrument you last edited in it.
+                state.viewPattern (dragClip[ids::pattern].toString());
+
+                if (state.showPianoRoll)
+                    state.showPianoRoll();
             }
 
             if (state.onSelectionChanged)
@@ -1211,10 +1288,13 @@ private:
 };
 
 //==============================================================================
-class Playlist::Ruler  : public juce::Component
+class Playlist::Ruler  : public juce::Component,
+                         public juce::TooltipClient
 {
 public:
     Ruler (Playlist& p) : owner (p), state (p.state) {}
+
+    static constexpr int barsH = Playlist::rulerBarsHeight;   // below it: the markers' strip
 
     void paint (juce::Graphics& g) override
     {
@@ -1239,13 +1319,13 @@ public:
             {
                 g.setFont (theme::mono (10.5f));
                 g.setColour (theme::colours::muted);
-                g.drawText (juce::String (bar + 1), (int) x + 3, 0, 40, getHeight(), juce::Justification::centredLeft);
+                g.drawText (juce::String (bar + 1), (int) x + 3, 0, 40, barsH, juce::Justification::centredLeft);
             }
         }
 
         const float mx = (float) (state.songStartBeat * ppb) - (float) scrollX;
         juce::Path tri;
-        tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) getHeight() - 2.0f);
+        tri.addTriangle (mx - 6.0f, 2.0f, mx + 6.0f, 2.0f, mx, (float) barsH - 2.0f);
         g.setColour (theme::colours::green);
         g.fillPath (tri);
 
@@ -1283,7 +1363,7 @@ public:
                 // A thin line exactly where it changes (the tag sits beside a bar number).
                 const float at = (float) (changes[i].beat * owner.pixelsPerBeat) - (float) owner.viewport->getViewPositionX();
                 g.setColour (theme::colours::amber);
-                g.fillRect (at, 8.0f, 1.0f, (float) getHeight() - 8.0f);
+                g.fillRect (at, 8.0f, 1.0f, (float) barsH - 8.0f);
                 g.setColour (theme::colours::amber.withAlpha (i == draggingTempo ? 1.0f : 0.85f));
                 g.fillRoundedRectangle (tag, 3.0f);
 
@@ -1300,6 +1380,8 @@ public:
             }
         }
 
+        paintMarkers (g);
+
         const double playBeat = state.getSongPlayheadBeat();
 
         if (playBeat >= 0.0)
@@ -1308,6 +1390,207 @@ public:
             g.fillRect ((float) (playBeat * ppb) - (float) scrollX - 1.0f, 0.0f, 2.0f, (float) getHeight());
         }
     }
+
+    //==============================================================================
+    // Markers: flags in the strip under the bar numbers.
+    static juce::Colour markerColour (const juce::ValueTree& m)
+    {
+        const auto c = getMarkerColour (m);
+        return c.isTransparent() ? theme::colours::lilac : c;
+    }
+
+    static juce::String markerLabel (const juce::ValueTree& m)
+    {
+        const auto t = m[ids::text].toString();
+        return t.isNotEmpty() ? t : TRANS ("Marker");
+    }
+
+    juce::Rectangle<float> markerBounds (const juce::ValueTree& m) const
+    {
+        const float x = (float) (getMarkerBeat (m) * owner.pixelsPerBeat) - (float) owner.viewport->getViewPositionX();
+        const float w = juce::jmin (180.0f, juce::GlyphArrangement::getStringWidth (theme::ui (10.0f, theme::Weight::semibold), markerLabel (m)) + 12.0f);
+        return { x, (float) barsH + 1.0f, w, (float) (getHeight() - barsH) - 3.0f };
+    }
+
+    /** The marker under a point (the last drawn wins), or invalid. */
+    juce::ValueTree markerAt (juce::Point<float> p) const
+    {
+        if (p.y < (float) barsH)
+            return {};
+
+        if (auto* edit = state.getEdit())
+        {
+            const auto markers = getMarkers (*edit);
+
+            for (int i = markers.size(); --i >= 0;)
+                if (markerBounds (markers[i]).expanded (2.0f, 0.0f).contains (p))
+                    return markers[i];
+        }
+
+        return {};
+    }
+
+    void paintMarkers (juce::Graphics& g)
+    {
+        g.setColour (theme::colours::well);
+        g.fillRect (0, barsH, getWidth(), getHeight() - barsH - 1);
+
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        for (auto& m : getMarkers (*edit))
+        {
+            const auto r = markerBounds (m);
+
+            if (r.getRight() < 0.0f || r.getX() > (float) getWidth())
+                continue;
+
+            const auto c = markerColour (m);
+            const bool dragged = m[ids::sid].toString() == draggingMarker;
+            g.setColour (c.withAlpha (dragged ? 0.5f : 0.28f));
+            g.fillRoundedRectangle (r, 3.0f);
+            g.setColour (c);
+            g.fillRect (r.getX(), r.getY() - 1.0f, 2.0f, r.getHeight() + 2.0f);   // the exact spot
+            g.setColour (theme::colours::text);
+            g.setFont (theme::ui (10.0f, theme::Weight::semibold));
+            g.drawText (markerLabel (m), r.withTrimmedLeft (6.0f).toNearestInt(), juce::Justification::centredLeft, true);
+        }
+    }
+
+    juce::String getTooltip() override
+    {
+        const auto p = getMouseXYRelative().toFloat();
+
+        if (auto m = markerAt (p); m.isValid())
+        {
+            const auto who = m[ids::author].toString();
+            return markerLabel (m) + (who.isNotEmpty() ? "  (" + TRANS ("by") + " " + who + ")" : juce::String())
+                 + "\n" + TRANS ("Click: play from here. Drag: move. Double-click: edit. Right-click: colour, delete");
+        }
+
+        if (p.y >= (float) barsH)
+            return TRANS ("Markers: double-click (or right-click) here to add one - everyone sees it");
+
+        return TRANS ("Click: where SONG mode starts. Right-click: tempo change, marker, punch in / out. Ctrl + drag: punch range");
+    }
+
+    /** Asks for a marker's text: a new marker at a beat (sid ""), or an existing one. */
+    void askMarker (const juce::String& sid, double beat)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto existing = findMarker (*edit, sid);
+        auto* w = new juce::AlertWindow (existing.isValid() ? TRANS ("Edit marker") : TRANS ("New marker"),
+                                         TRANS ("A note everyone sees on the ruler (\"drop\", \"verse 2\", \"fix the hats here\")")
+                                           + (existing.isValid() ? "\n" + TRANS ("Empty = delete the marker") : juce::String()),
+                                         juce::MessageBoxIconType::NoIcon);
+        w->addTextEditor ("text", existing[ids::text].toString());
+        w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<Ruler> (this), w, sid, beat] (int r)
+        {
+            if (safe == nullptr || r != 1)
+                return;
+
+            auto& st = safe->state;
+            auto* ed = st.getEdit();
+
+            if (ed == nullptr)
+                return;
+
+            const auto text = w->getTextEditorContents ("text").trim();
+            auto m = findMarker (*ed, sid);
+            st.beginAction();
+
+            if (m.isValid())
+            {
+                if (text.isEmpty())
+                    removeMarker (*ed, m);
+                else
+                    setMarkerText (*ed, m, text);
+            }
+            else if (sid.isEmpty() && text.isNotEmpty())
+            {
+                addMarker (*ed, beat, text, st.session.getUserName());
+            }
+
+            safe->owner.repaint();
+            safe->owner.lanes->repaint();
+            safe->repaint();
+        }), true);
+    }
+
+    void showMarkerMenu (const juce::ValueTree& marker)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto sid = marker[ids::sid].toString();
+        juce::PopupMenu m;
+        m.addSectionHeader (markerLabel (marker));
+        m.addItem (1, TRANS ("Play from here"));
+        m.addItem (2, TRANS ("Edit text..."));
+        m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("Default colour"), getMarkerColour (marker)));
+        m.addSeparator();
+        m.addItem (3, TRANS ("Delete marker"));
+
+        if (const auto who = marker[ids::author].toString(); who.isNotEmpty())
+            m.addItem (-1, TRANS ("Added by") + " " + who, false);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                         [safe = juce::Component::SafePointer<Ruler> (this), sid] (int r)
+        {
+            if (safe == nullptr || r == 0)
+                return;
+
+            auto& st = safe->state;
+            auto* e = st.getEdit();
+            auto mk = e != nullptr ? findMarker (*e, sid) : juce::ValueTree();
+
+            if (! mk.isValid())
+                return;
+
+            if (r == 1) { safe->jumpTo (getMarkerBeat (mk)); return; }
+            if (r == 2) { safe->askMarker (sid, 0.0); return; }
+
+            st.beginAction();
+
+            if (r == 3)
+                removeMarker (*e, mk);
+            else if (r >= 200 && r <= 299)
+                setMarkerColour (*e, mk, r == 299 || r - 200 >= (int) std::size (palette) ? juce::Colours::transparentBlack
+                                                                                           : palette[r - 200].colour);
+
+            safe->owner.repaint();
+            safe->owner.lanes->repaint();
+            safe->repaint();
+        });
+    }
+
+    /** Moves the song start marker there (and the playhead, if the song is playing). */
+    void jumpTo (double beat)
+    {
+        state.songStartBeat = juce::jmax (0.0, beat);
+
+        if (state.session.isSongMode())
+            if (auto* edit = state.getEdit())
+                if (edit->getTransport().isPlaying())
+                    state.session.seek (state.beatsToSeconds (state.songStartBeat));
+
+        owner.repaint();
+        owner.lanes->repaint();
+        repaint();
+    }
+
+    juce::String draggingMarker;
+    bool markerMoved = false;
 
     static juce::String bpmLabel (double bpm)
     {
@@ -1326,7 +1609,7 @@ public:
         if (std::abs (bar - std::round (bar)) < 1.0e-6)
             x += juce::GlyphArrangement::getStringWidth (theme::mono (10.5f), juce::String ((int) std::round (bar) + 1)) + 6.0f;
 
-        return { x + 1.0f, 9.0f, w, (float) getHeight() - 10.0f };
+        return { x + 1.0f, 9.0f, w, (float) barsH - 10.0f };
     }
 
     /** The tempo change whose tag is under this point, or -1. */
@@ -1422,6 +1705,13 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
+        if (e.position.y >= (float) barsH)
+        {
+            auto m = markerAt (e.position);
+            askMarker (m[ids::sid].toString(), state.snapPlaylistBeat (beatAt (e.position.x)));
+            return;
+        }
+
         const int index = tempoAt (e.position);
 
         if (index >= 0)
@@ -1435,6 +1725,32 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        // The markers' strip
+        if (e.position.y >= (float) barsH)
+        {
+            auto m = markerAt (e.position);
+            draggingMarker = {};
+            markerMoved = false;
+
+            if (e.mods.isPopupMenu())
+            {
+                if (m.isValid())
+                    showMarkerMenu (m);
+                else
+                    askMarker ({}, state.snapPlaylistBeat (beatAt (e.position.x)));
+
+                return;
+            }
+
+            if (m.isValid())
+            {
+                draggingMarker = m[ids::sid].toString();
+                state.beginAction();
+                repaint();
+                return;
+            }
+        }
+
         const int tempo = tempoAt (e.position);
 
         if (e.mods.isPopupMenu())
@@ -1470,6 +1786,22 @@ public:
     {
         if (e.mods.isPopupMenu())
             return;
+
+        if (draggingMarker.isNotEmpty())
+        {
+            auto* edit = state.getEdit();
+            auto m = edit != nullptr ? findMarker (*edit, draggingMarker) : juce::ValueTree();
+
+            if (m.isValid() && (markerMoved || e.getDistanceFromDragStart() >= 3))
+            {
+                markerMoved = true;
+                setMarkerBeat (*edit, m, state.snapPlaylistBeatNearest (beatAt (e.position.x)));
+                owner.lanes->repaint();
+                repaint();
+            }
+
+            return;
+        }
 
         if (draggingTempo >= 0)
         {
@@ -1510,6 +1842,19 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (draggingMarker.isNotEmpty())
+        {
+            // A click (no drag): play from the marker.
+            if (! markerMoved)
+                if (auto* edit = state.getEdit())
+                    if (auto m = findMarker (*edit, draggingMarker); m.isValid())
+                        jumpTo (getMarkerBeat (m));
+
+            draggingMarker = {};
+            repaint();
+            return;
+        }
+
         if (draggingTempo >= 0)
         {
             draggingTempo = -1;
@@ -1575,6 +1920,7 @@ public:
 
         juce::PopupMenu m;
         m.addItem (30, TRANS ("Tempo change here (bar {BAR})...").replace ("{BAR}", barText (tempoBeat, barBeats)));
+        m.addItem (31, TRANS ("Add a marker here..."));
         m.addSeparator();
         m.addSectionHeader (TRANS ("Punch in / out (recording keeps only this part)"));
 
@@ -1596,6 +1942,12 @@ public:
             if (r == 30)
             {
                 safe->askTempo (-1, tempoBeat);
+                return;
+            }
+
+            if (r == 31)
+            {
+                safe->askMarker ({}, tempoBeat);
                 return;
             }
 
@@ -1644,25 +1996,65 @@ class Playlist::LaneHeader  : public juce::Component,
 public:
     LaneHeader (Playlist& p) : owner (p)
     {
-        setTooltip (TRANS ("Double-click a track to name it. Right-click: name, colour, and the insert that takes dropped on it play through (everyone sees them)"));
+        setTooltip (TRANS ("Double-click a track to name it. Right-click: name, colour, mute, and the insert that takes dropped on it play through. "
+                           "Drag over several tracks, then right-click: group them (everyone sees all of this)"));
     }
 
-    int laneAt (int y) const     { return (y + owner.viewport->getViewPositionY()) / laneHeight; }
+    int rowAt (int y) const      { return owner.rowAtY (y + owner.viewport->getViewPositionY()); }
+    int laneAt (int y) const     { return owner.laneAtRowY (y + owner.viewport->getViewPositionY()); }
+
+    const Row* rowPtr (int y) const
+    {
+        const int r = rowAt (y);
+        return juce::isPositiveAndBelow (r, (int) owner.rows.size()) ? &owner.rows[(size_t) r] : nullptr;
+    }
+
+    static juce::Colour groupColour (const song::LaneGroup& g)   { return g.colour.isTransparent() ? theme::colours::accent : g.colour; }
+
+    // The fold arrow and the mute button of a group's header row (x positions).
+    static constexpr int arrowRight = 18, muteSize = 16;
+    juce::Rectangle<int> muteBox (int y) const   { return { getWidth() - muteSize - 5, y + (laneHeight - muteSize) / 2, muteSize, muteSize }; }
 
     void paint (juce::Graphics& g) override
     {
         g.fillAll (theme::colours::panel);
         const int scrollY = owner.viewport->getViewPositionY();
         auto* edit = owner.state.getEdit();
+        owner.updateRows();
+        const auto audible = edit != nullptr ? getAudibleLanes (*edit) : std::vector<bool> ((size_t) numLanes, true);
 
-        const int firstLane = juce::jmax (0, scrollY / laneHeight);
-        const int lastLane = juce::jmin (numLanes - 1, (scrollY + getHeight()) / laneHeight);
+        const int firstRow = juce::jmax (0, scrollY / laneHeight);
+        const int lastRow = juce::jmin ((int) owner.rows.size() - 1, (scrollY + getHeight()) / laneHeight);
 
-        for (int lane = firstLane; lane <= lastLane; ++lane)
+        for (int r = firstRow; r <= lastRow; ++r)
         {
-            const int y = lane * laneHeight - scrollY;
-            g.setColour (lane % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
+            const auto& row = owner.rows[(size_t) r];
+            const int y = r * laneHeight - scrollY;
+
+            if (row.lane < 0)
+            {
+                paintGroupRow (g, row, y);
+                continue;
+            }
+
+            const int lane = row.lane;
+            const bool grouped = row.group.isValid();
+            const int indent = grouped ? 6 : 0;   // a grouped track sits right of its group's bracket
+
+            g.setColour (r % 2 == 0 ? theme::colours::lane1 : theme::colours::lane2);
             g.fillRect (0, y, getWidth() - 1, laneHeight);
+
+            if (selectionContains (lane))
+            {
+                g.setColour (theme::colours::accentSoft);
+                g.fillRect (0, y, getWidth() - 1, laneHeight);
+            }
+
+            if (grouped)
+            {
+                g.setColour (groupColour (row.group).withAlpha (0.8f));
+                g.fillRect (0, y, 3, laneHeight - (lane == row.group.last() ? 4 : 0));
+            }
 
             if (edit != nullptr)
             {
@@ -1672,9 +2064,9 @@ public:
                 if (! colour.isTransparent())
                 {
                     g.setColour (colour.withAlpha (0.14f));
-                    g.fillRect (0, y, getWidth() - 1, laneHeight);
+                    g.fillRect (indent, y, getWidth() - 1 - indent, laneHeight);
                     g.setColour (colour);
-                    g.fillRect (0, y + 1, 4, laneHeight - 2);
+                    g.fillRect (indent, y + 1, 4, laneHeight - 2);
                 }
 
                 // Where takes dropped here play: the insert's number (M = master).
@@ -1691,25 +2083,37 @@ public:
                     g.setFont (theme::mono (8.5f, true));
                     g.drawText (juce::String::fromUTF8 ("\xe2\x86\x92") + badge, box.toNearestInt(), juce::Justification::centred, false);
                 }
+
+                // Muted (its clips don't play): a small "M" in the corner.
+                if (isLaneMuted (*edit, lane))
+                {
+                    auto box = juce::Rectangle<float> ((float) getWidth() - 15.0f, (float) y + laneHeight - 13.0f, 11.0f, 10.0f);
+                    g.setColour (theme::colours::red.withAlpha (0.85f));
+                    g.fillRoundedRectangle (box, 2.5f);
+                    g.setColour (theme::colours::accentText);
+                    g.setFont (theme::mono (8.0f, true));
+                    g.drawText ("M", box.toNearestInt(), juce::Justification::centred, false);
+                }
             }
 
             const auto name = edit != nullptr ? getLaneName (*edit, lane) : juce::String();
+            const float alpha = audible[(size_t) lane] ? 1.0f : 0.45f;
 
             if (name.isEmpty())
             {
                 g.setFont (theme::ui (11.0f, theme::Weight::semibold));
-                g.setColour (theme::colours::muted);
-                g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10, y, getWidth() - 12, laneHeight, juce::Justification::centredLeft);
+                g.setColour (theme::colours::muted.withMultipliedAlpha (alpha));
+                g.drawText (TRANS ("Track") + " " + juce::String (lane + 1), 10 + indent, y, getWidth() - 12 - indent, laneHeight, juce::Justification::centredLeft);
             }
             else
             {
                 // The track's name, its number small above it.
                 g.setFont (theme::mono (9.0f));
-                g.setColour (theme::colours::dim);
-                g.drawText (juce::String (lane + 1), 8, y + 2, getWidth() - 10, 10, juce::Justification::centredLeft);
+                g.setColour (theme::colours::dim.withMultipliedAlpha (alpha));
+                g.drawText (juce::String (lane + 1), 8 + indent, y + 2, getWidth() - 10 - indent, 10, juce::Justification::centredLeft);
                 g.setFont (theme::ui (11.0f, theme::Weight::semibold));
-                g.setColour (theme::colours::text);
-                g.drawFittedText (name, 8, y + 11, getWidth() - 10, laneHeight - 13, juce::Justification::centredLeft, 1, 0.7f);
+                g.setColour (theme::colours::text.withMultipliedAlpha (alpha));
+                g.drawFittedText (name, 8 + indent, y + 11, getWidth() - 10 - indent, laneHeight - 13, juce::Justification::centredLeft, 1, 0.7f);
             }
         }
 
@@ -1717,10 +2121,231 @@ public:
         g.fillRect (getWidth() - 1, 0, 1, getHeight());
     }
 
+    void paintGroupRow (juce::Graphics& g, const Row& row, int y)
+    {
+        const auto c = groupColour (row.group);
+        g.setColour (theme::colours::wellAlt);
+        g.fillRect (0, y, getWidth() - 1, laneHeight);
+        g.setColour (c.withAlpha (0.22f));
+        g.fillRect (0, y, getWidth() - 1, laneHeight);
+        g.setColour (c);
+        g.fillRect (0, y + (row.folded ? 0 : 4), 3, laneHeight - (row.folded ? 0 : 4));
+        g.fillRect (0, y + laneHeight - 1, getWidth() - 1, 1);
+
+        // Fold arrow
+        juce::Path arrow;
+        const float cx = 11.0f, cy = (float) y + laneHeight * 0.5f;
+
+        if (row.folded)
+            arrow.addTriangle (cx - 3.0f, cy - 5.0f, cx - 3.0f, cy + 5.0f, cx + 4.0f, cy);
+        else
+            arrow.addTriangle (cx - 5.0f, cy - 3.0f, cx + 5.0f, cy - 3.0f, cx, cy + 4.0f);
+
+        g.setColour (theme::colours::text);
+        g.fillPath (arrow);
+
+        // Name and how many tracks
+        const auto name = row.group.name.isNotEmpty() ? row.group.name : TRANS ("Group");
+        const float alpha = row.group.muted ? 0.5f : 1.0f;
+        g.setFont (theme::ui (11.0f, theme::Weight::bold));
+        g.setColour (theme::colours::text.withMultipliedAlpha (alpha));
+        g.drawFittedText (name, arrowRight, y + 2, getWidth() - arrowRight - muteSize - 8, 15, juce::Justification::centredLeft, 1, 0.7f);
+        g.setFont (theme::mono (8.5f));
+        g.setColour (theme::colours::muted.withMultipliedAlpha (alpha));
+        g.drawText (juce::String (row.group.first + 1) + "-" + juce::String (row.group.last() + 1),
+                    arrowRight, y + 16, getWidth() - arrowRight - muteSize - 8, 11, juce::Justification::centredLeft, false);
+
+        // Mute button for the whole group
+        const auto box = muteBox (y).toFloat();
+        g.setColour (row.group.muted ? theme::colours::red : theme::colours::well);
+        g.fillRoundedRectangle (box, 3.0f);
+        g.setColour (row.group.muted ? theme::colours::accentText : theme::colours::muted);
+        g.setFont (theme::mono (9.0f, true));
+        g.drawText ("M", box.toNearestInt(), juce::Justification::centred, false);
+    }
+
+    //==============================================================================
+    // Selecting tracks (drag over their names) to group them; this PC only.
+    int selFirst = -1, selLast = -1;
+
+    bool selectionContains (int lane) const
+    {
+        return selFirst >= 0 && lane >= juce::jmin (selFirst, selLast) && lane <= juce::jmax (selFirst, selLast);
+    }
+
     void mouseDown (const juce::MouseEvent& e) override
     {
+        const auto* row = rowPtr (e.y);
+
+        if (row == nullptr)
+            return;
+
+        if (row->lane < 0)
+        {
+            const int y = rowAt (e.y) * laneHeight - owner.viewport->getViewPositionY();
+
+            if (e.mods.isPopupMenu())
+                showGroupMenu (row->group.sid);
+            else if (muteBox (y).expanded (2).contains (e.getPosition()))
+                toggleGroupMute (row->group.sid);
+            else
+                owner.setGroupFolded (row->group.sid, ! row->folded);
+
+            return;
+        }
+
         if (e.mods.isPopupMenu())
-            showLaneMenu (laneAt (e.y));
+        {
+            showLaneMenu (row->lane);
+            return;
+        }
+
+        if (e.mods.isShiftDown() && selFirst >= 0)
+            selLast = row->lane;
+        else
+            selFirst = selLast = row->lane;
+
+        repaint();
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() || selFirst < 0)
+            return;
+
+        if (const auto* row = rowPtr (e.y); row != nullptr && row->lane >= 0 && row->lane != selLast)
+        {
+            selLast = row->lane;
+            repaint();
+        }
+    }
+
+    void toggleGroupMute (const juce::String& sid)
+    {
+        if (auto* e = owner.state.getEdit())
+        {
+            const auto g = getLaneGroup (*e, sid);
+
+            if (g.isValid())
+            {
+                owner.state.beginAction();
+                setLaneGroupMuted (*e, sid, ! g.muted);
+                owner.refresh();
+            }
+        }
+    }
+
+    void showGroupMenu (const juce::String& sid)
+    {
+        auto* edit = owner.state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto group = getLaneGroup (*edit, sid);
+
+        if (! group.isValid())
+            return;
+
+        const bool folded = owner.state.foldedGroups.count (sid) > 0;
+        juce::PopupMenu m;
+        m.addSectionHeader (TRANS ("Group") + ": " + (group.name.isNotEmpty() ? group.name : TRANS ("Group"))
+                              + " (" + TRANS ("tracks") + " " + juce::String (group.first + 1) + "-" + juce::String (group.last() + 1) + ")");
+        m.addItem (1, TRANS ("Rename..."));
+        m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("Default colour"), group.colour));
+        m.addItem (2, TRANS ("Mute the whole group"), true, group.muted);
+        m.addItem (3, folded ? TRANS ("Unfold (show its tracks)") : TRANS ("Fold (hide its tracks)"));
+        m.addSeparator();
+        m.addItem (4, TRANS ("Add the track below to the group"), canGroupLanes (*edit, group.first, group.count + 1, sid));
+        m.addItem (5, TRANS ("Take the last track out of the group"), group.count > 1);
+        m.addSeparator();
+        m.addItem (6, TRANS ("Ungroup (the tracks and their clips stay)"));
+
+        m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
+                         [safe = juce::Component::SafePointer<LaneHeader> (this), sid, group, folded] (int r)
+        {
+            if (safe == nullptr || r == 0)
+                return;
+
+            auto& st = safe->owner.state;
+            auto* e = st.getEdit();
+
+            if (e == nullptr || ! getLaneGroup (*e, sid).isValid())
+                return;
+
+            if (r == 1)
+            {
+                safe->askGroupName (sid, group.first, group.count);
+                return;
+            }
+
+            if (r == 3)
+            {
+                safe->owner.setGroupFolded (sid, ! folded);
+                return;
+            }
+
+            st.beginAction();
+
+            if (r >= 200 && r <= 299)
+                setLaneGroupColour (*e, sid, r == 299 || r - 200 >= (int) std::size (palette) ? juce::Colours::transparentBlack
+                                                                                               : palette[r - 200].colour);
+            else if (r == 2) setLaneGroupMuted (*e, sid, ! group.muted);
+            else if (r == 4) setLaneGroupRange (*e, sid, group.first, group.count + 1);
+            else if (r == 5) setLaneGroupRange (*e, sid, group.first, group.count - 1);
+            else if (r == 6)
+            {
+                st.foldedGroups.erase (sid);
+                removeLaneGroup (*e, sid);
+            }
+
+            safe->owner.refresh();
+        });
+    }
+
+    /** Names a new group (sid "") made of these tracks, or renames one. */
+    void askGroupName (const juce::String& sid, int first, int count)
+    {
+        auto* edit = owner.state.getEdit();
+
+        if (edit == nullptr)
+            return;
+
+        const auto current = sid.isNotEmpty() ? getLaneGroup (*edit, sid).name : juce::String();
+        auto* w = new juce::AlertWindow (sid.isEmpty() ? TRANS ("Group tracks") : TRANS ("Rename the group"),
+                                         TRANS ("Tracks {A} to {B}. Name of the group:").replace ("{A}", juce::String (first + 1))
+                                                                                         .replace ("{B}", juce::String (first + count)),
+                                         juce::MessageBoxIconType::NoIcon);
+        w->addTextEditor ("name", current.isNotEmpty() ? current : (sid.isEmpty() ? TRANS ("Group") : juce::String()));
+        w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<LaneHeader> (this), w, sid, first, count] (int r)
+        {
+            if (safe == nullptr || r != 1)
+                return;
+
+            auto& st = safe->owner.state;
+            auto* ed = st.getEdit();
+
+            if (ed == nullptr)
+                return;
+
+            st.beginAction();
+            const auto name = w->getTextEditorContents ("name");
+
+            if (sid.isEmpty())
+            {
+                // The group takes the first track's colour, if it has one.
+                addLaneGroup (*ed, first, count, name, getLaneColour (*ed, first));
+                safe->selFirst = safe->selLast = -1;
+            }
+            else
+            {
+                setLaneGroupName (*ed, sid, name);
+            }
+
+            safe->owner.refresh();
+        }), true);
     }
 
     void showLaneMenu (int lane)
@@ -1730,12 +2355,19 @@ public:
         if (edit == nullptr || ! juce::isPositiveAndBelow (lane, numLanes))
             return;
 
+        // The tracks to group: the dragged-over ones (if this is one of them), else just this one.
+        const bool inSelection = selectionContains (lane);
+        const int first = inSelection ? juce::jmin (selFirst, selLast) : lane;
+        const int count = inSelection ? std::abs (selLast - selFirst) + 1 : 1;
+        const bool canGroup = canGroupLanes (*edit, first, count);
+
         const auto name = getLaneName (*edit, lane);
         const auto setting = getLaneInsertSetting (*edit, lane);
         juce::PopupMenu m, takes;
         m.addSectionHeader (TRANS ("Track") + " " + juce::String (lane + 1) + (name.isNotEmpty() ? ": " + name : juce::String()));
         m.addItem (1, TRANS ("Rename..."));
         m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("No colour"), getLaneColour (*edit, lane)));
+        m.addItem (2, TRANS ("Mute this track"), true, isLaneMuted (*edit, lane));
 
         // Where takes (audio clips) dropped on this track play.
         auto* named = findInsertNamed (*edit, name);
@@ -1750,9 +2382,20 @@ public:
             takes.addItem (400 + i, juce::String (i + 1) + "  " + inserts[i]->getName(), true, setting == inserts[i]->itemID.toString());
 
         m.addSubMenu (TRANS ("Takes dropped here play through"), takes);
+        m.addSeparator();
+
+        if (count > 1)
+            m.addItem (3, TRANS ("Group tracks {A} to {B}...").replace ("{A}", juce::String (first + 1)).replace ("{B}", juce::String (first + count)), canGroup);
+        else
+            m.addItem (3, TRANS ("Make a group of this track..."), canGroup);
+
+        if (! canGroup && getLaneGroupOf (*edit, lane).isValid())
+            m.addItem (-1, TRANS ("(already in a group: right-click the group's row)"), false);
+        else if (count == 1)
+            m.addItem (-1, TRANS ("Tip: drag over several track names first to group them"), false);
 
         m.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
-                         [safe = juce::Component::SafePointer<LaneHeader> (this), lane] (int r)
+                         [safe = juce::Component::SafePointer<LaneHeader> (this), lane, first, count] (int r)
         {
             if (safe == nullptr || r == 0)
                 return;
@@ -1769,11 +2412,18 @@ public:
                 return;
             }
 
+            if (r == 3)
+            {
+                safe->askGroupName ({}, first, count);
+                return;
+            }
+
             st.beginAction();
 
             if (r >= 200 && r <= 299)
                 setLaneColour (*e, lane, r == 299 || r - 200 >= (int) std::size (palette) ? juce::Colours::transparentBlack
                                                                                           : palette[r - 200].colour);
+            else if (r == 2)    setLaneMuted (*e, lane, ! isLaneMuted (*e, lane));
             else if (r == 300)  setLaneInsertSetting (*e, lane, {});
             else if (r == 301)  setLaneInsertSetting (*e, lane, laneKeepsInsert);
             else if (r == 302)  setLaneInsertSetting (*e, lane, laneToMaster);
@@ -1788,8 +2438,13 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
-        if (! e.mods.isPopupMenu())
-            askName (laneAt (e.y));
+        if (e.mods.isPopupMenu())
+            return;
+
+        if (const auto* row = rowPtr (e.y); row != nullptr && row->lane < 0)
+            return;   // (the clicks fold and unfold it)
+
+        askName (laneAt (e.y));
     }
 
     void askName (int lane)
@@ -1824,6 +2479,7 @@ private:
 //==============================================================================
 Playlist::Playlist (EditorState& s) : state (s)
 {
+    updateRows();
     lanes = std::make_unique<Lanes> (*this);
     ruler = std::make_unique<Ruler> (*this);
     header = std::make_unique<LaneHeader> (*this);
@@ -2461,14 +3117,85 @@ void Playlist::resized()
     layoutContent();
 }
 
+void Playlist::updateRows()
+{
+    rows.clear();
+    rowOfLane.assign ((size_t) numLanes, 0);
+    auto* edit = state.getEdit();
+    const auto groups = edit != nullptr ? getLaneGroups (*edit) : juce::Array<LaneGroup>();
+    int next = 0;   // the next group to meet
+
+    for (int lane = 0; lane < numLanes;)
+    {
+        while (next < groups.size() && groups.getReference (next).last() < lane)
+            ++next;
+
+        if (next < groups.size() && groups.getReference (next).first == lane)
+        {
+            const auto& g = groups.getReference (next);
+            const bool folded = state.foldedGroups.count (g.sid) > 0;
+            const int headerRow = (int) rows.size();
+            rows.push_back ({ -1, g, folded });
+
+            for (int i = g.first; i <= g.last(); ++i)
+            {
+                if (folded)
+                {
+                    rowOfLane[(size_t) i] = headerRow;
+                }
+                else
+                {
+                    rowOfLane[(size_t) i] = (int) rows.size();
+                    rows.push_back ({ i, g, false });
+                }
+            }
+
+            lane = g.last() + 1;
+            continue;
+        }
+
+        rowOfLane[(size_t) lane] = (int) rows.size();
+        rows.push_back ({ lane, {}, false });
+        ++lane;
+    }
+}
+
+int Playlist::laneAtRowY (int y) const
+{
+    if (rows.empty())
+        return juce::jlimit (0, numLanes - 1, y / laneHeight);
+
+    const auto& r = rows[(size_t) rowAtY (y)];
+    return r.lane >= 0 ? r.lane : r.group.first;
+}
+
+bool Playlist::isLaneHidden (int lane) const
+{
+    if (rows.empty() || ! juce::isPositiveAndBelow (lane, numLanes))
+        return false;
+
+    return rows[(size_t) rowOfLane[(size_t) lane]].lane != lane;
+}
+
+void Playlist::setGroupFolded (const juce::String& groupSid, bool folded)
+{
+    if (folded)
+        state.foldedGroups.insert (groupSid);
+    else
+        state.foldedGroups.erase (groupSid);
+
+    refresh();
+}
+
 void Playlist::layoutContent()
 {
+    updateRows();
     auto* edit = state.getEdit();
     const double songBeats = edit != nullptr ? getSongLengthBeats (*edit) : 4.0;
     const double bar = state.getBeatsPerBar();
     const double shownBeats = juce::jmax (64.0 * bar, songBeats + 16.0 * bar);
     lanes->setSize (juce::jmax (viewport->getMaximumVisibleWidth(), (int) (shownBeats * pixelsPerBeat)),
-                    numLanes * laneHeight);
+                    totalRowsHeight());
 }
 
 void Playlist::setZoom (float newPixelsPerBeat, float anchorX)

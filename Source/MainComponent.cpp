@@ -453,6 +453,7 @@ MainComponent::MainComponent (te::Engine& e)
     patternMenuButton.onClick = [this] { showPatternMenu(); };
 
     state.onSelectionChanged = [this] { refresh(); };
+    state.showPianoRoll = [this] { showPanel (Panel::pianoRoll); };
 
     // Browser (left): patterns, audio files, people + chat.
     browser.onPatternChosen = [this] (const juce::String& sid) { selectPattern (sid); };
@@ -870,8 +871,7 @@ void MainComponent::unwatchEdit()
 //==============================================================================
 void MainComponent::selectPattern (const juce::String& sid)
 {
-    state.viewedPattern = sid;
-    state.placeAudioChannel = {};   // the playlist places this pattern again
+    state.viewPattern (sid);   // (on the instrument last edited in it; the playlist places this pattern again)
 
     // FL pattern mode: while playing, switching pattern switches what plays (for everyone).
     if (auto* edit = state.getEdit())
@@ -1027,6 +1027,7 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
 
     if (key == juce::KeyPress::spaceKey)                                            { playButton.triggerClick(); return true; }
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
+    if (key == juce::KeyPress::tabKey)                                              { toggleInstrumentWindow(); return true; }
     if (key == juce::KeyPress::F6Key)                                               { showPanel (Panel::rack); return true; }
     if (key == juce::KeyPress::F7Key)                                               { showPanel (Panel::pianoRoll); return true; }
     if (key == juce::KeyPress::F9Key)                                               { showMixer(); return true; }
@@ -1129,6 +1130,35 @@ juce::String MainComponent::panelName (Panel p) const
 juce::String MainComponent::panelKey (Panel p)
 {
     return p == Panel::pianoRoll ? "pianoRoll" : p == Panel::rack ? "rack" : "mixer";
+}
+
+void MainComponent::toggleInstrumentWindow()
+{
+    // Tab (like FL): the plugin window of the instrument you're working with comes back,
+    // to tweak it or pick another sound; Tab in a plugin window closes it. (Later: the key
+    // may come from inside that window, which mustn't be deleted under its own feet.)
+    if (auto* w = dynamic_cast<PluginEditorWindow*> (juce::TopLevelWindow::getActiveTopLevelWindow()))
+    {
+        juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<PluginEditorWindow> (w)]
+        {
+            if (safe != nullptr)
+                safe->closeButtonPressed();
+        });
+        return;
+    }
+
+    auto* channel = state.getSelectedChannel();
+    auto* instrument = channel != nullptr ? song::getInstrument (*channel) : nullptr;
+
+    if (instrument == nullptr || instrument->windowState == nullptr)
+        return;
+
+    auto& ws = *instrument->windowState;
+
+    if (ws.isWindowShowing() && ws.pluginWindow != nullptr)
+        ws.pluginWindow->toFront (true);
+    else
+        ws.showWindowExplicitly();
 }
 
 void MainComponent::showPanel (Panel p)

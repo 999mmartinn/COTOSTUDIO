@@ -7,6 +7,7 @@
 #include "LimiterEditor.h"
 #include "DelayEditor.h"
 #include "ReverbEditor.h"
+#include "SidechainEditor.h"
 #include "SamplerEditor.h"
 
 #if JUCE_WINDOWS
@@ -142,6 +143,8 @@ public:
             content = std::make_unique<DelayEditor> (*delay);
         else if (auto* reverb = dynamic_cast<ReverbPlugin*> (&plugin))
             content = std::make_unique<ReverbEditor> (*reverb);
+        else if (auto* sidechain = dynamic_cast<SidechainPlugin*> (&plugin))
+            content = std::make_unique<SidechainEditor> (*sidechain);
         else if (auto* sampler = dynamic_cast<SamplerPlugin*> (&plugin))
             content = std::make_unique<SamplerEditor> (*sampler);
 
@@ -163,6 +166,14 @@ public:
             {
                 if (pluginwindows::forwardKey)
                     pluginwindows::forwardKey (juce::KeyPress (juce::KeyPress::spaceKey));
+            });
+        };
+        pluginkeys::onTab = []
+        {
+            juce::MessageManager::callAsync ([]
+            {
+                if (pluginwindows::forwardKey)
+                    pluginwindows::forwardKey (juce::KeyPress (juce::KeyPress::tabKey));
             });
         };
         pluginkeys::watch (nativeHandle);
