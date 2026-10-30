@@ -46,6 +46,10 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
   a fresh copy, and the host passed those changes on to everyone, so they failed
   there too. Now every change says which song it belongs to (changes for an old
   song are dropped), and the host only passes on changes it could apply itself.
+* **Two people changing the same thing at the same moment no longer counts as a
+  difference** when both changes are kept (say one turns a channel's volume
+  down while the other pans it): the check used to look at the order the
+  values were written in, not just the values.
 * Everyone in a session needs 1.12.2 (protocol 10).
 
 ## What's new in 1.12.1

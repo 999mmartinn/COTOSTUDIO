@@ -80,10 +80,19 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash, 
     const bool skipKnobs = pluginsWithoutKnobs != nullptr && v.hasType (te::IDs::PLUGIN)
                             && pluginsWithoutKnobs->contains (v[te::IDs::id].toString());
 
-    for (int i = 0; i < v.getNumProperties(); ++i)
-    {
-        auto name = v.getPropertyName (i);
+    // For the hash, properties go in name order: the same values set in another order
+    // (two people changing one node at the same moment) are the same song.
+    juce::Array<juce::Identifier> names;
 
+    for (int i = 0; i < v.getNumProperties(); ++i)
+        names.add (v.getPropertyName (i));
+
+    if (forHash)
+        std::sort (names.begin(), names.end(), [] (const juce::Identifier& a, const juce::Identifier& b)
+                   { return a.toString() < b.toString(); });
+
+    for (auto& name : names)
+    {
         if (skipKnobs && name != te::IDs::type && name != te::IDs::id)
             continue;
 

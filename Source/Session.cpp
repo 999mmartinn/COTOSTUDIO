@@ -2346,7 +2346,7 @@ void Session::loadSnapshot (const juce::ValueTree& msg)
             return;
         }
 
-        log ("Merging the fresh copy left a difference; reloading the song");
+        log ("Merging the fresh copy left a difference at " + EditSync::describeFirstDifference (edit->state, state) + "; reloading the song");
     }
 
     peerIndex = (int) msg[ids::peer];
