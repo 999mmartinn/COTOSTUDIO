@@ -163,19 +163,33 @@ private:
     PianoRoll pianoRoll { state };
     Mixer mixer { engine, state };
 
-    // The mixer, piano roll and channel rack can each have a window of their own
-    // (e.g. a second monitor); their place in the main window shows a note meanwhile.
+    // The mixer, piano roll and channel rack each go in one of three places: in the main
+    // window (docked), floating over it (like FL: moved and sized freely, always above the
+    // playlist), or in a window of their own (e.g. a second monitor). Out of the main
+    // window, their place there shows a note.
     enum class Panel { mixer = 0, pianoRoll, rack };
+    enum class Placement { docked = 0, floating, window };
     static constexpr int numPanels = 3;
     class PanelWindow;
     class PanelPlaceholder;
+    class FloatingPanel;
     std::unique_ptr<PanelWindow> panelWindows[numPanels];
+    std::unique_ptr<FloatingPanel> floaters[numPanels];
     std::unique_ptr<PanelPlaceholder> placeholders[numPanels];
+    juce::Rectangle<int> floatArea;              // where floating panels can go (below the top bar)
     juce::Component& panelComponent (Panel);
     juce::String panelName (Panel) const;
     static juce::String panelKey (Panel);
+    Placement getPlacement (Panel p) const;
     bool isDetached (Panel p) const              { return panelWindows[(int) p] != nullptr; }
-    void setPanelDetached (Panel, bool);
+    bool isFloating (Panel p) const              { return floaters[(int) p] != nullptr; }
+    bool isFloatShown (Panel p) const;
+    bool isDocked (Panel p) const                { return ! isDetached (p) && ! isFloating (p); }
+    void setPanelPlacement (Panel, Placement);
+    void setPanelDetached (Panel p, bool detached)   { setPanelPlacement (p, detached ? Placement::window : Placement::docked); }
+    void showPlacementMenu (Panel);
+    void setFloatShown (Panel, bool);
+    void toggleFloat (Panel);
     void toggleInstrumentWindow();
     void showPanel (Panel);
     void togglePanelFullScreen (Panel);
@@ -208,6 +222,9 @@ private:
     // The same without the rack (it has its own window): playlist, divider, the rack's note, dock.
     juce::StretchableLayoutManager panelLayoutNoRack;
     juce::StretchableLayoutResizerBar dividerNoRack { &panelLayoutNoRack, 1, false };
+    // And with the rack floating: playlist, divider, dock.
+    juce::StretchableLayoutManager panelLayoutRackFloating;
+    juce::StretchableLayoutResizerBar dividerRackFloating { &panelLayoutRackFloating, 1, false };
 
     void appendLog (const juce::String&);
     void watchEdit();

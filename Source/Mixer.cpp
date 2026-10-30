@@ -1257,10 +1257,9 @@ void Mixer::paint (juce::Graphics& g)
 
 void Mixer::setDetached (bool detached)
 {
-    detachButton.setButtonText (detached ? TRANS ("Back in the main window") : TRANS ("Own window"));
+    detachButton.setButtonText (TRANS ("Window..."));
     theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
-    detachButton.setTooltip (detached ? TRANS ("Put the mixer back in the main window (closing its window does the same)")
-                                      : TRANS ("Give the mixer a window of its own - e.g. full screen on your second monitor"));
+    detachButton.setTooltip (TRANS ("Where the mixer goes: in the main window, floating over it (like FL) or in a window of its own"));
     fullScreenButton.setVisible (detached);
     resized();
 }
@@ -1340,7 +1339,7 @@ void Mixer::showEffectMenu (te::Engine& engine, juce::Component* target, EffectC
     else
         juce::KnownPluginList::addToMenu (vst, types, juce::KnownPluginList::sortByManufacturer);
 
-    m.addSubMenu (TRANS ("Your plugins (VST3: Waves, FabFilter...)"), vst);
+    m.addSubMenu (TRANS ("Your plugins (VST3, VST2: Waves, FabFilter...)"), vst);
     m.addSubMenu (TRANS ("Built-in"), builtIn);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target), [builtIns, types, onChosen] (int result)

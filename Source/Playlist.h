@@ -87,6 +87,7 @@ private:
     std::map<juce::String, std::unique_ptr<juce::AudioThumbnail>> thumbnails;
     juce::AudioThumbnail* getThumbnail (const juce::String& hash);
     float pixelsPerBeat = 22.0f;
+    static constexpr float minPixelsPerBeat = 1.0f;   // 4 pixels a bar in 4/4: 300 bars in 1200 pixels
     bool wasPlaying = false;
 
     // Rows, top to bottom: tracks, and a header row above each group of tracks (a folded

@@ -111,6 +111,9 @@ jobs:
           # Time-stretching (audio clips' speed and pitch): Signalsmith Stretch, MIT licence.
           Copy-Item external/tracktion_engine/modules/tracktion_engine/3rd_party/signalsmith-stretch/LICENSE.txt pkg/licences/Signalsmith-Stretch-MIT.txt
           Copy-Item external/tracktion_engine/modules/tracktion_engine/3rd_party/signalsmith-stretch/signalsmith-linear/LICENSE.txt pkg/licences/Signalsmith-Linear-MIT.txt
+          # VST2 hosting: the FST headers (GPLv3 or later), with their licence and our changes.
+          Copy-Item external/fst/LICENSE pkg/licences/FST-GPLv3.txt
+          Copy-Item external/fst/README.md pkg/licences/FST-README.md
           if ($env:ASIO_SDK) {
             Copy-Item asiosdk.zip pkg/licences/ASIO-SDK-source-GPLv3.zip
             "ASIO is a trademark and software of Steinberg Media Technologies GmbH." | Out-File pkg/licences/ASIO.txt -Encoding utf8
@@ -134,8 +137,9 @@ jobs:
           body: |
             COTOSTUDIO, the multiplayer DAW. Download **COTOSTUDIO.exe** below (or the zip, which also has the README and the licences); README.md explains what's new, where your files go and how to play with friends.
             Self-test on Windows: passed (3 peers over TCP).
-            Free software under the GNU AGPLv3. Fonts: Inter and JetBrains Mono (SIL Open Font License). Time-stretching: Signalsmith Stretch (MIT).
+            Free software under the GNU AGPLv3. Fonts: Inter and JetBrains Mono (SIL Open Font License). Time-stretching: Signalsmith Stretch (MIT). VST2 hosting: FST headers (GPLv3 or later, in external/fst).
             ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+            VST is a trademark of Steinberg Media Technologies GmbH.
           files: |
             dist/COTOSTUDIO.exe
             dist/COTOSTUDIO-${{ steps.version.outputs.version }}-windows.zip

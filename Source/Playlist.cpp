@@ -418,9 +418,19 @@ public:
 
         const int beatsPerBar = juce::roundToInt (getBeatsPerBar (*edit));
 
+        // Zoomed far out: only every bar (or every few bars), so the lines don't turn into a wall.
+        const float barPixels = owner.pixelsPerBeat * (float) beatsPerBar;
+        const int barLineEvery = barPixels < 4.0f ? 8 : barPixels < 8.0f ? 4 : barPixels < 14.0f ? 2 : 1;
+        const bool beatLines = owner.pixelsPerBeat >= 6.0f;
+
         for (int b = firstBeat; b <= lastBeat; ++b)
         {
-            g.setColour (b % beatsPerBar == 0 ? theme::colours::gridBar : theme::colours::grid);
+            const bool barLine = b % beatsPerBar == 0;
+
+            if (barLine ? (b / beatsPerBar) % barLineEvery != 0 : ! beatLines)
+                continue;
+
+            g.setColour (barLine ? theme::colours::gridBar : theme::colours::grid);
             g.drawVerticalLine ((int) xForBeat (b), 0.0f, (float) getHeight());
         }
 
@@ -1307,10 +1317,15 @@ public:
         const int firstBar = juce::jmax (0, (int) (scrollX / ppb / barBeats));
         const int lastBar = (int) ((scrollX + getWidth()) / ppb / barBeats) + 1;
         const float barPixels = ppb * barBeats;
-        const int labelEvery = barPixels < 32.0f ? 4 : barPixels < 56.0f ? 2 : 1;
+        const int labelEvery = barPixels < 5.0f ? 32 : barPixels < 9.0f ? 16 : barPixels < 18.0f ? 8
+                             : barPixels < 32.0f ? 4 : barPixels < 56.0f ? 2 : 1;
+        const int lineEvery = barPixels < 4.0f ? 8 : barPixels < 8.0f ? 4 : barPixels < 14.0f ? 2 : 1;
 
         for (int bar = firstBar; bar <= lastBar; ++bar)
         {
+            if (bar % lineEvery != 0 && bar % labelEvery != 0)
+                continue;
+
             const float x = bar * barBeats * ppb - (float) scrollX;
             g.setColour (theme::colours::gridBar);
             g.drawVerticalLine ((int) x, 8.0f, (float) getHeight());
@@ -3200,7 +3215,7 @@ void Playlist::layoutContent()
 
 void Playlist::setZoom (float newPixelsPerBeat, float anchorX)
 {
-    newPixelsPerBeat = juce::jlimit (4.0f, 120.0f, newPixelsPerBeat);
+    newPixelsPerBeat = juce::jlimit (minPixelsPerBeat, 120.0f, newPixelsPerBeat);   // far out: a whole song on screen
     const double anchorBeat = anchorX / pixelsPerBeat;
     const float anchorOnScreen = anchorX - (float) viewport->getViewPositionX();
 

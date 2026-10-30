@@ -1904,8 +1904,7 @@ void PianoRoll::setDetached (bool isDetached)
 {
     detached = isDetached;
     theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
-    detachButton.setTooltip (detached ? TRANS ("Put the piano roll back in the main window (closing its window does the same)")
-                                      : TRANS ("Give the piano roll a window of its own - e.g. on your second monitor"));
+    detachButton.setTooltip (TRANS ("Where the piano roll goes: in the main window, floating over it (like FL) or in a window of its own"));
     setFullScreenState (false);
 }
 

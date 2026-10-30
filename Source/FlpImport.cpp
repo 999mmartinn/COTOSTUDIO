@@ -158,6 +158,9 @@ namespace
         fx.file = recordText (r, 55);
         fx.vendor = recordText (r, 56);
 
+        if (! fx.isVST3 && r.count (51) > 0 && r[51].getSize() >= 4)
+            fx.vst2ID = (int) juce::ByteOrder::littleEndianInt (r[51].getData());
+
         if (fx.isVST3 && r.count (52) > 0 && r[52].getSize() == 16)
             fx.vst3ClassID = r[52];
 
@@ -533,6 +536,9 @@ juce::String parse (const juce::MemoryBlock& file, Project& project)
                 break;
 
             case 213:
+                if (inEffect && fx.kind != "Fruity Wrapper" && e.size > 0)
+                    fx.flData.replaceAll (e.data, e.size);
+
                 if (inEffect && fx.kind == "Fruity Wrapper")
                 {
                     readWrapper (e, fx);
@@ -835,6 +841,12 @@ const juce::PluginDescription* findPlugin (const juce::Array<juce::PluginDescrip
                 return &d;
     }
 
+    // 1b. The exact VST2 (by its ID): FL's saved sound loads into it as it was.
+    if (! fx.isVST3 && fx.vst2ID != 0)
+        for (auto& d : known)
+            if (d.pluginFormatName == "VST" && d.uniqueId == fx.vst2ID)
+                return &d;
+
     // 2. By name: FL's name for it, the plugin's own, the file's, the one inside its state.
     juce::StringArray names;
     const bool shell = fx.pluginName.containsIgnoreCase ("WaveShell") || fx.file.containsIgnoreCase ("WaveShell");
@@ -873,8 +885,8 @@ const juce::PluginDescription* findPlugin (const juce::Array<juce::PluginDescrip
             if (score <= 0)
                 continue;
 
-            if (isVST3 (d))
-                score += 10;                                     // the VST3 version, if there is a choice
+            if (isVST3 (d) == fx.isVST3)
+                score += 10;                                     // the version FL used (its sound loads as it was), if there is a choice
 
             if (vendor.isNotEmpty() && normalise (d.manufacturerName).contains (vendor.substring (0, 5)))
                 score += 5;
@@ -893,6 +905,174 @@ const juce::PluginDescription* findPlugin (const juce::Array<juce::PluginDescrip
     return best;
 }
 
+//==============================================================================
+namespace
+{
+    /** FL's numbers for one of its own effects (32-bit each). */
+    std::vector<int> flValues (const juce::MemoryBlock& data)
+    {
+        std::vector<int> v;
+        auto* d = (const juce::uint8*) data.getData();
+
+        for (size_t i = 0; i + 4 <= data.getSize(); i += 4)
+            v.push_back ((int) juce::ByteOrder::littleEndianInt (d + i));
+
+        return v;
+    }
+
+    /** The tempo division nearest to a length in steps (1/16 notes). */
+    int nearestDivision (double steps)
+    {
+        int best = 0;
+
+        for (int i = 1; i < dly::numDivisions; ++i)
+            if (std::abs (std::log (dly::divisions[i].steps / steps)) < std::abs (std::log (dly::divisions[best].steps / steps)))
+                best = i;
+
+        return best;
+    }
+
+    void setValue (te::Plugin& p, const char* id, double value)
+    {
+        if (auto param = p.getAutomatableParameterByID (id))
+            param->setParameter ((float) juce::jlimit ((double) param->valueRange.start, (double) param->valueRange.end, value),
+                                 juce::sendNotification);
+    }
+
+    /** For knobs whose units FL doesn't show: the same place on our knob (0..1). */
+    void setKnob (te::Plugin& p, const char* id, double proportion)
+    {
+        if (auto param = p.getAutomatableParameterByID (id))
+            param->setNormalisedParameter ((float) juce::jlimit (0.0, 1.0, proportion), juce::sendNotification);
+    }
+}
+
+bool applyFlSettings (te::Plugin& p, const Effect& fx, double bpm)
+{
+    const auto v = flValues (fx.flData);
+    const double secondsPerStep = 15.0 / juce::jmax (10.0, bpm > 0.0 ? bpm : 120.0);
+
+    if (fx.kind == "Fruity Delay 3" && dynamic_cast<DelayPlugin*> (&p) != nullptr)
+    {
+        if (v.size() < 27 || v[0] != 1)
+            return false;
+
+        auto knob = [&v] (int i) { return v[(size_t) i] / 6000.0; };
+        const double steps = juce::jmax (1, v[5]) / 48.0;
+
+        setValue (p, "input", knob (1));
+        setValue (p, "model", juce::jlimit (0, 3, v[2]));          // mono, stereo, ping pong, off: the same order here
+        setValue (p, "sync", v[3] != 0 ? 1.0 : 0.0);
+        setValue (p, "keepPitch", v[4] != 0 ? 1.0 : 0.0);
+        setValue (p, "division", nearestDivision (steps));
+        setValue (p, "time", steps * secondsPerStep * 1000.0);     // (without tempo sync: the same length at the song's tempo)
+        setValue (p, "smoothing", knob (6));
+        setValue (p, "offset", (v[7] - 500) / 500.0);
+        setValue (p, "spread", knob (8));
+        setKnob  (p, "modRate", knob (9));
+        setValue (p, "modTime", knob (10));
+        setValue (p, "modCutoff", knob (11));
+        setValue (p, "diffusion", knob (12));
+        setValue (p, "diffusionSpread", knob (13));
+        setValue (p, "distType", v[14] != 0 ? dly::saturate : dly::limit);
+        setKnob  (p, "feedback", knob (15));
+
+        static constexpr int filters[] = { dly::lowPass, dly::highPass, dly::bandPass, dly::filterOff };   // FL: LP, HP, BP, off
+        setValue (p, "filterType", filters[juce::jlimit (0, 3, v[16])]);
+        setKnob  (p, "cutoff", knob (17));
+        setValue (p, "resonance", knob (18));
+        setValue (p, "distLevel", -30.0 * knob (19));               // knob turned up = distorts sooner
+        setValue (p, "distKnee", knob (20));
+        setValue (p, "distSymmetry", knob (21));
+        setKnob  (p, "sampleRate", v[22] / 60000.0);
+        setKnob  (p, "bits", knob (23));
+        setValue (p, "wet", knob (24));
+        setValue (p, "tone", v[25] / 3000.0);
+        setValue (p, "dry", knob (26));
+        return true;
+    }
+
+    if (fx.kind == "Fruity Reeverb 2" && dynamic_cast<ReverbPlugin*> (&p) != nullptr)
+    {
+        if (v.size() < 16 || v[0] != 10001)
+            return false;
+
+        auto* bytes = (const juce::uint8*) fx.flData.getData();
+        const bool tempo = fx.flData.getSize() >= 66 && bytes[64] != 0;
+        const bool side = fx.flData.getSize() >= 66 && bytes[65] != 0;
+        const double steps = v[3] / 48.0;
+
+        setValue (p, "lowCut", v[1]);
+        setValue (p, "highCut", v[2] * 100.0);
+        setValue (p, "tempo", tempo ? 1.0 : 0.0);
+        setValue (p, "predelay", steps * secondsPerStep * 1000.0);
+        setValue (p, "predelayDivision", nearestDivision (juce::jmax (0.25, steps)));
+        setValue (p, "size", v[4] / 100.0);
+        setValue (p, "diffusion", v[5] / 100.0);
+        setValue (p, "decay", v[6] / 10.0);
+        setValue (p, "damp", v[7] * 100.0);                          // FL's maximum: no damping, ours too
+        setValue (p, "bass", v[8] / 100.0);
+        setValue (p, "crossover", v[9]);
+        setValue (p, "mod", v[10] / 64.0);
+        setValue (p, "dry", v[11] / 128.0);
+        setValue (p, "early", v[12] / 128.0);
+        setValue (p, "wet", v[13] / 128.0);
+        setKnob  (p, "modSpeed", v[14] / 2048.0);
+        setValue (p, "side", side ? 1.0 : 0.0);
+        return true;
+    }
+
+    if (fx.kind == "Fruity Parametric EQ 2" && dynamic_cast<ParametricEQPlugin*> (&p) != nullptr)
+    {
+        if (v.size() < 37 || v[0] != 8)
+            return false;
+
+        // FL's band types: off, low pass, band pass, high pass, notch, low shelf, peaking, high shelf.
+        static constexpr int types[] = { peq::off, peq::lowPass, peq::bandPass, peq::highPass, peq::notch,
+                                         peq::lowShelf, peq::peak, peq::highShelf };
+
+        for (int b = 0; b < 7 && b < peq::numBands; ++b)
+        {
+            const juce::String n (b + 1);
+            const int type = types[juce::jlimit (0, 7, v[(size_t) (22 + b)])];
+            const double width = juce::jlimit (0.02, 1.0, v[(size_t) (15 + b)] / 65536.0);
+            const double octaves = width * 4.0;                       // FL's default peak: about 1.5 octaves
+            const double q = std::sqrt (std::pow (2.0, octaves)) / (std::pow (2.0, octaves) - 1.0);
+
+            setValue (p, ("type" + n).toRawUTF8(), type);
+            setValue (p, ("gain" + n).toRawUTF8(), v[(size_t) (1 + b)] / 100.0);
+            setValue (p, ("freq" + n).toRawUTF8(), 20.0 * std::pow (1000.0, juce::jlimit (0, 65536, v[(size_t) (8 + b)]) / 65536.0));
+            setValue (p, ("q" + n).toRawUTF8(), (type == peq::lowShelf || type == peq::highShelf) && v[(size_t) (15 + b)] == 40124
+                                                    ? 0.707 : q);   // FL's default shelf: our default shelf
+            setValue (p, ("order" + n).toRawUTF8(), juce::jlimit (0, 3, v[(size_t) (29 + b)]));
+        }
+
+        setValue (p, "main", v[36] / 100.0);
+        return true;
+    }
+
+    return false;
+}
+
+juce::MemoryBlock makeVST2State (const juce::MemoryBlock& chunk, int vst2ID)
+{
+    // An .fxb "bank chunk" (what JUCE's VST2 host reads back): big-endian header, then the chunk.
+    juce::MemoryOutputStream out;
+    auto be = [&out] (juce::uint32 x) { out.writeIntBigEndian ((int) x); };
+
+    out.write ("CcnK", 4);
+    be ((juce::uint32) (chunk.getSize() + 152));   // the size after these 8 bytes
+    out.write ("FBCh", 4);
+    be (1);                                         // version (JUCE reads up to 1)
+    be ((juce::uint32) vst2ID);
+    be (1);                                         // the plugin's version (not checked)
+    be (1);                                         // programs
+    out.writeRepeatedByte (0, 128);                 // (future)
+    be ((juce::uint32) chunk.getSize());
+    out.write (chunk.getData(), chunk.getSize());
+    return out.getMemoryBlock();
+}
+
 juce::MemoryBlock makeVST3State (const juce::MemoryBlock& component, const juce::MemoryBlock& controller)
 {
     juce::XmlElement state ("VST3PluginState");
@@ -906,6 +1086,33 @@ juce::MemoryBlock makeVST3State (const juce::MemoryBlock& component, const juce:
     juce::MemoryBlock result;
     juce::AudioProcessor::copyXmlToBinary (state, result);
     return result;
+}
+
+namespace
+{
+    /** Puts FL's saved settings of a VST into the plugin about to be made. Returns true if
+        it could (the VST3 with its VST3 state; the VST2 with its chunk; or the VST3 given
+        the VST2's chunk, which many plugins read too). */
+    bool putFlState (juce::ValueTree& tree, const juce::PluginDescription& desc, const Effect& fx)
+    {
+        if (fx.componentState.getSize() == 0)
+            return false;
+
+        if (desc.pluginFormatName == "VST3")
+            tree.setProperty (te::IDs::state, makeVST3State (fx.componentState, fx.controllerState).toBase64Encoding(), nullptr);
+        else if (desc.pluginFormatName == "VST" && fx.stateFromVST2)
+            tree.setProperty (te::IDs::state, makeVST2State (fx.componentState, fx.vst2ID != 0 ? fx.vst2ID : desc.uniqueId).toBase64Encoding(), nullptr);
+        else
+            return false;
+
+        return true;
+    }
+
+    /** FL used the VST2 and its settings went to the VST3 (they may not sound the same). */
+    bool vst2SettingsInVST3 (const juce::PluginDescription& desc, const Effect& fx)
+    {
+        return fx.stateFromVST2 && desc.pluginFormatName == "VST3";
+    }
 }
 
 juce::String describeFile (const juce::File& file)
@@ -1048,6 +1255,28 @@ juce::String dryRun (te::Engine& engine, const juce::File& file, const juce::Str
         const auto fx = effectList (song::getInsertEffects (*t));
         if (fx.isNotEmpty())
             lines.add ("     " + fx);
+
+        // Our own effects: every knob (to check what FL's settings became).
+        for (auto* e : song::getInsertEffects (*t))
+            if (auto* coto = dynamic_cast<CotoFxPlugin*> (e))
+            {
+                juce::StringArray knobs;
+
+                for (auto* param : coto->params())
+                    knobs.add (param->getParameterName() + " " + param->getCurrentValueAsString());
+
+                lines.add ("       " + e->getName() + ": " + knobs.joinIntoString (", "));
+            }
+            else if (auto* eq = dynamic_cast<ParametricEQPlugin*> (e))
+            {
+                juce::StringArray knobs;
+
+                for (auto* param : eq->getAutomatableParameters())
+                    if (! param->paramID.startsWith ("order"))
+                        knobs.add (param->getParameterName() + " " + param->getCurrentValueAsString());
+
+                lines.add ("       " + e->getName() + ": " + knobs.joinIntoString (", "));
+            }
     }
 
     juce::StringArray names;
@@ -1096,9 +1325,48 @@ juce::String Report::toText() const
 
 void applyBeat (te::Edit&, const Project&, const Options&, const std::map<int, te::AudioTrack*>& inserts, Report&);
 
+/** VST2s FL used that haven't been scanned here: if their file is where FL had it, they
+    are added to the plugin list (so a beat with Omnisphere loads without a full scan). */
+static void scanFlVST2s (te::Engine& engine, const Project& project)
+{
+    auto& pm = engine.getPluginManager();
+    juce::AudioPluginFormat* vst2 = nullptr;
+
+    for (auto* f : pm.pluginFormatManager.getFormats())
+        if (f->getName() == "VST")
+            vst2 = f;
+
+    if (vst2 == nullptr)
+        return;
+
+    auto check = [&] (const Effect& fx)
+    {
+        if (! fx.isVST || fx.isVST3 || fx.file.isEmpty() || ! juce::File::isAbsolutePath (fx.file))
+            return;
+
+        for (auto& d : pm.knownPluginList.getTypes())
+            if (d.pluginFormatName == "VST" && (d.uniqueId == fx.vst2ID || d.fileOrIdentifier == fx.file))
+                return;
+
+        if (juce::File (fx.file).existsAsFile())
+        {
+            juce::OwnedArray<juce::PluginDescription> found;
+            pm.knownPluginList.scanAndAddFile (fx.file, true, found, *vst2);
+        }
+    };
+
+    for (auto& ins : project.inserts)
+        for (auto& fx : ins.effects)
+            check (fx);
+
+    for (auto& c : project.channels)
+        check (c.plugin);
+}
+
 Report apply (te::Edit& edit, const Project& project, const Options& options)
 {
     Report report;
+    scanFlVST2s (edit.engine, project);
     const auto known = edit.engine.getPluginManager().knownPluginList.getTypes();
     std::map<int, te::AudioTrack*> made;   // FL insert number -> our insert
 
@@ -1206,16 +1474,12 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
 
                 if (desc == nullptr)
                 {
-                    report.notInstalled.add (where + (fx.missingInFL ? " - " + TRANS ("FL couldn't load it either")
-                                                      : fx.isVST3 ? juce::String() : " - " + TRANS ("FL used its VST2 version; install the VST3 one")));
+                    report.notInstalled.add (where + (fx.missingInFL ? " - " + TRANS ("FL couldn't load it either") : juce::String()));
                     continue;
                 }
 
                 auto tree = te::ExternalPlugin::create (edit.engine, *desc);
-                const bool canUseState = desc->pluginFormatName == "VST3" && fx.componentState.getSize() > 0;
-
-                if (canUseState)
-                    tree.setProperty (te::IDs::state, makeVST3State (fx.componentState, fx.controllerState).toBase64Encoding(), nullptr);
+                const bool canUseState = putFlState (tree, *desc, fx);
 
                 plugin = edit.getPluginCache().createNewPlugin (tree);
 
@@ -1225,39 +1489,44 @@ Report apply (te::Edit& edit, const Project& project, const Options& options)
                     {
                         ++report.effectsWithSettings;
 
-                        if (fx.stateFromVST2)
+                        if (vst2SettingsInVST3 (*desc, fx))
                             report.notes.add (TRANS ("{WHAT}: FL used the VST2; its settings were given to the VST3 (check it sounds right)").replace ("{WHAT}", where));
                     }
                     else if (fx.missingInFL)
                         report.defaultSettings.add (where + " - " + TRANS ("FL couldn't load it either, so no settings were saved"));
                     else
-                        report.defaultSettings.add (where + (fx.isVST3 ? juce::String() : " - " + TRANS ("FL had the VST2 version, its settings don't carry over")));
+                        report.defaultSettings.add (where);
 
                     if (fx.mix < 0.995)
                         report.notes.add (TRANS ("{WHAT}: FL mixed it in at {P}% - here it is at 100%")
                                             .replace ("{WHAT}", where).replace ("{P}", juce::String (juce::roundToInt (fx.mix * 100.0))));
                 }
             }
-            else if (fx.kind == "Fruity Parametric EQ 2")
+            else if (fx.kind == "Fruity Parametric EQ 2" || fx.kind == "Fruity Limiter"
+                     || fx.kind == "Fruity Delay 3" || fx.kind == "Fruity Reeverb 2")
             {
-                plugin = song::createEffect (edit, ParametricEQPlugin::xmlTypeName, nullptr);
-
-                if (plugin != nullptr)
-                    report.defaultSettings.add (TRANS ("Parametric EQ (ours) in place of Fruity Parametric EQ 2 - set its bands again") + " (" + ins.displayName() + ")");
-            }
-            else if (fx.kind == "Fruity Limiter" || fx.kind == "Fruity Delay 3" || fx.kind == "Fruity Reeverb 2")
-            {
-                // Our own versions; FL's settings for its own effects aren't readable, so they
-                // start from their defaults.
-                const bool limiter = fx.kind == "Fruity Limiter", delay = fx.kind == "Fruity Delay 3";
-                const juce::String ours = limiter ? TRANS ("Limiter") : delay ? TRANS ("Delay") : TRANS ("Reverb");
+                // Our own versions, with FL's settings where they can be read (not yet for the
+                // Limiter: it starts from its defaults).
+                const bool limiter = fx.kind == "Fruity Limiter", delay = fx.kind == "Fruity Delay 3",
+                           eq = fx.kind == "Fruity Parametric EQ 2";
+                const juce::String ours = limiter ? TRANS ("Limiter") : delay ? TRANS ("Delay") : eq ? TRANS ("Parametric EQ") : TRANS ("Reverb");
                 plugin = song::createEffect (edit, limiter ? LimiterPlugin::xmlTypeName
-                                                           : delay ? DelayPlugin::xmlTypeName : ReverbPlugin::xmlTypeName, nullptr);
+                                                           : delay ? DelayPlugin::xmlTypeName
+                                                           : eq ? ParametricEQPlugin::xmlTypeName : ReverbPlugin::xmlTypeName, nullptr);
 
                 if (plugin != nullptr)
                 {
-                    report.defaultSettings.add (TRANS ("{OURS} (ours) in place of {FL} - set it again")
-                                                  .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+                    if (! limiter && applyFlSettings (*plugin, fx, project.bpm))
+                    {
+                        ++report.effectsWithSettings;
+                        report.notes.add (TRANS ("{OURS} (ours) in place of {FL}, with your settings from FL")
+                                            .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+                    }
+                    else
+                    {
+                        report.defaultSettings.add (TRANS ("{OURS} (ours) in place of {FL} - set it again")
+                                                      .replace ("{OURS}", ours).replace ("{FL}", fx.kind) + " (" + ins.displayName() + ")");
+                    }
 
                     if (fx.mix < 0.995)
                         report.notes.add (TRANS ("{WHAT}: FL mixed it in at {P}% - here it is at 100%")
@@ -1422,14 +1691,11 @@ void applyBeat (te::Edit& edit, const Project& project, const Options& options,
             {
                 // With FL's saved settings (the sound you had picked), when they can be read.
                 auto tree = te::ExternalPlugin::create (edit.engine, *desc);
-                const bool withState = desc->pluginFormatName == "VST3" && c.plugin.componentState.getSize() > 0;
-
-                if (withState)
-                    tree.setProperty (te::IDs::state, makeVST3State (c.plugin.componentState, c.plugin.controllerState).toBase64Encoding(), nullptr);
+                const bool withState = putFlState (tree, *desc, c.plugin);
 
                 t = song::addChannel (edit, edit.getPluginCache().createNewPlugin (tree), c.name);
 
-                if (withState && c.plugin.stateFromVST2)
+                if (withState && vst2SettingsInVST3 (*desc, c.plugin))
                     report.notes.add (TRANS ("{NAME}: FL used the VST2; its sound was given to the VST3 (check it sounds right)").replace ("{NAME}", c.name));
                 else if (! withState)
                     report.notes.add (TRANS ("{NAME}: loaded with its default sound (FL's settings for it don't carry over)").replace ("{NAME}", c.name));

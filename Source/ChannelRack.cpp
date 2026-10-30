@@ -352,8 +352,7 @@ ChannelRack::ChannelRack (te::Engine& e, EditorState& s) : engine (e), state (s)
 void ChannelRack::setDetached (bool detached)
 {
     theme::setIcon (detachButton, detached ? theme::Icon::attach : theme::Icon::detach);
-    detachButton.setTooltip (detached ? TRANS ("Put the channel rack back in the main window (closing its window does the same)")
-                                      : TRANS ("Give the channel rack a window of its own - e.g. on your second monitor"));
+    detachButton.setTooltip (TRANS ("Where the channel rack goes: in the main window, floating over it (like FL) or in a window of its own"));
     fullScreenButton.setVisible (detached);
     setFullScreenState (false);
     resized();
@@ -770,7 +769,7 @@ void ChannelRack::showAddChannelMenu()
     else
         juce::KnownPluginList::addToMenu (vst, instruments, juce::KnownPluginList::sortByManufacturer);
 
-    m.addSubMenu (TRANS ("Your instruments (VST3)"), vst);
+    m.addSubMenu (TRANS ("Your instruments (VST3, VST2)"), vst);
 
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (addButton),
                      [this, instruments] (int result)

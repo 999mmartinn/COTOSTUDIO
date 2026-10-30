@@ -248,7 +248,14 @@ public:
             if (a.startsWith ("--plugin="))   pluginFile = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
             if (a.startsWith ("--dump="))     dumpDir = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
             if (a.startsWith ("--only="))     onlySteps = a.fromFirstOccurrenceOf ("=", false, false).unquoted();
+            if (a.startsWith ("--plugin2="))  vst2File = juce::File (a.fromFirstOccurrenceOf ("=", false, false).unquoted());
         }
+
+        // The test plugin's VST2 build sits next to its VST3 one (.../VST3/x.vst3 -> .../VST/).
+        if (! vst2File.exists() && pluginFile.exists())
+            for (auto& f : pluginFile.getParentDirectory().getParentDirectory().getChildFile ("VST")
+                                     .findChildFiles (juce::File::findFiles, false, "*.dll;*.so"))
+                vst2File = f;
 
         // Each simulated PC gets its own folder of audio files, like separate computers.
         testRoot = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("synctest-selftest");
@@ -294,7 +301,7 @@ public:
 private:
     te::Engine& engine;
     std::function<void (int)> finished;
-    juce::File pluginFile, dumpDir;
+    juce::File pluginFile, vst2File, dumpDir;
     juce::String onlySteps;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     std::unique_ptr<SamplePreviewer> previewer;       // the sound browser's preview (on the simulated card)
@@ -363,6 +370,7 @@ private:
 
     // FL Studio template import
     bool flpCheck = false, cleanupCheck = false, backupCheck = false;
+    std::map<juce::String, bool> checks;   // results worked out once, in a step's action
 
     // Your sounds (sound browser): preview, sampler channels, MIDI files
     juce::File beatsFolder, boomFile, longFile, midiFile;
@@ -5298,6 +5306,239 @@ private:
             10000 });
 
         //==============================================================================
+        // 1.11: VST2 plugins, and FL's own effects with their settings
+        steps.push_back ({ "1.11 VST2: the test plugin's VST2 loads from an FL beat (found by FL's path, with FL's saved chunk), sounds right and keeps its state",
+            [this] { checks["vst2"] = [this]
+            {
+                auto& pm = engine.getPluginManager();
+                juce::AudioPluginFormat* vst2 = nullptr;
+
+                for (auto* f : pm.pluginFormatManager.getFormats())
+                    if (f->getName() == "VST")
+                        vst2 = f;
+
+                juce::OwnedArray<juce::PluginDescription> found;
+
+                if (vst2 != nullptr)
+                    vst2->findAllTypesForFile (found, vst2File.getFullPathName());
+
+                if (found.isEmpty())
+                {
+                    std::cout << "    no VST2 host or plugin: " << (vst2 == nullptr ? "VST format missing" : vst2File.getFullPathName()) << std::endl;
+                    return false;
+                }
+
+                const auto desc = *found[0];
+
+                // The plugin's own chunk with the knob at 0.35 (what FL saves, inside its header).
+                juce::MemoryBlock chunk;
+                juce::String error;
+
+                if (auto instance = vst2->createInstanceFromDescription (desc, 44100.0, 512, error))
+                {
+                    instance->getParameters()[0]->setValue (0.35f);
+                    juce::MemoryBlock fxb;
+                    instance->getStateInformation (fxb);
+
+                    if (fxb.getSize() > 160)
+                        chunk = juce::MemoryBlock (addBytesToPointer (fxb.getData(), 160), fxb.getSize() - 160);
+                }
+
+                juce::MemoryOutputStream flState;
+                flState.writeInt (-9);  flState.writeInt (0);  flState.writeByte (0);
+                flState.writeInt ((int) chunk.getSize());
+                flState.writeRepeatedByte (0, 8);
+                flState.write (chunk.getData(), chunk.getSize());
+
+                juce::MemoryOutputStream wrapper;
+                wrapper.writeInt (12);
+                juce::MemoryBlock kind (4, true), id (4, true);
+                const auto uid = (juce::uint32) desc.uniqueId;
+                id.copyFrom (&uid, 0, 4);
+                FlpWriter::record (wrapper, 50, kind);                 // 0 = VST2
+                FlpWriter::record (wrapper, 51, id);
+                FlpWriter::record (wrapper, 54, FlpWriter::text8 ("SyncTestGain"));
+                FlpWriter::record (wrapper, 55, FlpWriter::text8 (vst2File.getFullPathName()));
+                FlpWriter::record (wrapper, 53, flState.getMemoryBlock());
+
+                FlpWriter w;
+                w.dwordEvent (156, 120000);
+                auto header = [&w] (const juce::String& name) { w.textEvent (204, name); w.dataEvent (236, juce::MemoryBlock (12, true)); };
+                auto routing = [&w] (bool toMaster) { juce::MemoryBlock r (8, true); r[0] = toMaster ? 1 : 0; w.dataEvent (235, r); };
+                header ("Master");  for (int i = 0; i < 10; ++i) w.wordEvent (98, i);  routing (false);
+                header ("Keys");
+                w.textEvent (201, "Fruity Wrapper");
+                w.dataEvent (213, wrapper.getMemoryBlock());
+                w.wordEvent (98, 0);
+                for (int i = 1; i < 10; ++i) w.wordEvent (98, i);
+                routing (true);
+
+                // Not scanned yet: the import finds it where FL had it.
+                for (auto& d : pm.knownPluginList.getTypes())
+                    if (d.pluginFormatName == "VST")
+                        pm.knownPluginList.removeType (d);
+
+                flimport::Project project;
+                const auto parseError = flimport::parse (w.finish(), project);
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                for (auto* t : te::getAudioTracks (*edit))
+                    edit->deleteTrack (t);
+
+                flimport::Options options;
+                options.inserts = project.getUsedInserts();
+                const auto report = flimport::apply (*edit, project, options);
+
+                auto* keys = insert (*edit, "Keys");
+                auto effects = keys != nullptr ? song::getInsertEffects (*keys) : juce::Array<te::Plugin*>();
+                auto* ext = effects.size() == 1 ? dynamic_cast<te::ExternalPlugin*> (effects[0]) : nullptr;
+                auto* pi = ext != nullptr ? ext->getAudioPluginInstance() : nullptr;
+                const float knob = pi != nullptr ? pi->getParameters()[0]->getValue() : -1.0f;
+                const bool isVST2 = ext != nullptr && ext->desc.pluginFormatName == "VST";
+
+                // Its sound: the gain doubles the knob (0.35 -> x0.7).
+                float out = -1.0f;
+
+                if (pi != nullptr)
+                {
+                    juce::AudioBuffer<float> buffer (2, 256);
+                    juce::MidiBuffer midi;
+                    buffer.clear();
+                    for (int c = 0; c < 2; ++c)
+                        juce::FloatVectorOperations::fill (buffer.getWritePointer (c), 0.5f, 256);
+
+                    pi->prepareToPlay (44100.0, 256);
+                    pi->processBlock (buffer, midi);
+                    out = buffer.getSample (0, 100);
+                }
+
+                // Its state as the song saves it reloads into a new instance with the same knob.
+                float reloaded = -1.0f;
+
+                if (ext != nullptr)
+                {
+                    pi->getParameters()[0]->setValue (0.6f);
+                    ext->flushPluginStateToValueTree();
+                    juce::MemoryBlock saved;
+                    saved.fromBase64Encoding (ext->state[te::IDs::state].toString());
+
+                    if (auto again = vst2->createInstanceFromDescription (desc, 44100.0, 512, error))
+                    {
+                        again->setStateInformation (saved.getData(), (int) saved.getSize());
+                        reloaded = again->getParameters()[0]->getValue();
+                    }
+                }
+
+                const bool inList = [&pm, &desc]
+                {
+                    for (auto& d : pm.knownPluginList.getTypes())
+                        if (d.pluginFormatName == "VST" && d.uniqueId == desc.uniqueId)
+                            return true;
+                    return false;
+                }();
+
+                std::cout << "    parse: " << (parseError.isEmpty() ? "ok" : parseError) << ", chunk " << (int) chunk.getSize()
+                          << " bytes, scanned from FL's path: " << (inList ? "yes" : "NO") << ", loaded as VST2: " << (isVST2 ? "yes" : "NO")
+                          << ", knob " << knob << " (want 0.35), 0.5 in -> " << out << " out (want 0.35)"
+                          << ", saved and reloaded knob " << reloaded << " (want 0.6), with settings " << report.effectsWithSettings << std::endl;
+
+                return parseError.isEmpty() && chunk.getSize() > 0 && inList && isVST2
+                    && std::abs (knob - 0.35f) < 1.0e-3f && std::abs (out - 0.35f) < 1.0e-3f
+                    && std::abs (reloaded - 0.6f) < 1.0e-3f && report.effectsWithSettings == 1;
+            }(); },
+            [this] { return checks["vst2"]; },
+            20000, 0, ! vst2File.exists() });
+
+        steps.push_back ({ "1.11 FL effects: Fruity Delay 3, Reeverb 2 and Parametric EQ 2 come in as ours with the settings FL saved (a real hi-hat delay)",
+            [this] { checks["flfx"] = [this]
+            {
+                auto ints = [] (std::initializer_list<int> values)
+                {
+                    juce::MemoryOutputStream o;
+                    for (auto v : values)
+                        o.writeInt (v);
+                    return o.getMemoryBlock();
+                };
+
+                // From a real project (FL 26.1.5): a 1/4 tempo delay on hats, 42% feedback, 32% wet.
+                auto delay = ints ({ 1, 6000, 1, 1, 0, 192, 3000, 500, 6000, 3000, 0, 0, 0, 0, 1, 2550, 0, 6000, 0, 0, 0, 0, 60000, 6000, 1894, 0, 6000 });
+                auto reverb = ints ({ 10001, 75, 40, 192, 50, 100, 15, 40, 100, 500, 0, 117, 64, 106, 684, 0 });
+                const char reverbSwitches[] = { 1, 0 };
+                reverb.append (reverbSwitches, 2);
+
+                std::vector<int> eq (72, 0);
+                eq[0] = 8;
+                eq[1] = -1800;                                                    // band 1: -18 dB
+                const int freqs[] = { 0, 18204, 25486, 32768, 40050, 47332, 54613 };
+                const int types[] = { 5, 6, 6, 6, 6, 6, 7 };
+                for (int b = 0; b < 7; ++b)
+                {
+                    eq[(size_t) (8 + b)] = freqs[b];
+                    eq[(size_t) (15 + b)] = b == 0 || b == 6 ? 40124 : 25412;
+                    eq[(size_t) (22 + b)] = types[b];
+                }
+                eq[(size_t) (8 + 3)] = 32768;
+                eq[(size_t) (1 + 3)] = 450;                                       // band 4: +4.5 dB at 632 Hz
+                juce::MemoryOutputStream eqData;
+                for (auto v : eq) eqData.writeInt (v);
+
+                FlpWriter w;
+                w.dwordEvent (156, 158000);
+                auto header = [&w] (const juce::String& name) { w.textEvent (204, name); w.dataEvent (236, juce::MemoryBlock (12, true)); };
+                auto routing = [&w] (bool toMaster) { juce::MemoryBlock r (8, true); r[0] = toMaster ? 1 : 0; w.dataEvent (235, r); };
+                header ("Master");  for (int i = 0; i < 10; ++i) w.wordEvent (98, i);  routing (false);
+                header ("Hats");
+                w.textEvent (201, "Fruity Delay 3");          w.dataEvent (213, delay);                    w.wordEvent (98, 0);
+                w.textEvent (201, "Fruity Reeverb 2");        w.dataEvent (213, reverb);                   w.wordEvent (98, 1);
+                w.textEvent (201, "Fruity Parametric EQ 2");  w.dataEvent (213, eqData.getMemoryBlock());  w.wordEvent (98, 2);
+                for (int i = 3; i < 10; ++i) w.wordEvent (98, i);
+                routing (true);
+
+                flimport::Project project;
+                const auto parseError = flimport::parse (w.finish(), project);
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                for (auto* t : te::getAudioTracks (*edit))
+                    edit->deleteTrack (t);
+
+                flimport::Options options;
+                options.inserts = project.getUsedInserts();
+                const auto report = flimport::apply (*edit, project, options);
+
+                auto* hats = insert (*edit, "Hats");
+                auto fx = hats != nullptr ? song::getInsertEffects (*hats) : juce::Array<te::Plugin*>();
+                auto value = [&fx] (int index, const char* id) -> float
+                {
+                    if (auto* p = fx[index])
+                        if (auto param = p->getAutomatableParameterByID (id))
+                            return param->getCurrentValue();
+                    return -1000.0f;
+                };
+                auto near = [] (float a, float b, float within) { return std::abs (a - b) <= within; };
+
+                const bool kinds = fx.size() == 3 && dynamic_cast<DelayPlugin*> (fx[0]) != nullptr
+                                && dynamic_cast<ReverbPlugin*> (fx[1]) != nullptr && dynamic_cast<ParametricEQPlugin*> (fx[2]) != nullptr;
+                const bool delayOk = kinds && value (0, "sync") == 1.0f && juce::String (dly::divisions[(int) value (0, "division")].name) == "1/4"
+                                  && value (0, "model") == (float) dly::stereo && value (0, "distType") == (float) dly::saturate
+                                  && near (value (0, "feedback"), 0.425f * 1.2f, 0.01f) && near (value (0, "wet"), 0.316f, 0.01f)
+                                  && near (value (0, "dry"), 1.0f, 0.001f) && near (value (0, "cutoff"), 20000.0f, 1.0f)
+                                  && value (0, "filterType") == (float) dly::lowPass && near (value (0, "distLevel"), 0.0f, 0.001f);
+                const bool reverbOk = kinds && value (1, "tempo") == 1.0f && near (value (1, "decay"), 1.5f, 0.01f)
+                                   && near (value (1, "wet"), 106.0f / 128.0f, 0.01f) && near (value (1, "dry"), 117.0f / 128.0f, 0.01f)
+                                   && near (value (1, "predelay"), 380.0f, 1.0f) && near (value (1, "lowCut"), 75.0f, 0.5f);
+                const bool eqOk = kinds && value (2, "type1") == (float) peq::lowShelf && near (value (2, "gain1"), -18.0f, 0.01f)
+                               && near (value (2, "freq1"), 20.0f, 0.5f) && near (value (2, "gain4"), 4.5f, 0.01f)
+                               && near (value (2, "freq4"), 632.0f, 2.0f) && value (2, "type7") == (float) peq::highShelf;
+
+                std::cout << "    parse: " << (parseError.isEmpty() ? "ok" : parseError) << ", ours in place: " << (kinds ? "yes" : "NO")
+                          << ", delay " << (delayOk ? "right" : "WRONG") << " (feedback " << value (0, "feedback") << ", wet " << value (0, "wet") << ")"
+                          << ", reverb " << (reverbOk ? "right" : "WRONG") << " (predelay " << value (1, "predelay") << " ms)"
+                          << ", EQ " << (eqOk ? "right" : "WRONG") << ", with settings " << report.effectsWithSettings << std::endl;
+
+                return parseError.isEmpty() && delayOk && reverbOk && eqOk && report.effectsWithSettings == 3 && report.defaultSettings.isEmpty();
+            }(); },
+            [this] { return checks["flfx"]; },
+            10000 });
+
+        //==============================================================================
         // 1.9: the playlist opens a pattern on the instrument last edited in it
         steps.push_back ({ "1.9 pattern click: a pattern opens on the instrument you last edited in it (else the first one with notes)",
             {},
@@ -5659,7 +5900,8 @@ private:
         {
             std::cout << "\n> " << step.name << std::endl;
 
-            if (step.optional && step.name.contains ("VST3") && ! pluginFile.exists())
+            if (step.optional && ((step.name.contains ("VST3") && ! pluginFile.exists())
+                                  || (step.name.contains ("VST2") && ! vst2File.exists())))
             {
                 std::cout << "  SKIPPED (no --plugin given)" << std::endl;
                 ++skipped;

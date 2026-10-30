@@ -1,8 +1,8 @@
 # COTOSTUDIO — make music together, in sync
 
 A multiplayer, FL-style DAW for Windows. Several people work on the **same song at
-the same time**, each on their own PC, each using their own **VST3 plugins**
-(Waves, FabFilter...). Friends connect over **Tailscale** (or the same Wi-Fi).
+the same time**, each on their own PC, each using their own **VST3 and VST2 plugins**
+(Waves, FabFilter, Omnisphere...). Friends connect over **Tailscale** (or the same Wi-Fi).
 
 ![COTOSTUDIO](docs/screenshot.jpg)
 
@@ -20,11 +20,46 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
    settings and plugin list. Nothing is lost; a file is only removed from its old
    place once its copy is complete.
 3. The first time, open **Settings** (the gear, top right) → **Find my plugins
-   (VST3)...** → *Options → Scan for new or updated VST3 plug-ins* (the default
+   (VST3, VST2)...** → *Options → Scan for new or updated VST3 plug-ins* (the default
    folder `C:\Program Files\Common Files\VST3` is where Waves and FabFilter
-   install). *Waves:* make sure Waves Central installed the VST3 "WaveShell" files.
+   install), then *Scan for new or updated VST plug-ins* for your VST2 plugins (VST =
+   VST2; it looks in the usual VST2 folders, and you can add the one where you keep
+   yours, e.g. Omnisphere's). *Waves:* make sure Waves Central installed the VST3
+   "WaveShell" files.
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
+
+## What's new in 1.11
+
+* **VST2 plugins** load too, like VST3 ones: instruments (Omnisphere...) and effects.
+  Scan them once in **Settings → Find my plugins (VST3, VST2)...** → *Options → Scan
+  for new or updated VST plug-ins* (VST = VST2). They save with the song, their knobs
+  sync between PCs like any plugin's, and each PC needs them installed to hear them.
+  * **FL beat import:** a plugin FL used as VST2 now comes in as that same VST2 with
+    **its exact sound** (FL's saved patch), e.g. Omnisphere. If it wasn't scanned yet,
+    COTOSTUDIO loads it from where FL had it. Without the VST2, its VST3 version is
+    used as before.
+* **The channel rack and the piano roll float, like FL's windows.** They sit over the
+  playlist, and you move them anywhere by their title bar and size them from any edge
+  or corner. The playlist gets the whole height behind them.
+  * **F6** (rack), **F7** (piano roll), or the window buttons in the top bar show or
+    hide them. **x** hides one. A click brings a window to the front.
+  * **Double-click the title bar** (or its full-screen button) to fill the space, and
+    again (or **Esc**) to go back.
+  * Each panel's window button (the arrow icon; *Window...* on the mixer) chooses
+    where it goes: **in the main window** (as before), **floating** (like FL), or **in
+    a window of its own** (e.g. your second screen). The mixer can float too.
+  * Where they are and their sizes are remembered on your PC.
+* **The playlist zooms out much further** (Ctrl + mouse wheel): down to 4 pixels a
+  bar, so a whole song fits on the screen. Bar numbers and grid lines thin out as you
+  zoom out.
+* **FL beat import brings your FL effects' settings.** Fruity Delay 3, Fruity Reeverb 2
+  and Fruity Parametric EQ 2 come in as COTOSTUDIO's Delay, Reverb and Parametric EQ
+  **with your settings**: delay time (tempo sync), feedback, filter, wet / dry, model,
+  distortion...; reverb size, decay, pre-delay, cuts, damping, wet / dry; EQ bands
+  (type, frequency, level, width) and main level. (Worked out from FL projects with
+  every knob at its default, minimum and maximum, and checked against a real hi-hat
+  delay.) Fruity Limiter still starts from its defaults.
 
 ## What's new in 1.10
 
@@ -596,7 +631,9 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   loudest route as the output (its level goes into the fader) and the others
   become sends. FL's fader curve isn't published: levels are converted from its
   ends (0 dB and +5.6 dB) and can be a dB or two off in between, so check them by
-  ear. Plugin settings carry over for VST3 plugins only.
+  ear. Plugin settings carry over for VST3 and VST2 plugins, and for Fruity Delay 3,
+  Reeverb 2 and Parametric EQ 2 (into ours; knobs whose units FL doesn't show, such as
+  the delay's feedback, land on the same knob position, so check them by ear).
 * Time-stretching (a speed other than 100% with *Keep the pitch*): a clip that plays
   up to the very end of its file loses its last tenth of a second or so (the
   stretcher reads ahead). Trim a hair off the end, or use *resample*.
@@ -609,13 +646,19 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
   clip on a ducked insert renders the clip before the mixer, so the bounce isn't
   ducked (the new audio goes through the same insert and gets ducked as before).
   A VST3's sidechain input is offered only if the plugin turns it on by default.
-* FL beat import: FL's own instruments and effects (3x Osc, Sytrus, Fruity Soft
-  Clipper...) can't come with their settings; automation clips and layer channels are
+* FL beat import: FL's own instruments and most of its effects (3x Osc, Sytrus, Fruity
+  Soft Clipper, Fruity Limiter...) can't come with their settings; automation clips and layer channels are
   left out; only the arrangement FL had open is imported. Sounds FL couldn't find either
   can't be found here.
 * Track groups are runs of tracks next to each other (no groups inside groups).
   If two people group overlapping tracks at the same moment, the first group wins
   and the other one is hidden until it's moved or ungrouped.
+* VST2 plugins are hosted through FST, a free VST2 header (Steinberg's VST2 kit is no
+  longer available). It covers what plugins use day to day (sound, notes, knobs,
+  presets, windows); a few rare VST2 extras (offline processing, surround layouts) aren't
+  supported. A VST2 that crashes while being scanned is skipped the next time.
+* Floating windows stay inside COTOSTUDIO's window; for another screen, choose *In a
+  window of its own*.
 * No encryption or passwords: only join people you trust, on a private network.
 
 ## Self-test
@@ -675,13 +718,19 @@ everywhere, the song unchanged),
 and 1.10: a sampler stopping at its note's end (measured: half volume 5 ms after,
 silent from 10 ms), and importing a beat from an .flp written the way FL writes it (its
 sounds found next to it, a sampler with FL's volume envelope, notes with their pan and
-fine pitch, a trimmed pattern clip, an audio clip with its start inside the file).
-The self-test never touches your data folder. The Windows build on GitHub runs
+fine pitch, a trimmed pattern clip, an audio clip with its start inside the file),
+and 1.11: VST2 hosting (the test plugin's VST2 build loads from an FL beat, found by
+the path FL saved, with FL's saved chunk: its knob arrives, a test signal comes out at
+the right level, and its state saves and reloads), and FL effects (a real Fruity Delay 3,
+Reeverb 2 and Parametric EQ 2 come in as ours with their settings).
+The self-test looks for the test plugin's VST2 next to its VST3 (`.../VST/`), or takes
+`--plugin2=<path>`. It never touches your data folder. The Windows build on GitHub runs
 it automatically.
 
 `COTOSTUDIO.exe --flp-info=<file.flp>` prints what COTOSTUDIO reads from an FL
 Studio project (inserts, routing, effects, which ones are off). Add
-`--flp-dry-run` to see what the import would build with the plugins found on
+`--flp-dry-run` to see what the import would build (with every knob of our own
+effects, to check what FL's settings became) with the plugins found on
 this PC (nothing is saved); `--flp-skip="Name|Name"` leaves inserts out and
 `--flp-skip-off` leaves out the effects that are off. Add `> info.txt` to keep
 the text in a file (on Windows the app has no console window of its own).
@@ -700,6 +749,7 @@ cmake --build build --config Release
 For ASIO, download Steinberg's ASIO SDK (https://www.steinberg.net/asiosdk,
 GPLv3 or proprietary licence) and add `-DSYNCTEST_ASIO_SDK=<its folder>`.
 Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
+VST2 hosting needs nothing extra: the free FST headers are in `external/fst`.
 
 ## Licences
 
@@ -708,7 +758,11 @@ Each release also carries the exact SDK used, as `ASIO-SDK-source-GPLv3.zip`.
   Open Font License 1.1 (`Resources/Fonts/*-LICENSE.txt`, also in the release zip).
 * Time-stretching: **Signalsmith Stretch** (MIT licence, shipped inside Tracktion
   Engine; its licence is in the release zip).
+* VST2 hosting: **FST** (Free Studio Technology), a reverse-engineered VST2 header,
+  GPLv3 or later (`external/fst`, with its licence and our small changes listed in its
+  README). No Steinberg VST2 code is used.
 * ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+  VST is a trademark of Steinberg Media Technologies GmbH.
 
 ---
 

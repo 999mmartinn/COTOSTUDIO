@@ -29,6 +29,24 @@ namespace te = tracktion;
       kind 0x1f: insert values - what 0: slot <sub> on/off, 1: slot mix,
                  0xc0 volume (12800 = 0 dB, 16000 = max), 0xc1 pan (+-6400)
       kind 0x20: route level from <insert> to insert <what> (12800 = 0 dB).
+    FL's own effects (213 in an effect slot) save a list of numbers, 32-bit each, first a
+    version (1.11, worked out from projects with every knob at its default, minimum and
+    maximum, and checked against a screenshot of the same delay):
+      Fruity Delay 3 (version 1, 27 values): input, model (mono, stereo, ping pong, off),
+        tempo sync, keep pitch, time (1/48 of a step), smoothing, offset (500 = centre),
+        stereo, mod rate, mod time, mod cutoff, diffusion level, spread, distortion type
+        (limit, sat), feedback level, filter (LP, HP, BP, off), cutoff, resonance,
+        distortion level, knee, symmetry, sample rate (60000 = max), bits, wet, tone
+        (0 = centre), dry. Knobs go 0..6000.
+      Fruity Reeverb 2 (version 10001, 15 values, then 2 bytes: tempo, mid / side):
+        low cut (Hz), high cut (100 Hz), predelay (1/48 of a step), size (%), diffusion (%),
+        decay (0.1 s), high damping (100 Hz, max = off), bass (x0.01), crossover (Hz),
+        modulation (0..64), dry, early reflections, wet (128 = 100 %), mod speed (0..2048),
+        stereo separation.
+      Fruity Parametric EQ 2 (version 8): 7 band levels (0.01 dB), 7 frequencies (0..65536,
+        20 Hz..20 kHz on a log scale), 7 widths, 7 types (0 off, 1 low pass, 2 band pass,
+        3 high pass, 4 notch, 5 low shelf, 6 peaking, 7 high shelf), 7 slopes, main level
+        (0.01 dB); then the same again (FL's compare slot).
     The beat (1.10):
       channels: 64 = channel index (a new channel), 21 type (0 sampler, 2 plugin,
         3 layer, 4 audio clip, 5 automation), 201 plugin kind ("Fruity Wrapper" = VST),
@@ -60,9 +78,11 @@ namespace flimport
         juce::String vendor, file;
         bool isVST = false, isVST3 = false;
         bool missingInFL = false;      // FL couldn't load it either: only its name was saved
+        int vst2ID = 0;                // a VST2's own ID (its "unique ID")
         juce::MemoryBlock vst3ClassID;                     // 16 bytes, VST3 only
-        juce::MemoryBlock componentState, controllerState; // VST3; or (stateFromVST2) a VST2's chunk
-        bool stateFromVST2 = false;    // FL used the VST2: its chunk is offered to the VST3 here
+        juce::MemoryBlock componentState, controllerState; // VST3; or (stateFromVST2) a VST2's own chunk
+        bool stateFromVST2 = false;    // FL used the VST2: its chunk (for the VST2 here, or else the VST3)
+        juce::MemoryBlock flData;      // one of FL's own effects: its settings, as FL saved them (213)
         bool enabled = true;
         double mix = 1.0;              // wet amount 0..1 (FL's per-slot mix knob)
 
@@ -215,6 +235,15 @@ namespace flimport
         with its route, sends, fader and effects (developer option --flp-dry-run).
         Arguments used: --flp-skip=Name|Name (inserts to leave out), --flp-skip-off. */
     juce::String dryRun (te::Engine&, const juce::File&, const juce::StringArray& args);
+
+    /** Gives one of our effects the settings of the FL effect it stands in for (Fruity
+        Delay 3, Fruity Reeverb 2, Fruity Parametric EQ 2). Returns false if the FL data
+        isn't in a layout it knows (the effect then keeps its defaults). */
+    bool applyFlSettings (te::Plugin& ours, const Effect& fl, double bpm);
+
+    /** The state Tracktion stores for a VST2 plugin (an .fxb bank chunk), made from the
+        plugin's own chunk as FL saved it. */
+    juce::MemoryBlock makeVST2State (const juce::MemoryBlock& chunk, int vst2ID);
 
     /** The state Tracktion stores for a VST3 plugin, made from FL's saved VST3 states. */
     juce::MemoryBlock makeVST3State (const juce::MemoryBlock& component, const juce::MemoryBlock& controller);

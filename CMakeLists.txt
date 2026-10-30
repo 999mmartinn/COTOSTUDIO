@@ -13,8 +13,14 @@ if (MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
+# VST2 (older plugins such as Omnisphere's VST2): hosted through FST, a free, reverse-
+# engineered VST2 header (GPLv3 or later, external/fst; no Steinberg code), which
+# stands in for the discontinued VST2 SDK at the path JUCE includes it from.
+set(COTOSTUDIO_VST2_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/external/fst")
+
 set(TRACKTION_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/tracktion_engine" CACHE PATH "Tracktion Engine checkout")
 add_subdirectory("${TRACKTION_DIR}/modules/juce" juce)
+juce_set_vst2_sdk_path("${COTOSTUDIO_VST2_HEADERS}")
 add_subdirectory("${TRACKTION_DIR}/modules" tracktion)
 
 option(SYNCTEST_BUILD_TEST_PLUGIN "Build the tiny VST3 gain plugin used by the self-test" ON)
@@ -98,6 +104,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 target_link_libraries(COTOSTUDIO PRIVATE COTOSTUDIOData)
+target_include_directories(COTOSTUDIO PRIVATE "${COTOSTUDIO_VST2_HEADERS}")
 
 # MP3 export uses the MP3 encoder that comes with Windows (Media Foundation).
 if (WIN32)
@@ -107,6 +114,7 @@ endif()
 
 target_compile_definitions(COTOSTUDIO PRIVATE
     JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_VST=1
     JUCE_PLUGINHOST_AU=0
     JUCE_PLUGINHOST_LADSPA=0
     JUCE_MODAL_LOOPS_PERMITTED=1
@@ -153,8 +161,9 @@ target_link_libraries(COTOSTUDIO PRIVATE
     juce::juce_recommended_lto_flags)
 
 #==============================================================================
-# A tiny VST3 effect with one "Gain" knob. The self-test loads it as a stand-in
-# for a third-party plugin (Waves, FabFilter...) to prove knob sync end to end.
+# A tiny effect with one "Gain" knob, as VST3 and VST2. The self-test loads it as a
+# stand-in for a third-party plugin (Waves, FabFilter, Omnisphere's VST2...) to prove
+# knob sync and VST2 hosting end to end.
 if (SYNCTEST_BUILD_TEST_PLUGIN)
     juce_add_plugin(SyncTestGain
         PRODUCT_NAME "SyncTestGain"
@@ -162,7 +171,8 @@ if (SYNCTEST_BUILD_TEST_PLUGIN)
         BUNDLE_ID "org.synctest.gain"
         PLUGIN_MANUFACTURER_CODE Synt
         PLUGIN_CODE StGn
-        FORMATS VST3
+        FORMATS VST3 VST
+        VST2_CATEGORY kPlugCategEffect
         IS_SYNTH FALSE
         NEEDS_MIDI_INPUT FALSE
         COPY_PLUGIN_AFTER_BUILD FALSE

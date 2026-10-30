@@ -162,9 +162,20 @@ public:
 
     juce::String message() const
     {
+        if (owner.isFloating (panel))
+            return panel == Panel::rack      ? TRANS ("The channel rack is floating (F6 shows it).")
+                 : panel == Panel::pianoRoll ? TRANS ("The piano roll is floating (F7 shows it).")
+                                             : TRANS ("The mixer is floating (F9 shows it).");
+
         return panel == Panel::rack      ? TRANS ("The channel rack is in its own window.")
              : panel == Panel::pianoRoll ? TRANS ("The piano roll is in its own window.")
                                          : TRANS ("The mixer is in its own window.");
+    }
+
+    void updateTexts()
+    {
+        showButton.setButtonText (owner.isFloating (panel) ? TRANS ("Show it") : TRANS ("Show the window"));
+        repaint();
     }
 
     void paint (juce::Graphics& g) override
@@ -221,6 +232,233 @@ private:
     MainComponent& owner;
     const Panel panel;
     juce::TextButton backButton { TRANS ("Bring it back here") }, showButton { TRANS ("Show the window") };
+};
+
+//==============================================================================
+/** A panel floating over the main window, like FL's windows: drag it by its title bar,
+    size it from any edge or corner, double-click the title to fill the space (and again
+    to go back), x to hide it (F6 / F7 / F9 or the top bar's buttons bring it back).
+    It stays inside the area below the top bar. Kept simple to draw (no shadows). */
+class MainComponent::FloatingPanel  : public juce::Component
+{
+public:
+    static constexpr int titleHeight = 24, edge = 5;
+
+    FloatingPanel (MainComponent& o, Panel p) : owner (o), panel (p), resizer (this, &limits)
+    {
+        limits.owner = this;
+        limits.setMinimumSize (380, 170);
+        content = &owner.panelComponent (panel);
+        addAndMakeVisible (content);
+        addAndMakeVisible (resizer);
+
+        theme::setIcon (closeButton, theme::Icon::close);
+        closeButton.getProperties().set ("iconOnly", true);
+        theme::setStyle (closeButton, "flat");
+        closeButton.setTooltip (TRANS ("Hide (it keeps floating: the top bar's button or its F key brings it back)"));
+        closeButton.onClick = [this] { owner.setFloatShown (panel, false); };
+        addAndMakeVisible (closeButton);
+
+        theme::setIcon (maxButton, theme::Icon::fullScreen);
+        maxButton.getProperties().set ("iconOnly", true);
+        theme::setStyle (maxButton, "flat");
+        maxButton.setTooltip (TRANS ("Fill the space (double-click the title does the same)"));
+        maxButton.onClick = [this] { toggleMaximised(); };
+        addAndMakeVisible (maxButton);
+
+        // Clicks anywhere on it (its panel's own controls too) bring it to the front.
+        raiser.onDown = [this] { bringForward(); };
+        addMouseListener (&raiser, true);
+    }
+
+    ~FloatingPanel() override
+    {
+        removeMouseListener (&raiser);
+
+        if (content != nullptr)
+            removeChildComponent (content);   // the panel belongs to the main window
+    }
+
+    Panel getPanel() const noexcept     { return panel; }
+    bool isMaximised() const noexcept   { return ! restoreBounds.isEmpty(); }
+
+    void toggleMaximised()
+    {
+        if (isMaximised())
+        {
+            const auto r = restoreBounds;
+            restoreBounds = {};
+            setBounds (r);
+        }
+        else
+        {
+            restoreBounds = getBounds();
+            setBounds (owner.floatArea);
+        }
+
+        theme::setIcon (maxButton, isMaximised() ? theme::Icon::exitFullScreen : theme::Icon::fullScreen);
+        owner.updateFullScreenButtons();
+        remember();
+    }
+
+    /** Back inside the area after the main window changed size. */
+    void keepInside()
+    {
+        if (isMaximised())
+            setBounds (owner.floatArea);
+        else
+            setBounds (fit (getBounds()));
+    }
+
+    juce::Rectangle<int> fit (juce::Rectangle<int> r) const
+    {
+        const auto area = owner.floatArea;
+
+        if (area.isEmpty())
+            return r;
+
+        r.setWidth (juce::jlimit (juce::jmin (380, area.getWidth()), area.getWidth(), r.getWidth()));
+        r.setHeight (juce::jlimit (juce::jmin (170, area.getHeight()), area.getHeight(), r.getHeight()));
+        // At least 80 pixels of it across, and the whole title bar, stay in the area.
+        r.setX (juce::jlimit (area.getX() - r.getWidth() + 80, area.getRight() - 80, r.getX()));
+        r.setY (juce::jlimit (area.getY(), area.getBottom() - titleHeight - 20, r.getY()));
+        return r;
+    }
+
+    void restore (const juce::String& saved, juce::Rectangle<int> fallback)
+    {
+        auto parts = juce::StringArray::fromTokens (saved, " ", {});
+        auto r = fallback;
+
+        if (parts.size() == 4)
+            r = { owner.floatArea.getX() + parts[0].getIntValue(), owner.floatArea.getY() + parts[1].getIntValue(),
+                  parts[2].getIntValue(), parts[3].getIntValue() };
+
+        setBounds (fit (r));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds();
+        g.setColour (theme::colours::panel);
+        g.fillRect (r);
+
+        auto title = r.removeFromTop (titleHeight);
+        g.setColour (owner.floaters[(int) panel].get() == this && isFrontmost() ? theme::colours::wellAlt.brighter (0.08f)
+                                                                                  : theme::colours::wellAlt);
+        g.fillRect (title);
+        g.setColour (theme::colours::muted);
+        g.setFont (theme::ui (12.0f, theme::Weight::bold));
+        g.drawText (owner.panelName (panel), title.reduced (10, 0).withRight (maxButton.getX() - 6),
+                    juce::Justification::centredLeft, true);
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        g.setColour (theme::colours::line.brighter (0.25f));
+        g.drawRect (getLocalBounds(), 1);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto title = r.removeFromTop (titleHeight);
+        closeButton.setBounds (title.removeFromRight (titleHeight + 6).reduced (3, 2));
+        maxButton.setBounds (title.removeFromRight (titleHeight + 6).reduced (3, 2));
+        resizer.setBounds (getLocalBounds());
+        resizer.setBorderThickness (juce::BorderSize<int> (0, edge, edge, edge));
+
+        if (content != nullptr)
+            content->setBounds (r.reduced (1, 0).withTrimmedBottom (1));
+
+    }
+
+    void moved() override       { remember(); }
+
+    void bringForward()
+    {
+        if (! isFrontmost())
+        {
+            toFront (false);
+            repaintTitles();
+        }
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.y < titleHeight)
+            dragger.startDraggingComponent (this, e);
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (e.getMouseDownY() < titleHeight && ! isMaximised())
+            dragger.dragComponent (this, e, &limits);
+    }
+
+    void mouseUp (const juce::MouseEvent&) override   { remember(); }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (e.y < titleHeight)
+            toggleMaximised();
+    }
+
+    void remember()
+    {
+        if (isMaximised() || owner.floatArea.isEmpty() || getWidth() <= 0)
+            return;
+
+        const auto r = getBounds() - owner.floatArea.getPosition();
+        owner.settings()->setValue (owner.panelKey (panel) + "Float",
+                                    juce::String (r.getX()) + " " + juce::String (r.getY()) + " "
+                                      + juce::String (r.getWidth()) + " " + juce::String (r.getHeight()));
+    }
+
+private:
+    MainComponent& owner;
+    const Panel panel;
+    juce::Component* content = nullptr;
+    juce::TextButton closeButton, maxButton;
+    juce::ComponentDragger dragger;
+    juce::Rectangle<int> restoreBounds;   // not empty while it fills the space
+
+    struct Raiser  : juce::MouseListener
+    {
+        std::function<void()> onDown;
+        void mouseDown (const juce::MouseEvent&) override   { if (onDown) onDown(); }
+    } raiser;
+
+    struct Limits  : juce::ComponentBoundsConstrainer
+    {
+        FloatingPanel* owner = nullptr;
+
+        void checkBounds (juce::Rectangle<int>& bounds, const juce::Rectangle<int>& previous, const juce::Rectangle<int>& limit,
+                          bool top, bool left, bool bottom, bool right) override
+        {
+            ComponentBoundsConstrainer::checkBounds (bounds, previous, limit, top, left, bottom, right);
+            bounds = owner->fit (bounds);
+        }
+    } limits;
+
+    juce::ResizableBorderComponent resizer;
+
+    bool isFrontmost() const
+    {
+        if (auto* parent = getParentComponent())
+            for (int i = parent->getNumChildComponents(); --i >= 0;)
+                if (auto* f = dynamic_cast<FloatingPanel*> (parent->getChildComponent (i)))
+                    return f == this;
+
+        return false;
+    }
+
+    void repaintTitles()
+    {
+        for (auto& f : owner.floaters)
+            if (f != nullptr)
+                f->repaint (0, 0, f->getWidth(), titleHeight);
+    }
 };
 
 //==============================================================================
@@ -334,7 +572,7 @@ MainComponent::MainComponent (te::Engine& e)
              logo.get(), &fileButton, &soundsButton, &sessionPill, &lcd, &settingsButton,
              &patModeButton, &songModeButton, &shareButton, &focusButton, &playButton, &recordButton, &clickButton, &tempoSlider, &timeSigButton, &tapButton, &patternBox, &newPatternButton, &patternMenuButton,
              &lengthBox, &undoButton, &redoButton,
-             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &dividerNoRack, dock.get(), &statusBar })
+             &sounds, &browser, &showBrowserButton, &playlist, &divider1, &rack, &divider2, &dividerNoRack, &dividerRackFloating, dock.get(), &statusBar })
         addAndMakeVisible (c);
 
     logView.setMultiLine (true);
@@ -499,10 +737,12 @@ MainComponent::MainComponent (te::Engine& e)
     };
     windowButton (playlistWindowButton, theme::Icon::playlist, TRANS ("Playlist (leaves the piano roll's full screen)"),
                   [this] { if (maximised == Maximised::pianoRoll) setMaximised (Maximised::none); });
-    windowButton (rackWindowButton, theme::Icon::rack, TRANS ("Channel rack (F6). With the piano roll full screen: shows or hides the rack above it"),
+    windowButton (rackWindowButton, theme::Icon::rack, TRANS ("Channel rack (F6): shows or hides it"),
                   [this] { toggleRack(); });
-    windowButton (pianoWindowButton, theme::Icon::pianoRoll, TRANS ("Piano roll (F7)"), [this] { showPanel (Panel::pianoRoll); });
-    windowButton (mixerWindowButton, theme::Icon::mixer, TRANS ("Mixer (F9)"), [this] { showMixer(); });
+    windowButton (pianoWindowButton, theme::Icon::pianoRoll, TRANS ("Piano roll (F7)"),
+                  [this] { isFloating (Panel::pianoRoll) ? toggleFloat (Panel::pianoRoll) : showPanel (Panel::pianoRoll); });
+    windowButton (mixerWindowButton, theme::Icon::mixer, TRANS ("Mixer (F9)"),
+                  [this] { isFloating (Panel::mixer) ? toggleFloat (Panel::mixer) : showMixer(); });
 
     soundsButton.setClickingTogglesState (false);
     soundsButton.setTooltip (TRANS ("Your folders of sounds and MIDI (Alt+F8). Only on this PC until you drag a sound into the song"));
@@ -626,11 +866,11 @@ MainComponent::MainComponent (te::Engine& e)
     for (int i = 0; i < numPanels; ++i)
         placeholders[i] = std::make_unique<PanelPlaceholder> (*this, (Panel) i);
 
-    mixer.onDetachToggle    = [this] { setPanelDetached (Panel::mixer, ! isDetached (Panel::mixer)); };
+    mixer.onDetachToggle    = [this] { showPlacementMenu (Panel::mixer); };
     mixer.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::mixer); };
-    pianoRoll.onDetachToggle = [this] { setPanelDetached (Panel::pianoRoll, ! isDetached (Panel::pianoRoll)); };
+    pianoRoll.onDetachToggle = [this] { showPlacementMenu (Panel::pianoRoll); };
     pianoRoll.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::pianoRoll); };
-    rack.onDetachToggle     = [this] { setPanelDetached (Panel::rack, ! isDetached (Panel::rack)); };
+    rack.onDetachToggle     = [this] { showPlacementMenu (Panel::rack); };
     rack.onFullScreenToggle = [this] { togglePanelFullScreen (Panel::rack); };
     rack.onOpenPianoRoll = [this] (const juce::String& channelID)
     {
@@ -647,6 +887,11 @@ MainComponent::MainComponent (te::Engine& e)
             w->setFullScreen (true);
             w->toFront (true);
             updateFullScreenButtons();
+        }
+        else if (isFloating (Panel::pianoRoll))
+        {
+            setFloatShown (Panel::pianoRoll, true);
+            pianoRoll.focusNotes();
         }
         else
         {
@@ -692,10 +937,25 @@ MainComponent::MainComponent (te::Engine& e)
 
     juce::MessageManager::callAsync ([safe = juce::Component::SafePointer<MainComponent> (this)]
     {
-        if (safe != nullptr)
-            for (int i = 0; i < numPanels; ++i)
-                if (safe->settings()->getBoolValue (panelKey ((Panel) i) + "Detached", false))
-                    safe->setPanelDetached ((Panel) i, true);
+        if (safe == nullptr)
+            return;
+
+        // Where each panel was (1.11: the rack and the piano roll float by default, like FL;
+        // a window of its own from 1.10 and before stays one).
+        for (int i = 0; i < numPanels; ++i)
+        {
+            const auto p = (Panel) i;
+            auto* prefs = safe->settings();
+            const auto key = panelKey (p) + "Placement";
+            const auto placement = prefs->containsKey (key) ? (Placement) juce::jlimit (0, 2, prefs->getIntValue (key))
+                                 : prefs->getBoolValue (panelKey (p) + "Detached", false) ? Placement::window
+                                 : p == Panel::mixer ? Placement::docked : Placement::floating;
+
+            safe->setPanelPlacement (p, placement);
+
+            if (placement == Placement::floating)
+                safe->setFloatShown (p, prefs->getBoolValue (panelKey (p) + "FloatShown", p == Panel::rack));
+        }
     });
 
     // Panels: playlist, divider, rack, divider, piano roll / mixer tabs (sizes are proportions or pixels).
@@ -709,6 +969,10 @@ MainComponent::MainComponent (te::Engine& e)
     panelLayoutNoRack.setItemLayout (1, 6, 6, 6);
     panelLayoutNoRack.setItemLayout (2, 50, 50, 50);
     panelLayoutNoRack.setItemLayout (3, 120, -0.85, -0.55);
+
+    panelLayoutRackFloating.setItemLayout (0, 110, -0.85, -0.6);
+    panelLayoutRackFloating.setItemLayout (1, 6, 6, 6);
+    panelLayoutRackFloating.setItemLayout (2, 120, -0.85, -0.4);
 
     for (auto* b : { &patModeButton, &songModeButton })
     {
@@ -846,7 +1110,7 @@ MainComponent::MainComponent (te::Engine& e)
     }
 
     appendLog ("COTOSTUDIO " + juce::JUCEApplication::getInstance()->getApplicationVersion() + " - "
-                + TRANS ("first time? Settings (gear, top right) > Find my plugins, so your VST3 plugins can be used"));
+                + TRANS ("first time? Settings (gear, top right) > Find my plugins, so your VST3 and VST2 plugins can be used"));
     setSize (1600, 940);
     startTimerHz (5);
 }
@@ -861,6 +1125,9 @@ MainComponent::~MainComponent()
 
     for (auto& w : panelWindows)
         w.reset();
+
+    for (auto& f : floaters)
+        f.reset();
 
     logWindow.reset();   // shows logView, which goes first otherwise
     settings()->setValue ("previewVolume", (double) previewer.getGain());
@@ -1051,8 +1318,16 @@ bool MainComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress ('r'))                                                { recordButton.triggerClick(); return true; }
     if (key == juce::KeyPress::tabKey)                                              { toggleInstrumentWindow(); return true; }
     if (key == juce::KeyPress::F6Key)                                               { toggleRack(); return true; }
-    if (key == juce::KeyPress::F7Key)                                               { showPanel (Panel::pianoRoll); return true; }
-    if (key == juce::KeyPress::F9Key)                                               { showMixer(); return true; }
+    if (key == juce::KeyPress::F7Key)                                               { isFloating (Panel::pianoRoll) ? toggleFloat (Panel::pianoRoll) : showPanel (Panel::pianoRoll); return true; }
+    if (key == juce::KeyPress::F9Key)                                               { isFloating (Panel::mixer) ? toggleFloat (Panel::mixer) : showMixer(); return true; }
+    if (key == juce::KeyPress::escapeKey)
+        for (int i = getNumChildComponents(); --i >= 0;)
+            if (auto* f = dynamic_cast<FloatingPanel*> (getChildComponent (i)); f != nullptr && f->isVisible() && f->isMaximised())
+            {
+                f->toggleMaximised();
+                return true;
+            }
+
     if (key == juce::KeyPress::escapeKey && maximised != Maximised::none)           { setMaximised (Maximised::none); return true; }
     if (key == juce::KeyPress (juce::KeyPress::F8Key, juce::ModifierKeys::altModifier, 0)) { setSoundsVisible (! soundsVisible); return true; }
     if (key == juce::KeyPress::F8Key)                                               { setBrowserVisible (! browserVisible); return true; }
@@ -1191,6 +1466,12 @@ void MainComponent::showPanel (Panel p)
         return;
     }
 
+    if (isFloating (p))
+    {
+        setFloatShown (p, true);
+        return;
+    }
+
     if (p == Panel::pianoRoll)  bottomTabs.setCurrentTabIndex (0);
     if (p == Panel::mixer)      bottomTabs.setCurrentTabIndex (1);
 
@@ -1202,6 +1483,12 @@ void MainComponent::showPanel (Panel p)
 
 void MainComponent::toggleRack()
 {
+    if (isFloating (Panel::rack))
+    {
+        toggleFloat (Panel::rack);
+        return;
+    }
+
     // With the piano roll filling the window, the rack comes in above it (and goes again),
     // like FL's channel rack window over the piano roll. Otherwise: show it.
     if (maximised == Maximised::pianoRoll && ! isDetached (Panel::rack))
@@ -1216,75 +1503,167 @@ void MainComponent::toggleRack()
 
 void MainComponent::updateWindowButtons()
 {
-    const bool rackHere = ! isDetached (Panel::rack);
     const int tab = bottomTabs.getCurrentTabIndex();
     const bool dockShown = maximised != Maximised::playlist;
 
     playlistWindowButton.setToggleState (maximised != Maximised::pianoRoll, juce::dontSendNotification);
-    rackWindowButton.setToggleState (! rackHere || (maximised == Maximised::none) || (maximised == Maximised::pianoRoll && rackOverPianoRoll),
+    rackWindowButton.setToggleState (isFloating (Panel::rack) ? isFloatShown (Panel::rack)
+                                     : isDetached (Panel::rack) || (maximised == Maximised::none) || (maximised == Maximised::pianoRoll && rackOverPianoRoll),
                                      juce::dontSendNotification);
-    pianoWindowButton.setToggleState (isDetached (Panel::pianoRoll) || (dockShown && tab == 0), juce::dontSendNotification);
-    mixerWindowButton.setToggleState (isDetached (Panel::mixer) || (dockShown && tab == 1), juce::dontSendNotification);
+    pianoWindowButton.setToggleState (isFloating (Panel::pianoRoll) ? isFloatShown (Panel::pianoRoll)
+                                      : isDetached (Panel::pianoRoll) || (dockShown && tab == 0), juce::dontSendNotification);
+    mixerWindowButton.setToggleState (isFloating (Panel::mixer) ? isFloatShown (Panel::mixer)
+                                      : isDetached (Panel::mixer) || (dockShown && tab == 1), juce::dontSendNotification);
 }
 
-void MainComponent::setPanelDetached (Panel p, bool detached)
+MainComponent::Placement MainComponent::getPlacement (Panel p) const
+{
+    return isDetached (p) ? Placement::window : isFloating (p) ? Placement::floating : Placement::docked;
+}
+
+bool MainComponent::isFloatShown (Panel p) const
+{
+    auto& f = floaters[(int) p];
+    return f != nullptr && f->isVisible();
+}
+
+void MainComponent::setPanelPlacement (Panel p, Placement placement)
 {
     const int i = (int) p;
+    const auto was = getPlacement (p);
 
-    if (detached == isDetached (p))
+    if (placement == was)
         return;
 
-    if (detached && p == Panel::pianoRoll && maximised == Maximised::pianoRoll)
+    if (placement != Placement::docked && p == Panel::pianoRoll && maximised == Maximised::pianoRoll)
         setMaximised (Maximised::none);
 
-    // The panel's tab (piano roll 0, mixer 1) keeps its place, showing a note meanwhile.
+    // The panel's tab (piano roll 0, mixer 1) keeps its place, showing a note while it's out.
     const int tab = p == Panel::pianoRoll ? 0 : p == Panel::mixer ? 1 : -1;
     const auto colour = tab >= 0 ? bottomTabs.getTabBackgroundColour (tab) : juce::Colour();
     const bool wasCurrent = tab >= 0 && bottomTabs.getCurrentTabIndex() == tab;
 
-    if (detached)
+    // 1. Out of where it was.
+    panelWindows[i].reset();
+    floaters[i].reset();
+
+    if (was == Placement::docked && tab >= 0)
     {
-        if (tab >= 0)
-        {
-            bottomTabs.removeTab (tab);
-            bottomTabs.addTab (panelName (p), colour, placeholders[i].get(), false, tab);
+        bottomTabs.removeTab (tab);
+        bottomTabs.addTab (panelName (p), colour, placeholders[i].get(), false, tab);
 
-            if (wasCurrent)
-                bottomTabs.setCurrentTabIndex (tab);
-        }
+        // Its tab was showing: show the next tab that still has its panel (not just the note).
+        if (wasCurrent)
+            bottomTabs.setCurrentTabIndex (placement == Placement::window ? tab
+                                           : tab == 0 && isDocked (Panel::mixer) ? 1 : tab == 1 && isDocked (Panel::pianoRoll) ? 0 : 2);
+    }
 
+    // 2. Into its new place.
+    if (placement == Placement::window)
+    {
         panelWindows[i] = std::make_unique<PanelWindow> (*this, p);
         appendLog (TRANS ("{PANEL} has its own window now: move it to your other screen").replace ("{PANEL}", panelName (p))
                      + (p == Panel::rack ? " (F6)" : p == Panel::pianoRoll ? " (F7)" : " (F9)"));
     }
+    else if (placement == Placement::floating)
+    {
+        floaters[i] = std::make_unique<FloatingPanel> (*this, p);
+        addChildComponent (*floaters[i]);
+
+        // First time: the rack in the upper part, the piano roll below it, the mixer at the bottom.
+        auto a = floatArea.isEmpty() ? getLocalBounds().withTrimmedTop (topBarHeight) : floatArea;
+        const auto fallback = p == Panel::rack      ? juce::Rectangle<int> (a.getX() + a.getWidth() / 5, a.getY() + 30, juce::jmin (980, a.getWidth() - 40), juce::jmin (440, a.getHeight() / 2))
+                            : p == Panel::pianoRoll ? juce::Rectangle<int> (a.getX() + a.getWidth() / 8, a.getY() + a.getHeight() / 4, juce::jmin (1200, a.getWidth() - 60), juce::jmin (600, a.getHeight() * 2 / 3))
+                                                    : juce::Rectangle<int> (a.getX() + 40, a.getBottom() - juce::jmin (480, a.getHeight() / 2) - 20, juce::jmin (1300, a.getWidth() - 80), juce::jmin (480, a.getHeight() / 2));
+        floaters[i]->restore (settings()->getValue (panelKey (p) + "Float"), fallback);
+        floaters[i]->setVisible (true);
+        floaters[i]->toFront (false);
+    }
+    else if (tab >= 0)
+    {
+        bottomTabs.removeTab (tab);
+        bottomTabs.addTab (panelName (p), colour, &panelComponent (p), false, tab);
+        bottomTabs.setCurrentTabIndex (tab);
+    }
     else
     {
-        panelWindows[i].reset();
-
-        if (tab >= 0)
-        {
-            bottomTabs.removeTab (tab);
-            bottomTabs.addTab (panelName (p), colour, &panelComponent (p), false, tab);
-            bottomTabs.setCurrentTabIndex (tab);
-        }
-        else
-        {
-            addAndMakeVisible (rack);   // back from its window
-        }
+        addAndMakeVisible (rack);   // back in the main window
     }
 
-    if (p == Panel::mixer)          mixer.setDetached (detached);
-    if (p == Panel::pianoRoll)      pianoRoll.setDetached (detached);
-    if (p == Panel::rack)           rack.setDetached (detached);
+    if (p == Panel::mixer)          mixer.setDetached (placement != Placement::docked);
+    if (p == Panel::pianoRoll)      pianoRoll.setDetached (placement != Placement::docked);
+    if (p == Panel::rack)           rack.setDetached (placement != Placement::docked);
 
-    settings()->setValue (panelKey (p) + "Detached", detached);
+    if (auto& ph = placeholders[i])
+        ph->updateTexts();
+
+    settings()->setValue (panelKey (p) + "Placement", (int) placement);
+    settings()->setValue (panelKey (p) + "Detached", placement == Placement::window);   // (read by 1.10 and before)
     resized();
     updateFullScreenButtons();
 }
 
+void MainComponent::showPlacementMenu (Panel p)
+{
+    juce::PopupMenu m;
+    const auto now = getPlacement (p);
+    m.addSectionHeader (panelName (p));
+    m.addItem (1, TRANS ("In the main window"), true, now == Placement::docked);
+    m.addItem (2, TRANS ("Floating over it, moved freely (like FL)"), true, now == Placement::floating);
+    m.addItem (3, TRANS ("In a window of its own (e.g. your second screen)"), true, now == Placement::window);
+
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe = juce::Component::SafePointer<MainComponent> (this), p] (int r)
+    {
+        if (safe != nullptr && r > 0)
+            safe->setPanelPlacement (p, (Placement) (r - 1));
+    });
+}
+
+void MainComponent::setFloatShown (Panel p, bool shown)
+{
+    if (auto& f = floaters[(int) p])
+    {
+        f->setVisible (shown);
+
+        if (shown)
+        {
+            f->keepInside();
+            f->toFront (false);
+        }
+
+        settings()->setValue (panelKey (p) + "FloatShown", shown);
+        updateWindowButtons();
+    }
+}
+
+void MainComponent::toggleFloat (Panel p)
+{
+    // Like FL's window buttons: shows it (on top), or hides it if it's already the one on top.
+    auto& f = floaters[(int) p];
+
+    if (f == nullptr)
+        return;
+
+    bool onTop = false;
+
+    for (int i = getNumChildComponents(); --i >= 0;)
+        if (auto* c = dynamic_cast<FloatingPanel*> (getChildComponent (i)); c != nullptr && c->isVisible())
+        {
+            onTop = c == f.get();
+            break;
+        }
+
+    setFloatShown (p, ! (f->isVisible() && onTop));
+}
+
 void MainComponent::togglePanelFullScreen (Panel p)
 {
-    if (auto& w = panelWindows[(int) p])
+    if (auto& f = floaters[(int) p])
+    {
+        f->toggleMaximised();
+        f->toFront (false);
+    }
+    else if (auto& w = panelWindows[(int) p])
     {
         w->setFullScreen (! w->isFullScreen());
         w->toFront (true);
@@ -1299,7 +1678,7 @@ void MainComponent::togglePanelFullScreen (Panel p)
 
 void MainComponent::setMaximised (Maximised m)
 {
-    if (m == Maximised::pianoRoll && isDetached (Panel::pianoRoll))
+    if (m == Maximised::pianoRoll && ! isDocked (Panel::pianoRoll))
         m = Maximised::none;
 
     maximised = m;
@@ -1315,9 +1694,12 @@ void MainComponent::updateFullScreenButtons()
 {
     auto windowFull = [this] (Panel p) { auto& w = panelWindows[(int) p]; return w != nullptr && w->isFullScreen(); };
 
+    auto floatFull = [this] (Panel p) { auto& f = floaters[(int) p]; return f != nullptr && f->isMaximised(); };
+
     playlist.setFullScreenState (maximised == Maximised::playlist);
-    pianoRoll.setFullScreenState (isDetached (Panel::pianoRoll) ? windowFull (Panel::pianoRoll) : maximised == Maximised::pianoRoll);
-    rack.setFullScreenState (windowFull (Panel::rack));
+    pianoRoll.setFullScreenState (isDetached (Panel::pianoRoll) ? windowFull (Panel::pianoRoll)
+                                  : isFloating (Panel::pianoRoll) ? floatFull (Panel::pianoRoll) : maximised == Maximised::pianoRoll);
+    rack.setFullScreenState (windowFull (Panel::rack) || floatFull (Panel::rack));
 }
 
 void MainComponent::setSoundsVisible (bool shouldBeVisible)
@@ -2368,7 +2750,7 @@ void MainComponent::importFlTemplate()
             project->findSamples (file);
 
         if (engine.getPluginManager().knownPluginList.getNumTypes() == 0)
-            appendLog (TRANS ("No plugins scanned yet: scan them first (Settings > Find my plugins) so the import finds your VST3 effects"));
+            appendLog (TRANS ("No plugins scanned yet: scan them first (Settings > Find my plugins) so the import finds your effects"));
 
         FlpImportDialog::show (*project, file, [this, file] (const flimport::Project& chosen, const flimport::Options& chosenOptions)
         {
@@ -2912,13 +3294,32 @@ void MainComponent::showPluginScanner()
     auto& pm = engine.getPluginManager();
     auto deadMansPedal = appdata::settingsFolder().getChildFile ("PluginScanCrashes.txt");
 
+    // VST2 plugins live in no single place: the first scan looks in the usual folders
+    // (and FL Studio's), on top of the ones Windows lists. The scan window can add more.
+    if (! settings()->containsKey ("lastPluginScanPath_VST"))
+        for (auto* format : pm.pluginFormatManager.getFormats())
+            if (format->getName() == "VST")
+            {
+                auto paths = format->getDefaultLocationsToSearch();
+               #if JUCE_WINDOWS
+                const auto programFiles = juce::File::getSpecialLocation (juce::File::globalApplicationsDirectory).getFullPathName();
+
+                for (auto folder : { "\\Common Files\\VST2", "\\Common Files\\Steinberg\\VST2", "\\VSTPlugins",
+                                     "\\Steinberg\\VSTPlugins", "\\Image-Line\\Shared\\VST" })
+                    if (juce::File (programFiles + folder).isDirectory())
+                        paths.addIfNotAlreadyThere (juce::File (programFiles + folder));
+               #endif
+                paths.removeRedundantPaths();
+                settings()->setValue ("lastPluginScanPath_VST", paths.toString());
+            }
+
     auto* scanner = new juce::PluginListComponent (pm.pluginFormatManager, pm.knownPluginList, deadMansPedal,
                                                    settings(), true);
     scanner->setSize (700, 500);
 
     juce::DialogWindow::LaunchOptions o;
     o.content.setOwned (scanner);
-    o.dialogTitle = TRANS ("Plugins - use Options > Scan for new or updated VST3 plug-ins");
+    o.dialogTitle = TRANS ("Plugins - use Options > Scan for new or updated VST3 / VST plug-ins (VST = VST2)");
     o.dialogBackgroundColour = theme::colours::panel;
     o.escapeKeyTriggersCloseButton = true;
     o.useNativeTitleBar = true;
@@ -2959,7 +3360,7 @@ void MainComponent::showSettingsMenu()
 
     m.addSectionHeader (TRANS ("Settings"));
     m.addItem (1, TRANS ("Sound card and MIDI..."));
-    m.addItem (2, TRANS ("Find my plugins (VST3)..."));
+    m.addItem (2, TRANS ("Find my plugins (VST3, VST2)..."));
     m.addSeparator();
 
     language.addItem (10, juce::String ("English"), true, current != "es");
@@ -3032,7 +3433,7 @@ void MainComponent::showAbout()
         About()
         {
             image = theme::logoFull();
-            setSize (420, 330);
+            setSize (420, 350);
         }
 
         void paint (juce::Graphics& g) override
@@ -3055,8 +3456,9 @@ void MainComponent::showAbout()
             g.drawFittedText (TRANS ("Make music together, in sync, over Tailscale.") + "\n"
                               + TRANS ("Free software (GNU AGPLv3). Built on Tracktion Engine and JUCE.") + "\n"
                               + TRANS ("Fonts: Inter and JetBrains Mono (SIL Open Font License).") + "\n"
-                              + "ASIO is a trademark and software of Steinberg Media Technologies GmbH.",
-                              r, juce::Justification::centredTop, 6);
+                              + "ASIO is a trademark and software of Steinberg Media Technologies GmbH.\n"
+                              + "VST is a trademark of Steinberg Media Technologies GmbH.",
+                              r, juce::Justification::centredTop, 8);
         }
 
         juce::Image image;
@@ -3240,7 +3642,8 @@ void MainComponent::resized()
     placeRight (focusButton, x.focus, 6);
     placeRight (shareButton, x.share, 6);
 
-    // Body
+    // Body (floating panels can go anywhere in it)
+    floatArea = r;
     r.reduce (8, 8);
 
     sounds.setVisible (soundsVisible);
@@ -3263,7 +3666,7 @@ void MainComponent::resized()
 
     // Playlist, rack and the piano roll / mixer / automation tabs - or one of them
     // filling the space (full screen), or the rack's note while it has its own window.
-    const bool rackHere = ! isDetached (Panel::rack);
+    const bool rackHere = isDocked (Panel::rack), rackFloating = isFloating (Panel::rack);
     auto* rackStrip = placeholders[(int) Panel::rack].get();
     const bool normal = maximised == Maximised::none;
 
@@ -3271,7 +3674,8 @@ void MainComponent::resized()
     dock->setVisible (maximised != Maximised::playlist);
     divider1.setVisible (normal && rackHere);
     divider2.setVisible (normal && rackHere);
-    dividerNoRack.setVisible (normal && ! rackHere);
+    dividerNoRack.setVisible (normal && isDetached (Panel::rack));
+    dividerRackFloating.setVisible (normal && rackFloating);
 
     const bool rackOverRoll = rackHere && maximised == Maximised::pianoRoll && rackOverPianoRoll;
 
@@ -3280,7 +3684,7 @@ void MainComponent::resized()
 
     if (rackStrip != nullptr)
     {
-        if (! rackHere && normal)
+        if (isDetached (Panel::rack) && normal)
             addAndMakeVisible (rackStrip);
         else
             rackStrip->setVisible (false);
@@ -3306,6 +3710,11 @@ void MainComponent::resized()
         juce::Component* panels[] = { &playlist, &divider1, &rack, &divider2, dock.get() };
         panelLayout.layOutComponents (panels, 5, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
     }
+    else if (rackFloating)
+    {
+        juce::Component* panels[] = { &playlist, &dividerRackFloating, dock.get() };
+        panelLayoutRackFloating.layOutComponents (panels, 3, r.getX(), r.getY(), r.getWidth(), r.getHeight(), true, true);
+    }
     else
     {
         juce::Component* panels[] = { &playlist, &dividerNoRack, rackStrip, dock.get() };
@@ -3313,5 +3722,21 @@ void MainComponent::resized()
     }
 
     bottomTabs.setBounds (dock->getLocalBounds().reduced (1));
+
+    // Floating panels stay on top (in the order they were), inside the body.
+    juce::Array<juce::Component*> floating;
+
+    for (auto* c : getChildren())
+        if (auto* f = dynamic_cast<FloatingPanel*> (c))
+        {
+            f->keepInside();
+            floating.add (f);
+        }
+
+    for (auto* f : floating)
+        f->toFront (false);
+
+    statusBar.toFront (false);   // (a floating panel dragged low goes under it)
+
     updateWindowButtons();
 }
