@@ -120,6 +120,22 @@ public:
     /** True if this change of a plugin's stored value is automation moving a knob (not someone's hand). */
     bool isAutomationWrite (const juce::ValueTree& pluginState, const juce::Identifier& prop) const;
 
+    /** True if a property change is a change to the song itself - not this PC's playback
+        (the playhead, clips built for playing, automation moving knobs) or its view. While a
+        song plays the engine writes such things many times a second; the window must not
+        redraw everything for each of them. */
+    bool isSongChange (const juce::ValueTree& node, const juce::Identifier& prop) const
+    {
+        return ! isLocalProperty (node, prop, false) && ! isLocalNode (node) && ! isInsideLocal (node)
+            && ! isAutomationWrite (node, prop);
+    }
+
+    /** The same for a node added, removed or moved under a parent. */
+    bool isSongChange (const juce::ValueTree& parent, const juce::ValueTree& child) const
+    {
+        return ! isLocalNode (child) && ! isLocalNode (parent) && ! isInsideLocal (parent);
+    }
+
     /** Gives notes (and other list items without an engine ID) a sync ID so
         two people can edit the same list at once. Call on the host's song. */
     void assignMissingSyncIDs();

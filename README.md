@@ -29,6 +29,15 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.0.1
+
+* **Big songs no longer freeze the window while they play.** While a song plays,
+  the engine writes the playhead and every automated knob into the song many
+  times a second. Each of those writes counted as "the song changed", so the
+  window redrew every panel (playlist, mixer, rack, piano roll...) for each one:
+  on a big song with automation the sound kept playing but the app froze and
+  Stop didn't respond. Now only real changes to the song redraw the window.
+
 ## What's new in 2.0
 
 * **Select many clips in the playlist and work on them together**, like FL and

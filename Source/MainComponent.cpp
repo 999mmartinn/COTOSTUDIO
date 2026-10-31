@@ -2393,6 +2393,24 @@ juce::File MainComponent::autosaveFolder() const
     return backups::folderForUnsaved (const_cast<collab::Session&> (session).getSongTitle(), songStartedAt);
 }
 
+void MainComponent::valueTreePropertyChanged (juce::ValueTree& node, const juce::Identifier& prop)
+{
+    if (auto* sync = session.getSync(); sync != nullptr && ! sync->isSongChange (node, prop))
+        return;
+
+    songChanged = true;
+    triggerAsyncUpdate();
+}
+
+void MainComponent::songNodeChanged (juce::ValueTree& parent, juce::ValueTree& child)
+{
+    if (auto* sync = session.getSync(); sync != nullptr && ! sync->isSongChange (parent, child))
+        return;
+
+    songChanged = true;
+    triggerAsyncUpdate();
+}
+
 juce::int64 MainComponent::currentHash() const
 {
     auto* sync = const_cast<collab::Session&> (session).getSync();

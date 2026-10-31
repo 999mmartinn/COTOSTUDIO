@@ -238,10 +238,15 @@ private:
     void undo (bool redo);
 
     void handleAsyncUpdate() override                          { refresh(); }
-    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override  { songChanged = true; triggerAsyncUpdate(); }
-    void valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&) override              { songChanged = true; triggerAsyncUpdate(); }
-    void valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int) override       { songChanged = true; triggerAsyncUpdate(); }
-    void valueTreeChildOrderChanged (juce::ValueTree&, int, int) override               { songChanged = true; triggerAsyncUpdate(); }
+    // The song changed: redraw (once per message-loop turn). Changes that are only this PC's
+    // playback - the playhead, the clips built for playing, automation moving knobs - don't
+    // count: the engine writes them many times a second while a song plays, and redrawing
+    // every panel for each froze big songs (the sound kept going, the window didn't).
+    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
+    void valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& child) override         { songNodeChanged (parent, child); }
+    void valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int) override  { songNodeChanged (parent, child); }
+    void valueTreeChildOrderChanged (juce::ValueTree&, int, int) override                       { songChanged = true; triggerAsyncUpdate(); }
+    void songNodeChanged (juce::ValueTree& parent, juce::ValueTree& child);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };
