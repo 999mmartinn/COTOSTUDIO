@@ -247,6 +247,10 @@ namespace song
     juce::Array<juce::ValueTree> getClips (te::Edit&);
     juce::ValueTree addClip (te::Edit&, const juce::String& patternSid, int lane, double startBeat);
     void removeClip (te::Edit&, juce::ValueTree clip);
+    /** A copy of any playlist clip (pattern, audio, automation) on another track / beat:
+        everything about it is kept, it and its points get new IDs. An audio copy shares
+        the original's channel (like duplicating in FL; see makeAudioClipUnique). */
+    juce::ValueTree copyClip (te::Edit&, const juce::ValueTree& clip, int lane, double startBeat);
     /** Length in beats: the clip's own length if set, otherwise its pattern's length. */
     double getClipLength (te::Edit&, const juce::ValueTree& clip);
     /** End of the last clip, rounded up to a whole bar (at least one bar). */

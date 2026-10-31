@@ -585,8 +585,9 @@ private:
         {
             auto* edit = state.getEdit();
             auto r = getLocalBounds();
+            const auto people = state.session.getPeople();
 
-            for (auto& p : state.session.getPeople())
+            for (auto& p : people)
             {
                 auto row = r.removeFromTop (rowHeight).reduced (0, 2);
                 g.setColour (rowColour);
@@ -625,9 +626,19 @@ private:
                 // Playback: sharing it, listening along, or in Focus.
                 juce::StringArray tags;
 
-                if (p.sharing)    tags.add (TRANS ("sharing playback"));
-                if (p.listening)  tags.add (TRANS ("listening along"));
-                if (p.focus)      tags.add (TRANS ("Focus"));
+                if (p.listening)
+                {
+                    juce::String with;
+
+                    for (auto& o : people)
+                        if (o.id == p.listeningTo)
+                            with = o.isMe ? TRANS ("you") : o.name;
+
+                    tags.add (TRANS ("listening along with {NAME}").replace ("{NAME}", with));
+                }
+
+                if (p.listeners > 0)
+                    tags.add (TRANS ("{N} listening").replace ("{N}", juce::String (p.listeners)));
 
                 if (! tags.isEmpty())
                     what += (what.isEmpty() ? juce::String() : juce::String::fromUTF8 (" \xc2\xb7 ")) + tags.joinIntoString (", ");

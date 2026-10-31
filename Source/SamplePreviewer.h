@@ -12,9 +12,14 @@ namespace te = tracktion;
     It runs next to the engine on the same sound card (an extra callback on the
     audio device), so it works whether the song is playing or not.
 */
-class SamplePreviewer  : public juce::ChangeBroadcaster
+class SamplePreviewer  : public juce::ChangeBroadcaster,
+                         private juce::Timer
 {
 public:
+    /** A preview stops by itself after this long (with a short fade), so a whole beat
+        doesn't keep playing until you stop it. Shorter sounds play to their end. */
+    static constexpr double maxSeconds = 5.0, fadeSeconds = 0.15;
+
     explicit SamplePreviewer (te::Engine&);
     ~SamplePreviewer() override;
 
@@ -42,6 +47,8 @@ private:
     juce::AudioSourcePlayer player;
     juce::File file;
     float gain = 0.8f;
+    bool fading = false;
+    void timerCallback() override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SamplePreviewer)
 };

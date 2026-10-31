@@ -89,6 +89,19 @@ public:
     void visibleAreaChanged (const juce::Rectangle<int>&) override   { if (onScroll) onScroll(); }
 };
 
+/** What Ctrl+C / Ctrl+X in the playlist kept: copies of the clips and where the group started. */
+namespace
+{
+    struct PlaylistClipboard
+    {
+        std::vector<juce::ValueTree> clips;
+        double start = 0.0;
+        int lane = 0;
+    };
+
+    PlaylistClipboard playlistClipboard;
+}
+
 //==============================================================================
 class Playlist::Lanes  : public juce::Component,
                         public juce::FileDragAndDropTarget,
@@ -582,6 +595,34 @@ public:
             }
         }
 
+        // The selection: a bright outline (this PC only).
+        if (! selected.isEmpty())
+        {
+            for (auto& clip : getClips (*edit))
+            {
+                if (! selected.contains (clip[ids::sid].toString()))
+                    continue;
+
+                auto r = clipBounds (clip).reduced (0.5f, 1.5f);
+
+                if (! r.intersects (visible.toFloat()))
+                    continue;
+
+                g.setColour (juce::Colours::white.withAlpha (0.22f));
+                g.fillRoundedRectangle (r, 5.0f);
+                g.setColour (juce::Colours::white);
+                g.drawRoundedRectangle (r, 5.0f, 2.0f);
+            }
+        }
+
+        if (marquee)
+        {
+            g.setColour (theme::colours::accent.withAlpha (0.15f));
+            g.fillRect (marqueeArea);
+            g.setColour (theme::colours::accent);
+            g.drawRect (marqueeArea, 1.0f);
+        }
+
         // Where something dragged in (rack or browser) would land
         if (dropPreview.lane >= 0)
         {
@@ -696,7 +737,18 @@ public:
                 const double offset = clip[ids::offset], duration = clip[ids::duration];
                 const float zoom = juce::jlimit (0.05f, 4.0f, juce::Decibels::decibelsToGain ((float) getClipGainDb (clip)));
                 g.setColour (colour.brighter (0.4f).withAlpha (0.9f));
-                thumb->drawChannel (g, body.toNearestInt(), offset, offset + duration * getClipSpeed (clip), 0, zoom);
+
+                // Only the part on screen: zoomed in, a long clip is many thousands of pixels
+                // wide, and drawing all of it (every repaint while playing) made the app crawl.
+                const auto shown = body.getIntersection (g.getClipBounds().toFloat().expanded (2.0f, 0.0f));
+
+                if (! shown.isEmpty() && body.getWidth() > 0.0f)
+                {
+                    const double span = duration * getClipSpeed (clip);   // seconds of the file across the clip
+                    const double from = offset + span * (double) ((shown.getX() - body.getX()) / body.getWidth());
+                    const double to = offset + span * (double) ((shown.getRight() - body.getX()) / body.getWidth());
+                    thumb->drawChannel (g, shown.toNearestInt(), from, to, 0, zoom);
+                }
             }
         }
         else
@@ -789,6 +841,7 @@ public:
 
     void mouseMove (const juce::MouseEvent& e) override
     {
+        lastMouse = e.position;
         auto c = clipAt (e.position);
         const auto hover = isAudioClip (c) ? c[ids::sid].toString() : juce::String();
 
@@ -823,6 +876,26 @@ public:
 
     bool keyPressed (const juce::KeyPress& key) override
     {
+        const int cmd = juce::ModifierKeys::commandModifier;
+        auto is = [&key] (int code, int mods = 0) { return key == juce::KeyPress (code, mods, 0); };
+
+        if (is ('a', cmd))   { selectAll(); return true; }
+        if (is ('d', cmd))   { selected.clear(); repaint(); return true; }
+        if (is ('c', cmd))   return copySelection (false);
+        if (is ('x', cmd))   return copySelection (true);
+        if (is ('v', cmd))   return paste();
+        if (is ('b', cmd))   return duplicateSelection();
+
+        if ((is (juce::KeyPress::deleteKey) || is (juce::KeyPress::backspaceKey)) && deleteSelection())
+            return true;
+
+        if (is (juce::KeyPress::escapeKey) && ! selected.isEmpty())
+        {
+            selected.clear();
+            repaint();
+            return true;
+        }
+
         // FL's tool keys (only without Ctrl/Alt, so the app's shortcuts still work).
         if (key.getModifiers().isCommandDown() || key.getModifiers().isAltDown())
             return false;
@@ -859,18 +932,65 @@ public:
 
         if (e.mods.isPopupMenu())
         {
-            // On a clip's name strip: its menu (rename, colour, insert...). Elsewhere: delete, like FL.
+            // On a clip's name strip: its menu (rename, colour, insert...). Elsewhere: delete, like FL
+            // (a selected clip: the whole selection).
             if (hit.isValid() && ! isAutomationClip (hit) && e.position.y < clipBounds (hit).getY() + 16.0f)
             {
                 showClipMenu (hit, sliceBeatAt (e));
                 return;
             }
 
-            if (hit.isValid())
+            if (hit.isValid() && selected.contains (hit[ids::sid].toString()))
+                deleteSelection();
+            else if (hit.isValid())
                 removeClip (*edit, hit);
 
             repaint();
             return;
+        }
+
+        group.clear();
+        copyOnDrag = copiesMade = false;
+
+        if (! owner.sliceTool)
+        {
+            // Ctrl + click on a clip: add it to the selection or take it out.
+            if (hit.isValid() && e.mods.isCommandDown())
+            {
+                const auto sid = hit[ids::sid].toString();
+
+                if (selected.contains (sid)) selected.removeString (sid);
+                else                         selected.add (sid);
+
+                repaint();
+                return;
+            }
+
+            // Ctrl + drag on empty space: a box that selects (Shift: adds to the selection).
+            if (! hit.isValid() && e.mods.isCommandDown())
+            {
+                marquee = true;
+                marqueeBase = e.mods.isShiftDown() ? selected : juce::StringArray();
+                marqueeArea = { e.position, e.position };
+                selected = marqueeBase;
+                repaint();
+                return;
+            }
+
+            // A click on empty space with clips selected only lets go of them.
+            if (! hit.isValid() && ! selected.isEmpty())
+            {
+                selected.clear();
+                repaint();
+                return;
+            }
+
+            // A click on a clip that isn't selected: the selection goes, this clip is worked on alone.
+            if (hit.isValid() && ! selected.contains (hit[ids::sid].toString()))
+            {
+                selected.clear();
+                repaint();
+            }
         }
 
         if (owner.sliceTool)
@@ -898,6 +1018,18 @@ public:
             grabDuration = isAudioClip (hit) ? (double) hit[ids::duration] : getClipLength (*edit, hit);
             grabSpeed = getClipSpeed (hit);
             clickedExisting = true;
+
+            if (dragMode == DragMode::move)
+            {
+                // Moving: the whole selection if this clip is in it, else just this one.
+                if (selected.contains (hit[ids::sid].toString()))
+                    for (auto& c : selectedClips())
+                        group.push_back ({ c, (double) c[ids::start], (int) c[ids::lane] });
+                else
+                    group.push_back ({ hit, grabStart, grabLane });
+
+                copyOnDrag = e.mods.isShiftDown();
+            }
         }
         else
         {
@@ -932,6 +1064,21 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override
     {
         auto* edit = state.getEdit();
+        lastMouse = e.position;
+
+        if (marquee)
+        {
+            marqueeArea = juce::Rectangle<float> (e.mouseDownPosition, e.position);
+            selected = marqueeBase;
+
+            if (edit != nullptr)
+                for (auto& c : getClips (*edit))
+                    if (! owner.isLaneHidden (c[ids::lane]) && clipBounds (c).intersects (marqueeArea))
+                        selected.addIfNotAlreadyThere (c[ids::sid].toString());
+
+            repaint();
+            return;
+        }
 
         if (slice.active)
         {
@@ -990,7 +1137,45 @@ public:
             return;
         }
 
-        if (dragMode == DragMode::move)
+        if (dragMode == DragMode::move && ! group.empty())
+        {
+            // Shift: the clips stay where they were as copies, the dragged ones move on.
+            if (copyOnDrag && ! copiesMade)
+            {
+                copiesMade = true;
+
+                for (auto& g : group)
+                    copyClip (*edit, g.clip, g.lane, g.start);
+            }
+
+            // One shift for the whole group: the grabbed clip snaps, the others keep their distance.
+            double minStart = 1.0e12;
+            int minLane = numLanes, maxLane = 0;
+
+            for (auto& g : group)
+            {
+                minStart = juce::jmin (minStart, g.start);
+                minLane = juce::jmin (minLane, g.lane);
+                maxLane = juce::jmax (maxLane, g.lane);
+            }
+
+            const double shift = juce::jmax (-minStart, snapNearest (grabStart + beatAtX (e.position.x) - grabBeat) - grabStart);
+            const int mouseLane = laneAtY (e.position.y);
+            const int laneShift = mouseLane < 0 ? 0 : juce::jlimit (-minLane, numLanes - 1 - maxLane, mouseLane - grabLane);
+
+            for (auto& g : group)
+            {
+                const double start = g.start + shift;
+                const int lane = g.lane + laneShift;
+
+                if (std::abs (start - (double) g.clip[ids::start]) > 1.0e-6)
+                    g.clip.setProperty (ids::start, start, um);
+
+                if (lane != (int) g.clip[ids::lane])
+                    g.clip.setProperty (ids::lane, lane, um);
+            }
+        }
+        else if (dragMode == DragMode::move)
         {
             const double newStart = juce::jmax (0.0, snapNearest (grabStart + beatAtX (e.position.x) - grabBeat));
             const int newLane = laneAtY (e.position.y);
@@ -1067,6 +1252,28 @@ public:
 
     void mouseUp (const juce::MouseEvent&) override
     {
+        if (marquee)
+        {
+            marquee = false;
+            repaint();
+            return;
+        }
+
+        // A moved group: takes that changed track play through that track's insert.
+        if (group.size() > 1 || (group.size() == 1 && copiesMade))
+        {
+            for (auto& g : group)
+                if (isAudioClip (g.clip) && (int) g.clip[ids::lane] != g.lane)
+                    routeTakeAndTell (state, g.clip);
+
+            group.clear();
+            dragClip = {};
+            repaint();
+            return;
+        }
+
+        group.clear();
+
         if (slice.active)
         {
             slice.active = false;
@@ -1320,6 +1527,173 @@ private:
     juce::String hoverClip;   // the audio clip under the mouse (its fade handles show)
     int grabLane = -1;
     bool moved = false, clickedExisting = false;
+
+    //==============================================================================
+    // Selection (this PC only, like FL / Pro Tools): Ctrl + drag on empty space draws a box,
+    // Ctrl + click adds or removes one clip, Ctrl+A takes them all. Dragging one of them moves
+    // them all; Shift while dragging leaves a copy behind. Ctrl+C / X / V / B, Delete.
+public:
+    juce::StringArray selected;
+private:
+    struct Grabbed { juce::ValueTree clip; double start; int lane; };
+    std::vector<Grabbed> group;            // the clips a move drags (one, or the selection)
+    bool copyOnDrag = false, copiesMade = false;
+    bool marquee = false;
+    juce::Rectangle<float> marqueeArea;
+    juce::StringArray marqueeBase;
+    juce::Point<float> lastMouse { -1.0f, -1.0f };
+
+    PlaylistClipboard& clipboard = playlistClipboard;
+
+    juce::Array<juce::ValueTree> selectedClips() const
+    {
+        juce::Array<juce::ValueTree> result;
+
+        if (auto* edit = state.getEdit())
+            for (auto& c : getClips (*edit))
+                if (selected.contains (c[ids::sid].toString()))
+                    result.add (c);
+
+        return result;
+    }
+
+    void selectAll()
+    {
+        selected.clear();
+
+        if (auto* edit = state.getEdit())
+            for (auto& c : getClips (*edit))
+                if (! owner.isLaneHidden (c[ids::lane]))
+                    selected.add (c[ids::sid].toString());
+
+        repaint();
+    }
+
+    bool copySelection (bool cut)
+    {
+        auto* edit = state.getEdit();
+        auto clips = selectedClips();
+
+        if (edit == nullptr || clips.isEmpty())
+            return true;
+
+        clipboard = PlaylistClipboard();
+        clipboard.start = 1.0e12;
+        clipboard.lane = numLanes;
+
+        for (auto& c : clips)
+        {
+            clipboard.clips.push_back (c.createCopy());
+            clipboard.start = juce::jmin (clipboard.start, (double) c[ids::start]);
+            clipboard.lane = juce::jmin (clipboard.lane, (int) c[ids::lane]);
+        }
+
+        if (cut)
+        {
+            state.beginAction();
+
+            for (auto& c : clips)
+                removeClip (*edit, c);
+
+            selected.clear();
+        }
+
+        state.session.logMessage (TRANS ("{N} clip(s) copied").replace ("{N}", juce::String ((int) clipboard.clips.size())));
+        repaint();
+        return true;
+    }
+
+    /** Puts copies of clips down, the first one at (beat, lane), the rest where they were
+        relative to it. They become the selection. */
+    void placeCopies (const std::vector<juce::ValueTree>& clips, double fromStart, int fromLane, double toBeat, int toLane)
+    {
+        auto* edit = state.getEdit();
+
+        if (edit == nullptr || clips.empty())
+            return;
+
+        int lowest = numLanes, highest = 0;
+
+        for (auto& c : clips)
+        {
+            lowest = juce::jmin (lowest, (int) c[ids::lane]);
+            highest = juce::jmax (highest, (int) c[ids::lane]);
+        }
+
+        // The whole group stays on the playlist's tracks.
+        const int laneShift = juce::jlimit (-lowest, numLanes - 1 - highest, toLane - fromLane);
+        state.beginAction();
+        selected.clear();
+
+        for (auto& c : clips)
+        {
+            auto copy = copyClip (*edit, c, (int) c[ids::lane] + laneShift, toBeat + ((double) c[ids::start] - fromStart));
+            selected.add (copy[ids::sid].toString());
+
+            if (isAudioClip (copy) && laneShift != 0)
+                routeTakeAndTell (state, copy);
+        }
+
+        repaint();
+    }
+
+    bool paste()
+    {
+        if (clipboard.clips.empty())
+            return true;
+
+        // At the mouse if it's over the playlist (like Pro Tools' cursor), else at the song position.
+        const bool atMouse = getLocalBounds().toFloat().contains (lastMouse) && isMouseOver (true);
+        const double beat = atMouse ? snap (beatAtX (lastMouse.x)) : state.songStartBeat;
+        const int lane = atMouse ? laneAtY (lastMouse.y) : clipboard.lane;
+        placeCopies (clipboard.clips, clipboard.start, clipboard.lane, beat, lane < 0 ? clipboard.lane : lane);
+        return true;
+    }
+
+    /** Ctrl+B: a copy of the selection right after it (FL): its span rounded up to whole bars. */
+    bool duplicateSelection()
+    {
+        auto* edit = state.getEdit();
+        auto clips = selectedClips();
+
+        if (edit == nullptr || clips.isEmpty())
+            return true;
+
+        double start = 1.0e12, end = 0.0;
+        int lane = numLanes;
+        std::vector<juce::ValueTree> list;
+
+        for (auto& c : clips)
+        {
+            start = juce::jmin (start, (double) c[ids::start]);
+            end = juce::jmax (end, (double) c[ids::start] + getClipLength (*edit, c));
+            lane = juce::jmin (lane, (int) c[ids::lane]);
+            list.push_back (c);
+        }
+
+        const double bar = getBeatsPerBar (*edit);
+        const double span = juce::jmax (1.0, std::ceil ((end - start) / bar - 1.0e-6)) * bar;
+        placeCopies (list, start, lane, start + span, lane);
+        return true;
+    }
+
+    bool deleteSelection()
+    {
+        auto* edit = state.getEdit();
+        auto clips = selectedClips();
+
+        if (edit == nullptr || clips.isEmpty())
+            return false;
+
+        state.beginAction();
+
+        for (auto& c : clips)
+            removeClip (*edit, c);
+
+        selected.clear();
+        repaint();
+        return true;
+    }
 };
 
 //==============================================================================
@@ -3510,10 +3884,35 @@ void Playlist::timerCallback()
 
     const bool playing = edit != nullptr && edit->getTransport().isPlaying() && state.session.isSongMode();
 
-    if (playing || playing != wasPlaying)
+    if (playing != wasPlaying)
     {
         wasPlaying = playing;
         lanes->repaint (viewport->getViewArea());
         ruler->repaint();
+        lastPlayheadX = -1;
+    }
+    else if (playing)
+    {
+        // Only the strips where the playhead was and is now: repainting the whole view every
+        // frame (all its clips and waveforms) made big songs lag, the more so zoomed in.
+        const double beat = state.getSongPlayheadBeat();
+        const int x = beat >= 0.0 ? juce::roundToInt (beat * pixelsPerBeat) : -1;
+
+        if (x != lastPlayheadX)
+        {
+            const auto view = viewport->getViewArea();
+
+            for (int px : { lastPlayheadX, x })
+                if (px >= 0)
+                    lanes->repaint (px - 3, view.getY(), 6, view.getHeight());
+
+            const int scroll = viewport->getViewPositionX();
+
+            for (int px : { lastPlayheadX, x })
+                if (px >= 0)
+                    ruler->repaint (px - scroll - 6, 0, 12, ruler->getHeight());
+
+            lastPlayheadX = x;
+        }
     }
 }

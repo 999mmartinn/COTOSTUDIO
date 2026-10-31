@@ -158,6 +158,26 @@ juce::ValueTree addClip (te::Edit& edit, const juce::String& patternSid, int lan
     return c;
 }
 
+juce::ValueTree copyClip (te::Edit& edit, const juce::ValueTree& clip, int lane, double startBeat)
+{
+    auto c = clip.createCopy();
+
+    std::function<void (juce::ValueTree&)> renew = [&renew] (juce::ValueTree& v)
+    {
+        if (v.hasProperty (ids::sid))
+            v.setProperty (ids::sid, newSyncID(), nullptr);
+
+        for (auto child : v)
+            renew (child);
+    };
+
+    renew (c);
+    c.setProperty (ids::lane, juce::jlimit (0, numLanes - 1, lane), nullptr);
+    c.setProperty (ids::start, juce::jmax (0.0, startBeat), nullptr);
+    getPlaylist (edit, true).appendChild (c, um (edit));
+    return c;
+}
+
 void removeClip (te::Edit& edit, juce::ValueTree clip)
 {
     auto parent = clip.getParent();

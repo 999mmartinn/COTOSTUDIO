@@ -971,3 +971,12 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "Filter (low / band / high)" = "Filtro (graves / banda / agudos)"
 "Compressor (simple)" = "Compresor (sencillo)"
 "Arm for recording: Rec records your input on this track (through its insert). The first time it asks which insert and which input" = "Armar para grabar: Rec graba tu entrada en esta pista (a través de su inserto). La primera vez pregunta qué inserto y qué entrada"
+
+// 2.0
+"{N} clip(s) copied" = "{N} clip(s) copiado(s)"
+"Listen along with {NAME}" = "Escuchar junto a {NAME}"
+"(nobody else is here yet)" = "(todavía no hay nadie más)"
+"Everyone's playback is shared in a session. Click to listen along with someone: you hear what they play, in sync, and they control it" = "En una sesión, la reproducción de todos está compartida. Haz clic para escuchar junto a alguien: oyes lo que reproduce, sincronizado, y lo controla esa persona"
+"Listen along with someone's playback (in a session)" = "Escucha la reproducción de otra persona (en una sesión)"
+"listening along with {NAME}" = "escuchando junto a {NAME}"
+"{N} listening" = "{N} escuchando"

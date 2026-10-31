@@ -42,6 +42,7 @@ public:
     bool welcomed = false;
     juce::String viewing;        // host side: presence of this peer (pattern sid)
     bool recording = false, focus = false, listening = false;
+    juce::String listeningTo;    // host side: whose playback this peer listens to ("" = their own)
     int colourIndex = -1;        // host side: this person's colour, kept for the whole connection
     std::atomic<bool> dead { false };
     const int tag;               // identifies this link for transfers
@@ -133,23 +134,27 @@ public:
     int getCountInBars() const;
 
     //==============================================================================
-    // Sharing playback ("listen together") and Focus
-    /** Starts sharing your playback: everyone who isn't in Focus (or recording) follows it.
-        Only one person shares at a time. Returns an error text, or "" if it worked. */
-    juce::String startSharing();
-    /** Ends your share: everyone goes back to their own playback, as it was before. */
-    void stopSharing();
-    /** Stops following someone's share (only for you; you're back to where you were). */
+    // Listening along (2.0): in a session everyone's playback is shared all the time, and
+    // nobody is pulled into anyone else's. Joining someone is your choice: you then hear what
+    // they play, in sync, and only they control it, until you leave.
+    /** (Everyone shares in a session: nothing to start. Kept for older callers.) */
+    juce::String startSharing()                    { return {}; }
+    void stopSharing()                             {}
+    /** Stops listening along (only for you; you're back to where you were). */
     void leaveShare();
-    /** Follows the running share again (after leaving it, or while in Focus). */
+    /** Listens along with this person (roster id). If they listen to someone else, you go
+        straight to that person. Returns an error text, or "" if it worked. */
+    juce::String joinShare (const juce::String& rosterID);
+    /** Listens along with the last person you listened to again (if they're still here). */
     void joinShare();
-    /** Focus: a share started by someone else doesn't pull you in. Turning it on while
-        following a share leaves it; turning it off joins a running share. */
-    void setFocus (bool);
-    bool isFocus() const noexcept                  { return focus; }
+    /** (Nobody is pulled in any more, so Focus has nothing left to do. Kept for older callers.) */
+    void setFocus (bool)                           {}
+    bool isFocus() const noexcept                  { return false; }
 
-    bool isShareRunning() const noexcept           { return shareOwner.isNotEmpty(); }
-    bool isSharing() const noexcept                { return isShareRunning() && shareOwner == myRosterID; }
+    /** True when there's someone to listen along with (in a session with others). */
+    bool isShareRunning() const noexcept;
+    /** In a session your playback is always shared: anyone may listen along. */
+    bool isSharing() const noexcept                { return mode == Mode::hosting || mode == Mode::joined; }
     bool isFollowingShare() const noexcept         { return following; }
     bool canControlPlayback() const noexcept       { return ! following; }
     /** Who is sharing ("" if nobody), and their colour. */
@@ -219,7 +224,9 @@ public:
         juce::String id, name, viewing;     // viewing = sid of the pattern they're looking at
         juce::Colour colour;
         bool isHost = false, isMe = false, recording = false;
-        bool focus = false, listening = false, sharing = false;   // sharing playback / following it / in Focus
+        bool focus = false, listening = false, sharing = false;   // (focus: always false since 2.0)
+        juce::String listeningTo;            // whose playback they listen to ("" = their own)
+        int listeners = 0;                   // how many listen to theirs
     };
 
     struct ChatLine
@@ -290,8 +297,9 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 10;  // 9 (1.2): 200 playlist tracks instead of 16
+    static constexpr int protocolVersion = 11;  // 9 (1.2): 200 playlist tracks instead of 16
                                                 // 10 (1.12.2): changes carry the song's number; fresh copies merge in place
+                                                // 11 (2.0): everyone's playback is shared; listening along is each person's choice
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 
@@ -343,7 +351,7 @@ private:
     int nextColourIndex = 1;             // 0 is the host's
     juce::Array<ChatLine> chat;
 
-    void sendPresence (const juce::String& shareNote = {});
+    void sendPresence (const juce::String& shareNote = {}, const juce::String& noteTarget = {});
     void rebuildRoster();                // host
 
     // Playback of this PC (kept while the song object is replaced, restored after a share)
@@ -363,19 +371,19 @@ private:
     void applySolo();
 
     // Sharing (see startSharing). The host decides who shares; everyone learns it from the roster.
-    juce::String shareOwner;             // roster id of the person sharing ("" = nobody)
+    juce::String shareOwner;             // roster id of the person this PC listens along with ("" = nobody)
+    juce::String lastFollowed;           // the last one (for joinShare())
     bool following = false, focus = false;
     LocalPlayback beforeShare;           // what this PC was doing before it followed the share
     juce::StringArray shareListenersSeen;   // owner: who already got the current playback
     juce::String lastOfferedPattern;
-    void setShareOwner (const juce::String& newOwner);      // host: decides; everyone: reacts
     void resetSessionOnlyState();        // leaving a session: own playback back, no questions open
-    void shareOwnerChanged (const juce::String& oldOwner);
     void followShare (bool manual);
     void unfollowShare (const juce::String& note);
     void sendShareToNewListeners();
-    void handleShareRequest (const juce::String& fromID, const juce::String& fromName, bool start);   // host
-    void handleShareNote (const juce::String& name, const juce::String& note);                         // host
+    void handleShareNote (const juce::String& name, const juce::String& note, const juce::String& targetID);   // host
+    /** The roster changed: the person this PC listens to may have left, or now listens to someone else. */
+    void checkFollowedPerson();
     juce::String nameOf (const juce::String& rosterID) const;
 
     // Tempo approval (the host runs the vote)

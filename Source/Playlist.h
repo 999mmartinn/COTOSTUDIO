@@ -28,6 +28,10 @@
       - Markers: a strip under the bar numbers with shared notes ("drop", "verse 2");
         click one to play from it, drag to move, double-click to edit, right-click for
         colour / delete.
+      - Selection (2.0, this PC only): Ctrl + drag on empty space draws a box, Ctrl + click
+        adds / removes a clip, Ctrl+A takes all. Drag one selected clip to move them all
+        (Shift: leave copies behind). Ctrl+C / Ctrl+X, Ctrl+V (at the mouse, else at the
+        song position), Ctrl+B (a copy right after), Delete; a click on empty space lets go.
 */
 class Playlist  : public juce::Component,
                   private juce::Timer
@@ -91,6 +95,7 @@ private:
     int ticksSinceArmCheck = 0;
     static constexpr float minPixelsPerBeat = 1.0f;   // 4 pixels a bar in 4/4: 300 bars in 1200 pixels
     bool wasPlaying = false;
+    int lastPlayheadX = -1;   // where the playhead was drawn (only its strip is repainted while playing)
 
     // Rows, top to bottom: tracks, and a header row above each group of tracks (a folded
     // group shows only its header, with a small picture of its clips).

@@ -29,6 +29,37 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.0
+
+* **Select many clips in the playlist and work on them together**, like FL and
+  Pro Tools:
+  * **Ctrl + drag** on empty space draws a box: every clip it touches is
+    selected (hold Shift too to add to what's already selected).
+    **Ctrl + click** a clip adds it or takes it out. **Ctrl+A** selects all,
+    **Ctrl+D** or **Esc** (or a click on empty space) lets go.
+  * **Drag any selected clip** and they all move together (time and tracks).
+    Hold **Shift** while you drag to leave copies where they were.
+  * **Ctrl+C / Ctrl+X** copy / cut them, **Ctrl+V** pastes them at the mouse
+    (or, if the mouse isn't over the playlist, at the song position),
+    **Ctrl+B** puts a copy right after them, **Delete** removes them, and a
+    right-click on a selected clip deletes the whole selection.
+  * The selection is yours only; what you do with it is shared as always.
+* **Listening along, the new way.** In a session everyone's playback is now
+  shared all the time, and nobody is pulled into anyone else's. Press
+  **Listen** (where Share was) and pick a person to hear what they play, in
+  sync; they control it. Press it again to go back to your own playback, where
+  you were. Picking someone who's listening to someone else takes you straight
+  to that person. The people list shows who listens along with whom. Focus is
+  gone: nothing pulls you in any more.
+* **Sound previews stop by themselves after 5 seconds** (with a short fade), so
+  clicking through your Beats folder no longer leaves a whole beat playing.
+  Shorter sounds play to their end.
+* **The playlist no longer lags when zoomed in on a big song.** While a song
+  played, the whole playlist was redrawn many times a second, including every
+  waveform at its full zoomed-in width. Now only the playhead's strip is
+  redrawn while playing, and waveforms are drawn only where they're on screen.
+* Everyone in a session needs 2.0 (protocol 11).
+
 ## What's new in 1.12.2
 
 * **No more freezes on the people who join when their copy gets out of step.**
@@ -572,7 +603,7 @@ D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOST
 ## The screen
 
 * **Top bar**: File, Sounds, PAT / SONG, Play, Rec, Click (metronome), the
-  counter with the tempo, the pattern you're editing, Share / Focus, your
+  counter with the tempo, the pattern you're editing, Listen, your
   **session badge** (who's in, and whether you're in sync), undo / redo and
   Settings.
 * **Sounds** (left, Alt+F8): your own folders of kits, loops and MIDI - only on
@@ -596,8 +627,9 @@ D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOST
 3. Friends: click the session badge, type the host's address under **Join a
    friend** → **Join**. The badge turns green when you're in sync.
 4. Edits (notes, patterns, playlist, mixer, effects, takes, sounds you drop in)
-   are shared live. Your playback is yours: press **Share** to make the others
-   hear what you play; **Focus** keeps you working on your own.
+   are shared live. Your playback is yours, and everyone's is shared: press
+   **Listen** and pick someone to hear what they play, in sync (press it again
+   to go back to your own).
 
 ## How it works (short version)
 
@@ -637,7 +669,8 @@ D:\COTOSTUDIO                  (or Documents\COTOSTUDIO if there is no D:\COTOST
      plugin – it appears on both PCs;
    * click the plugin's button to open its window and move a knob – the
      other PC's knob moves;
-   * press **Share**, then **Play** on either PC – both play the loop.
+   * on one PC press **Listen** and pick the other, then **Play** on the other
+     PC – both play the loop.
 
 ### Which address do I type?
 
@@ -736,9 +769,9 @@ folder (`Cache\Audio-2`), so file sharing really happens, like with a second PC.
 and two joiners inside one process over real TCP and checks notes, built-in
 plugin settings, third-party plugin insertion and knob sync (both directions,
 including a fast 200-step drag), simultaneous edits, ID clashes, personal
-playback, sharing it (following in sync, only the sharer controls it, leaving,
-joining, Focus, a late joiner following a running share, everyone back where
-they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
+playback, listening along (in sync, only the person listened to controls it,
+leaving, joining again, going straight to whoever they listen to, no circles, a
+late joiner not pulled in, everyone back where they were afterwards), tempo approval (accept, decline, no answer), solo (personal, carried along
 in a share), sends (built on each PC, loops refused, really audible), the
 metronome staying personal, recording with a count-in (lined up to the sample),
 punch in / out (recording stops by itself at the punch-out while the song plays

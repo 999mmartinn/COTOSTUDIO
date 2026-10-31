@@ -994,23 +994,46 @@ MainComponent::MainComponent (te::Engine& e)
     for (auto* b : { &shareButton, &focusButton })
         b->setClickingTogglesState (false);
 
+    // Listen (2.0): everyone's playback is shared in a session; listening along with someone
+    // is your choice. The button lists the others; while you listen it takes you back.
     shareButton.onClick = [this]
     {
-        if (session.isSharing())
-            session.stopSharing();
-        else if (session.isFollowingShare())
-            session.leaveShare();
-        else if (session.isShareRunning())
-            session.joinShare();
-        else
+        if (session.isFollowingShare())
         {
-            const auto error = session.startSharing();
-
-            if (error.isNotEmpty())
-                appendLog (error);
+            session.leaveShare();
+            refresh();
+            return;
         }
 
-        refresh();
+        juce::PopupMenu m;
+        juce::StringArray ids;
+
+        for (auto& p : session.getPeople())
+        {
+            if (p.isMe)
+                continue;
+
+            ids.add (p.id);
+            const auto busy = p.recording ? "  (" + TRANS ("recording") + ")" : juce::String();
+            m.addColouredItem (ids.size(), TRANS ("Listen along with {NAME}").replace ("{NAME}", p.name) + busy, p.colour);
+        }
+
+        if (ids.isEmpty())
+            m.addItem (-1, TRANS ("(nobody else is here yet)"), false);
+
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (shareButton),
+                         [safe = juce::Component::SafePointer<MainComponent> (this), ids] (int r)
+        {
+            if (safe == nullptr || r <= 0 || r > ids.size())
+                return;
+
+            const auto error = safe->session.joinShare (ids[r - 1]);
+
+            if (error.isNotEmpty())
+                safe->appendLog (TRANS (error));
+
+            safe->refresh();
+        });
     };
 
     focusButton.setButtonText (TRANS ("Focus"));
@@ -1228,35 +1251,24 @@ void MainComponent::refresh()
         const auto owner = session.getShareOwnerName().substring (0, 14);
         juce::Colour on = accent;
 
-        if (session.isSharing())
-        {
-            shareButton.setButtonText (TRANS ("Sharing"));
-            shareButton.setTooltip (TRANS ("Everyone following hears your playback, in sync. Only you control it. Click to stop sharing"));
-        }
-        else if (session.isFollowingShare())
+        if (session.isFollowingShare())
         {
             on = session.getShareOwnerColour();
             shareButton.setButtonText (TRANS ("With") + " " + owner);
             shareButton.setTooltip (TRANS ("{NAME} controls the playback. Click to leave (you go back to where you were; the others keep listening)")
                                       .replace ("{NAME}", session.getShareOwnerName()));
         }
-        else if (session.isShareRunning())
-        {
-            shareButton.setButtonText (TRANS ("Join") + " " + owner);
-            shareButton.setTooltip (TRANS ("{NAME} is sharing their playback. Click to listen along").replace ("{NAME}", session.getShareOwnerName()));
-        }
         else
         {
-            shareButton.setButtonText (TRANS ("Share"));
-            shareButton.setTooltip (inSession ? TRANS ("Share your playback: everyone (except people in Focus) hears what you play, in sync, and only you control it. Click again to stop")
-                                              : TRANS ("Share your playback with the others (in a session)"));
+            shareButton.setButtonText (TRANS ("Listen"));
+            shareButton.setTooltip (inSession ? TRANS ("Everyone's playback is shared in a session. Click to listen along with someone: you hear what they play, in sync, and they control it")
+                                              : TRANS ("Listen along with someone's playback (in a session)"));
         }
 
         shareButton.setColour (juce::TextButton::buttonOnColourId, on);
         shareButton.setColour (juce::TextButton::textColourOnId, theme::colours::accentText);
-        shareButton.setToggleState (session.isSharing() || session.isFollowingShare(), juce::dontSendNotification);
+        shareButton.setToggleState (session.isFollowingShare(), juce::dontSendNotification);
         shareButton.setEnabled (inSession);
-        focusButton.setToggleState (session.isFocus(), juce::dontSendNotification);
         clickButton.setToggleState (session.isMetronomeOn(), juce::dontSendNotification);
         clickButton.setButtonText (session.getCountInBars() > 0 ? TRANS ("Click") + " +" + juce::String (session.getCountInBars())
                                                                 : TRANS ("Click"));
@@ -3638,8 +3650,7 @@ void MainComponent::resized()
     separator (false);
     sessionPill.setBounds (bar.removeFromRight (x.session).withSizeKeepingCentre (x.session, 38));
     bar.removeFromRight (10);
-    focusButton.setButtonText (x.focus < 60 ? juce::String() : TRANS ("Focus"));
-    placeRight (focusButton, x.focus, 6);
+    focusButton.setVisible (false);   // (2.0: nobody is pulled into anyone's playback, so Focus has gone)
     placeRight (shareButton, x.share, 6);
 
     // Body (floating panels can go anywhere in it)

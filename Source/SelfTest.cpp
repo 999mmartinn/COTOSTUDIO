@@ -308,6 +308,8 @@ private:
     juce::String onlySteps;
     std::unique_ptr<SimulatedSoundCard> soundCard;   // declared first: outlives the sessions
     std::unique_ptr<SamplePreviewer> previewer;       // the sound browser's preview (on the simulated card)
+    double previewFed = 0.0;
+    float previewLoudAt4 = -1.0f;
     collab::Session host { engine }, peer1 { engine }, peer2 { engine };
     collab::Session fourth { engine };   // a PC that only opens a saved song
     std::vector<Step> steps;
@@ -348,6 +350,7 @@ private:
     juce::String openError { "not done" }, newError { "not done" };
     int resyncsBefore = 0, channelsBefore = 0, clipsBefore = 0, insertsBefore = 0;
     int inPlaceBefore = 0;
+    bool rejoinedAlone = false;
     te::Edit* driftEdit = nullptr;
     te::Plugin* driftPlugin = nullptr;
     bool eqEdited = false, limiterEdited = false, delayEdited = false, reverbEdited = false;
@@ -719,6 +722,16 @@ private:
                 ++n;
 
         return n;
+    }
+
+    /** A person's roster id (as the host lists them). */
+    juce::String idOf (const juce::String& name)
+    {
+        for (auto& p : host.getPeople())
+            if (p.name == name)
+                return p.id;
+
+        return {};
     }
 
     static juce::StringArray peopleNames (collab::Session& s)
@@ -1401,7 +1414,7 @@ private:
             [this] { return idsUnique (H()) && idsUnique (P1()) && idsUnique (P2()); } });
 
         //==============================================================================
-        // Playback is personal; sharing makes the others follow
+        // Playback is personal; listening along with someone is each person's choice (2.0)
         steps.push_back ({ "Playback is personal: peer 2 plays Pattern 2 -> only peer 2 plays",
             [this]
             {
@@ -1419,28 +1432,21 @@ private:
             },
             4000, 800 });
 
-        steps.push_back ({ "Peer 1 switches to SONG and moves its playhead to beat 2 -> only on peer 1; the host turns Focus on",
+        steps.push_back ({ "Peer 1 switches to SONG and moves its playhead to beat 2 -> only on peer 1",
             [this]
             {
                 peer1.setSongMode (true);
                 peer1.seek (timeOfBeat (P1(), 2.0));
-                host.setFocus (true);
             },
             [this]
             {
-                bool hostInFocus = false;
-
-                for (auto& p : peer1.getPeople())
-                    if (p.name == "host")
-                        hostInFocus = p.focus;
-
                 return peer1.isSongMode() && ! host.isSongMode() && ! peer2.isSongMode()
-                    && std::abs (beatOf (P1()) - 2.0) < 0.01 && hostInFocus;
+                    && std::abs (beatOf (P1()) - 2.0) < 0.01;
             },
             4000, 800 });
 
-        steps.push_back ({ "Peer 2 shares -> peer 1 follows into Pattern 2, playing in sync; the host (Focus) is left alone",
-            [this] { shareError = peer2.startSharing(); },
+        steps.push_back ({ "Peer 1 listens along with peer 2 -> follows into Pattern 2, playing in sync; nobody else is pulled in",
+            [this] { shareError = peer1.joinShare (idOf ("peer2")); },
             [this]
             {
                 auto sid = pat (H(), "Pattern 2")[song::ids::sid].toString();
@@ -1458,8 +1464,8 @@ private:
                 std::cout << "    peer 1 is " << juce::roundToInt (shareOffset * 1000.0) << " ms from peer 2" << std::endl;
 
                 return shareOffset < 0.25
-                    && chatCount (host, "peer2 is sharing their playback (not following: host (Focus))") == 1
-                    && chatCount (peer1, "peer2 is sharing their playback (not following: host (Focus))") == 1;
+                    && chatCount (host, "peer1 is listening along with peer2") == 1
+                    && chatCount (peer2, "peer1 is listening along with peer2") == 1;
             },
             6000 });
 
@@ -1517,30 +1523,35 @@ private:
             {
                 return peer1.isFollowingShare() && P1().getTransport().isPlaying() && ! peer1.isSongMode()
                     && peer1.getPlayingPattern() == pat (P1(), "Pattern 2")[song::ids::sid].toString()
-                    && chatCount (peer2, "peer1 joined peer2's playback") == 1;
+                    && chatCount (peer2, "peer1 is listening along with peer2") == 2;
             } });
 
-        steps.push_back ({ "The host turns Focus off -> joins the running share",
-            [this] { host.setFocus (false); },
+        steps.push_back ({ "The host listens along with peer 1 -> goes straight to peer 2 (whom peer 1 listens to)",
+            [this] { shareError = host.joinShare (idOf ("peer1")); },
             [this]
             {
-                return host.isFollowingShare() && H().getTransport().isPlaying()
+                return shareError.isEmpty() && host.isFollowingShare() && host.getShareOwnerName() == "peer2"
+                    && H().getTransport().isPlaying()
                     && host.getPlayingPattern() == pat (H(), "Pattern 2")[song::ids::sid].toString();
             } });
+
+        steps.push_back ({ "Peer 2 can't listen along with the host, who listens to peer 2 (it would go round in a circle)",
+            [this] { shareError = peer2.joinShare ("0"); },
+            [this] { return shareError.isNotEmpty() && ! peer2.isFollowingShare() && P2().getTransport().isPlaying(); } });
 
         steps.push_back ({ "Peer 2 presses Stop -> everyone following stops",
             [this] { peer2.setPlaying (false, 0.0); },
             [this] { return ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying(); },
             4000 });
 
-        steps.push_back ({ "Peer 2 stops sharing -> host and peer 1 are back to their own playback, as before",
-            [this] { peer2.stopSharing(); },
+        steps.push_back ({ "The host and peer 1 leave peer 2's playback -> back to their own playback, as before",
+            [this] { host.leaveShare(); peer1.leaveShare(); },
             [this]
             {
-                return ! peer2.isShareRunning() && ! host.isFollowingShare() && ! peer1.isFollowingShare()
+                return ! host.isFollowingShare() && ! peer1.isFollowingShare()
                     && peer1.isSongMode() && std::abs (beatOf (P1()) - 2.0) < 0.01
                     && ! host.isSongMode() && host.getPlayingPattern() == pat (H(), "Pattern 1")[song::ids::sid].toString()
-                    && chatCount (host, "peer2 stopped sharing") == 1;
+                    && chatCount (peer2, "host left peer2's playback") == 1;
             } });
 
         steps.push_back ({ "Playlist: host and peer 1 place clips at the same instant -> both everywhere",
@@ -1615,11 +1626,11 @@ private:
             },
             8000, 600 });
 
-        steps.push_back ({ "Peer 1 shares in SONG mode and plays -> everyone plays the arrangement",
+        steps.push_back ({ "The host and peer 2 listen along with peer 1, who plays in SONG mode -> everyone plays the arrangement",
             [this]
             {
                 peer1.setSongMode (true);
-                shareError = peer1.startSharing();
+                shareError = host.joinShare (idOf ("peer1")) + peer2.joinShare (idOf ("peer1"));
                 peer1.setPlaying (true, 0.0);
             },
             [this]
@@ -1662,12 +1673,11 @@ private:
             },
             8000, 1600 });
 
-        steps.push_back ({ "Peer 1 stops and ends its share -> everyone back to their own playback, stopped",
-            [this] { peer1.setPlaying (false, 0.0); peer1.stopSharing(); },
+        steps.push_back ({ "Peer 1 stops; the host and peer 2 leave -> everyone back to their own playback, stopped",
+            [this] { peer1.setPlaying (false, 0.0); host.leaveShare(); peer2.leaveShare(); },
             [this]
             {
-                return ! host.isShareRunning() && ! peer2.isShareRunning()
-                    && ! host.isFollowingShare() && ! peer2.isFollowingShare()
+                return ! host.isFollowingShare() && ! peer2.isFollowingShare()
                     && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying();
             },
             4000 });
@@ -1819,8 +1829,8 @@ private:
                     && outputOf (P1(), insert (P1(), "Drums")) != "(none)" && hashesEqual();
             } });
 
-        steps.push_back ({ "Solo while sharing: peer 1 shares -> the host and peer 2 hear peer 1's solo too",
-            [this] { shareError = peer1.startSharing(); },
+        steps.push_back ({ "Solo while listening along: the host and peer 2 listen along with peer 1 -> they hear peer 1's solo too",
+            [this] { shareError = host.joinShare (idOf ("peer1")) + peer2.joinShare (idOf ("peer1")); },
             [this]
             {
                 return shareError.isEmpty() && host.isFollowingShare() && peer2.isFollowingShare()
@@ -1828,11 +1838,11 @@ private:
                     && engineDest (H(), ch (H(), "Kick")) == "Drums";
             } });
 
-        steps.push_back ({ "Peer 1 clears its solo and stops sharing -> everyone hears everything again, routing as before",
-            [this] { peer1.clearSolo(); peer1.stopSharing(); },
+        steps.push_back ({ "Peer 1 clears its solo; the host and peer 2 leave -> everyone hears everything again, routing as before",
+            [this] { peer1.clearSolo(); host.leaveShare(); peer2.leaveShare(); },
             [this]
             {
-                return ! host.isFollowingShare() && ! peer2.isFollowingShare() && ! peer1.isSharing()
+                return ! host.isFollowingShare() && ! peer2.isFollowingShare()
                     && everywhere ([] (te::Edit& e) { return outputOf (e, ch (e, "Hat")) != "(none)" && engineDest (e, ch (e, "Kick")) == "Drums"; })
                     && engineRoutingMatchesEverywhere();
             } });
@@ -2618,16 +2628,25 @@ private:
                     && chatCount (host, "peer1 left") == 1 && chatCount (peer2, "peer1 left") == 1;
             } });
 
-        steps.push_back ({ "Meanwhile the host shares and plays the song -> peer 2 follows",
-            [this] { shareError = host.startSharing(); host.setPlaying (true, 0.0); },
-            [this] { return shareError.isEmpty() && host.isSharing() && peer2.isFollowingShare() && P2().getTransport().isPlaying(); } });
+        steps.push_back ({ "Meanwhile peer 2 listens along with the host, who plays the song -> peer 2 plays it too",
+            [this] { shareError = peer2.joinShare ("0"); host.setPlaying (true, 0.0); },
+            [this] { return shareError.isEmpty() && peer2.isFollowingShare() && P2().getTransport().isPlaying(); } });
 
-        steps.push_back ({ "Peer 1 rejoins and gets the latest song -> it follows the running share right away",
+        steps.push_back ({ "Peer 1 rejoins and gets the latest song -> its own playback (nobody is pulled into anyone's), then listens along with the host",
             [this] { peer1.join ("127.0.0.1", port); },
             [this]
             {
-                return allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15)
-                    && peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
+                if (! (allJoined() && hashesEqual() && hasStep (P1(), "Pattern 1", "Hat", 15)))
+                    return false;
+
+                if (! rejoinedAlone)
+                {
+                    rejoinedAlone = ! peer1.isFollowingShare() && ! P1().getTransport().isPlaying();
+                    peer1.joinShare ("0");
+                    return false;
+                }
+
+                return rejoinedAlone && peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
             } });
 
         steps.push_back ({ "People: peer 1 is back in everyone's list and got the earlier chat",
@@ -2650,12 +2669,11 @@ private:
             },
             40000 });
 
-        steps.push_back ({ "The host stops and ends its share -> nobody plays or follows any more",
-            [this] { host.setPlaying (false, 0.0); host.stopSharing(); },
+        steps.push_back ({ "The host stops; peers 1 and 2 leave its playback -> nobody plays or follows any more",
+            [this] { host.setPlaying (false, 0.0); peer1.leaveShare(); peer2.leaveShare(); },
             [this]
             {
-                return ! host.isShareRunning() && ! peer1.isShareRunning() && ! peer2.isShareRunning()
-                    && ! peer1.isFollowingShare() && ! peer2.isFollowingShare()
+                return ! peer1.isFollowingShare() && ! peer2.isFollowingShare()
                     && ! H().getTransport().isPlaying() && ! P1().getTransport().isPlaying() && ! P2().getTransport().isPlaying();
             } });
 
@@ -3562,6 +3580,31 @@ private:
                     && song::getAssets (H()).size() == assetsBeforePreview && hashesEqual();
             },
             8000 });
+
+        // 2.0: a preview stops by itself after 5 s (a whole beat no longer plays until you stop it).
+        steps.push_back ({ "2.0 sounds: a long sound's preview stops by itself after 5 s (with a fade); before that it plays",
+            [this]
+            {
+                previewFed = 0.0;
+                previewLoudAt4 = -1.0f;
+                previewer->play (writeHitWav (testRoot.getChildFile ("Long beat.wav"), 28.0, 220.0));   // (a slow fade: still loud at 4 s)
+            },
+            [this]
+            {
+                // Feed the simulated card a little at a time, so the previewer's own timer can run in between.
+                const float peak = soundCard->feedSilenceAndMeasure (0.1);
+                previewFed += 0.1;
+
+                if (previewFed > 3.9 && previewFed < 4.1)
+                    previewLoudAt4 = peak;
+
+                if (previewFed < 6.0)
+                    return false;
+
+                std::cout << "    at 4 s: peak " << previewLoudAt4 << ", at 6 s: " << peak << ", still playing: " << previewer->isPlaying() << std::endl;
+                return previewLoudAt4 > 0.05f && peak < 0.001f && ! previewer->isPlaying();
+            },
+            15000 });
 
         steps.push_back ({ "Sounds: peer 1 drops 'Boom 01.wav' on the channel rack -> a new sampler channel everywhere; the file reaches every PC and each loads it",
             [this]

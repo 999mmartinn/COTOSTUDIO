@@ -11,6 +11,7 @@ SamplePreviewer::SamplePreviewer (te::Engine& e) : engine (e)
 
 SamplePreviewer::~SamplePreviewer()
 {
+    stopTimer();
     engine.getDeviceManager().deviceManager.removeAudioCallback (&player);
     player.setSource (nullptr);
     transport.setSource (nullptr);
@@ -33,15 +34,42 @@ bool SamplePreviewer::play (const juce::File& f)
     reader = std::move (fresh);
     file = f;
     transport.setPosition (0.0);
+    transport.setGain (1.0f);
+    fading = false;
     transport.start();
+    startTimer (20);
     sendChangeMessage();
     return true;
 }
 
 void SamplePreviewer::stop()
 {
+    stopTimer();
     transport.stop();
+    transport.setGain (1.0f);
+    fading = false;
     sendChangeMessage();
+}
+
+void SamplePreviewer::timerCallback()
+{
+    if (! transport.isPlaying())
+    {
+        stopTimer();
+        return;
+    }
+
+    const double position = transport.getCurrentPosition();
+
+    // Fade out over the last moment before the limit (the transport ramps between values: no click).
+    if (position >= maxSeconds - fadeSeconds)
+    {
+        fading = true;
+        transport.setGain ((float) juce::jlimit (0.0, 1.0, (maxSeconds - position) / fadeSeconds));
+    }
+
+    if (position >= maxSeconds)
+        stop();
 }
 
 bool SamplePreviewer::isPlaying() const
