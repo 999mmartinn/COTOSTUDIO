@@ -2280,47 +2280,6 @@ private:
             },
             8000, 600 });
 
-        // 2.0: while a song plays, the engine writes the playhead, the clips it builds and
-        // automated knobs into the song's tree many times a second. None of it may count as a
-        // change to the song (each one made the window redraw every panel: big songs froze).
-        steps.push_back ({ "2.0: while the host plays its song the engine's own writes don't count as song changes (no redraw storms)",
-            [this]
-            {
-                // An automation clip on the Kick's volume (a ramp over the first 2 bars), so knobs move as it plays.
-                auto* vol = kickVolume (H());
-                playAutoClip = song::addAutomationClip (H(), vol->getPlugin()->itemID.toString(), vol->paramID,
-                                                        song::findFreeLane (H(), 0.0, 8.0), 0.0, 8.0, 0.1f);
-                song::moveAutomationPoint (H(), song::getAutomationPoints (playAutoClip).getLast(), 8.0, 1.0f);
-
-                playCounter = std::make_unique<PlayWriteCounter> (*host.getSync());
-                playWasSong = host.isSongMode();
-                host.setSongMode (true);
-                host.getCompiler()->compileNow();
-                H().state.addListener (playCounter.get());
-                host.setPlaying (true, 0.0);
-                playFed = 0.0;
-            },
-            [this]
-            {
-                soundCard->feedSilenceAndMeasure (0.1);
-                playFed += 0.1;
-
-                if (playFed < 2.0)
-                    return false;
-
-                const bool played = H().getTransport().isPlaying();
-                const float knob = kickVolume (H())->getCurrentNormalisedValue();
-                host.setPlaying (false, 0.0);
-                H().state.removeListener (playCounter.get());
-                song::removeClip (H(), playAutoClip);
-                host.setSongMode (playWasSong);
-                std::cout << "    the automated Kick volume moved to " << knob << std::endl;
-                std::cout << "    while playing: " << playCounter->raw << " writes to the song's tree, " << playCounter->song
-                          << " of them song changes (" << playCounter->what.joinIntoString (", ") << ")" << std::endl;
-                return played && playCounter->song == 0;
-            },
-            20000 });
-
         steps.push_back ({ "Recording: peer 2 presses Rec at beat 8 -> recording on peer 2 only (not sharing); everyone reads it in the chat",
             [this] { recordStarted = peer2.startRecording (P2().tempoSequence.toTime (te::BeatPosition::fromBeats (8.0)).inSeconds()); },
             [this]
@@ -6366,6 +6325,47 @@ private:
                 }) && hashesEqual();
             },
             8000 });
+
+        // 2.0: while a song plays, the engine writes the playhead, the clips it builds and
+        // automated knobs into the song's tree many times a second. None of it may count as a
+        // change to the song (each one made the window redraw every panel: big songs froze).
+        steps.push_back ({ "2.0: while the host plays its song the engine's own writes don't count as song changes (no redraw storms)",
+            [this]
+            {
+                // An automation clip on the Kick's volume (a ramp over the first 2 bars), so knobs move as it plays.
+                auto* vol = kickVolume (H());
+                playAutoClip = song::addAutomationClip (H(), vol->getPlugin()->itemID.toString(), vol->paramID,
+                                                        song::findFreeLane (H(), 0.0, 8.0), 0.0, 8.0, 0.1f);
+                song::moveAutomationPoint (H(), song::getAutomationPoints (playAutoClip).getLast(), 8.0, 1.0f);
+
+                playCounter = std::make_unique<PlayWriteCounter> (*host.getSync());
+                playWasSong = host.isSongMode();
+                host.setSongMode (true);
+                host.getCompiler()->compileNow();
+                H().state.addListener (playCounter.get());
+                host.setPlaying (true, 0.0);
+                playFed = 0.0;
+            },
+            [this]
+            {
+                soundCard->feedSilenceAndMeasure (0.1);
+                playFed += 0.1;
+
+                if (playFed < 2.0)
+                    return false;
+
+                const bool played = H().getTransport().isPlaying();
+                const float knob = kickVolume (H())->getCurrentNormalisedValue();
+                host.setPlaying (false, 0.0);
+                H().state.removeListener (playCounter.get());
+                song::removeClip (H(), playAutoClip);
+                host.setSongMode (playWasSong);
+                std::cout << "    the automated Kick volume moved to " << knob << std::endl;
+                std::cout << "    while playing: " << playCounter->raw << " writes to the song's tree, " << playCounter->song
+                          << " of them song changes (" << playCounter->what.joinIntoString (", ") << ")" << std::endl;
+                return played && playCounter->song == 0;
+            },
+            20000 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },
