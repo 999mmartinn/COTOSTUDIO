@@ -934,7 +934,7 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
 {
     const auto type = msg[ids::type].toString();
 
-    if (type == "assetGet" || type == "asset")
+    if (type == "assetGet" || type == "asset" || type == "assetNone")
     {
         handleAssetMessage (from, msg);
         return;
@@ -2645,8 +2645,10 @@ void Session::checkAssets()
                         candidates.add (c);
             }
 
+            // Each file has its own turn: with one shared turn, two missing files and two
+            // people, a file could be asked of the same person (who didn't have it) every time.
             if (! candidates.isEmpty())
-                candidates[assetRequestRound++ % candidates.size()]->sendTree (msg);
+                candidates[assetAskRound[hash]++ % candidates.size()]->sendTree (msg);
         }
     }
 }
@@ -2658,9 +2660,30 @@ void Session::handleAssetMessage (PeerConnection& from, const juce::ValueTree& m
     if (msg[ids::type].toString() == "assetGet")
     {
         if (assets.has (hash))
+        {
             from.queueAssetSend (hash, assets.getFile (hash));
+        }
         else if (mode == Mode::hosting)
+        {
             assetWantedBy[hash].addIfNotAlreadyThere (from.tag);   // served once it arrives here
+        }
+        else
+        {
+            // The host asked us for a file we don't have either: say so, so it asks
+            // someone else straight away instead of waiting for a reply that won't come.
+            juce::ValueTree none (ids::MSG);
+            none.setProperty (ids::type, "assetNone", nullptr);
+            none.setProperty (ids::hash, hash, nullptr);
+            from.sendTree (none);
+        }
+
+        return;
+    }
+
+    if (msg[ids::type].toString() == "assetNone")
+    {
+        if (mode == Mode::hosting && ! assets.has (hash) && ! assets.isDownloading (hash))
+            lastAssetRequest[hash] = 0;   // the next check (within a second) asks the next person
 
         return;
     }

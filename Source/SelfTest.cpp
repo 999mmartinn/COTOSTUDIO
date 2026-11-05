@@ -325,6 +325,9 @@ private:
     // Audio file sharing
     juce::File testRoot, toneFile, voiceFile, bigFile;
     bool pointerHidden = false;
+    juce::String secondHash;
+    juce::uint32 secondAskedAt = 0;
+    int secondHostTook = -1;
     struct DragTest { int before = 0, duringHold = -1; double original = 0.0; bool released = false; } dragTest;
     juce::String toneHash, voiceHash, bigHash;
     bool bigStillTransferring = false;
@@ -2277,6 +2280,31 @@ private:
                     && hashesEqual() && compiledEqualEverywhere();
             },
             15000 });
+
+        steps.push_back ({ "2.1 Files: peer 2 adds another file; a peer asked for it who doesn't have it says so, and the host gets it from peer 2 within 2.5 s",
+            [this]
+            {
+                auto r = peer2.getAssetStore().importAudioFile (writeTestWav (testRoot.getChildFile ("second.wav"), 1.0, 550.0, false));
+                secondHash = r.hash;
+                secondAskedAt = juce::Time::getMillisecondCounter();
+
+                if (r.ok())
+                    song::addImportedAudio (P2(), r, "second.wav", 5, 12.0);
+            },
+            [this]
+            {
+                if (secondHash.isEmpty() || ! host.getAssetStore().has (secondHash))
+                    return false;
+
+                if (secondHostTook < 0)
+                {
+                    secondHostTook = (int) (juce::Time::getMillisecondCounter() - secondAskedAt);
+                    std::cout << "    the host had it after " << secondHostTook << " ms" << std::endl;
+                }
+
+                return secondHostTook < 2500 && hasVerified (peer1, secondHash);
+            },
+            12000 });
 
         steps.push_back ({ "Audio: host imports a 60 s file (about 10 MB) with its upload capped at 3 MB/s; the peers start receiving it",
             [this]

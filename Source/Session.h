@@ -385,7 +385,8 @@ private:
     bool lastHashMatched = true;
     juce::uint32 lastResyncRequestTime = 0;
     juce::ValueTree pendingOps { ids::MSG };
-    int tick = 0, assetRequestRound = 0;
+    int tick = 0;
+    std::map<juce::String, int> assetAskRound;   // host: whose turn it is to be asked for each missing file
     std::map<juce::String, juce::uint32> lastAssetRequest;
     std::map<juce::String, juce::Array<int>> assetWantedBy;   // host: links waiting for a file it doesn't have yet
 

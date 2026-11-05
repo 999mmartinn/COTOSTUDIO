@@ -52,6 +52,12 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
   you see, so the closer you zoom, the finer you can trim or cut. Bar / beat / step /
   none are still there, and Alt still moves freely. Audio clips can now be trimmed
   down to 5 ms.
+* **Audio files reach everyone faster with 3 or more people.** When the host
+  was missing a file, it asked the others in turns, but the turn was shared by
+  every missing file: with two missing files and two people, a file could be
+  asked of the same person (who didn't have it either) every time, and it took
+  until a 15 s timeout. Now each file has its own turn, and someone who doesn't
+  have it says so, so the host asks the next person within a second.
 * **Trimming and dragging clips no longer lags in big songs.** Every mouse move used
   to recompile the whole song and make the engine rebuild its playback (heavy with
   Omnisphere, Auto-Tune...). Now, while you drag, the song is compiled once when you
