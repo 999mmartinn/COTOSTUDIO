@@ -37,6 +37,9 @@ public:
     void setHeld (bool);
     bool isHeld() const noexcept                         { return held; }
 
+    /** Changes are waiting to be compiled (an update coming, a burst being spaced out, or held). */
+    bool hasPendingChanges() const                       { return isUpdatePending() || isTimerRunning() || heldChanges; }
+
     /** How many times the song was compiled (for tests). */
     int getCompileCount() const noexcept                 { return compileCount; }
 

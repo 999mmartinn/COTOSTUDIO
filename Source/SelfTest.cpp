@@ -851,6 +851,12 @@ private:
 
     bool compiledEqualEverywhere()
     {
+        // (only once every PC has compiled the latest changes: before that, all of them still
+        // holding the previous version looks "equal" too)
+        for (auto* s : { &host, &peer1, &peer2 })
+            if (s->getCompiler() != nullptr && s->getCompiler()->hasPendingChanges())
+                return false;
+
         for (auto* t : song::getChannels (H()))
         {
             auto a = compiled (host, t->getName());
