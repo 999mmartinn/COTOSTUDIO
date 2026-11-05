@@ -195,12 +195,23 @@ void PatternCompiler::compileNow()
     {
         const auto audible = song::getAudibleLanes (edit);   // (muted tracks and groups don't play)
 
+        // Patterns by ID, looked up once (the first one with an ID wins, like song::findPattern).
+        std::map<juce::String, juce::ValueTree> patternsBySid;
+
+        for (auto& p : song::getPatterns (edit))
+            patternsBySid.try_emplace (p[song::ids::sid].toString(), p);
+
         for (auto& c : song::getClips (edit))
         {
             if (! audible[(size_t) juce::jlimit (0, song::numLanes - 1, (int) c[song::ids::lane])])
                 continue;
 
-            auto p = song::findPattern (edit, c[song::ids::pattern].toString());
+            const auto found = patternsBySid.find (c[song::ids::pattern].toString());
+
+            if (found == patternsBySid.end())
+                continue;
+
+            const auto& p = found->second;
 
             if (p.isValid())
             {
@@ -216,6 +227,30 @@ void PatternCompiler::compileNow()
         placements.push_back ({ pattern, 0.0, lengthBeats, 0.0 });
     }
 
+    // Every placed pattern's notes, read once and grouped by channel. Asking each pattern for
+    // one channel's notes, for every channel and every placement, read all the notes of every
+    // placed pattern once per channel: millions of reads per change in SONG mode in a big song
+    // (40 channels, 400 clips), each change freezing the window for a moment.
+    struct RawNote { double beat, length; int pitch, velocity, release, pan, fine; };
+    using NotesByChannel = std::map<juce::String, std::vector<RawNote>>;
+    std::map<juce::String, NotesByChannel> notesByPattern;   // pattern sid -> channel ID -> notes
+
+    auto notesOf = [&notesByPattern] (const juce::ValueTree& p) -> const NotesByChannel&
+    {
+        auto [it, isNew] = notesByPattern.try_emplace (p[song::ids::sid].toString());
+
+        if (isNew)
+            for (const auto& n : p)
+                if (n.hasType (song::ids::PNOTE))
+                    it->second[n[song::ids::ch].toString()].push_back ({ (double) n[song::ids::b], (double) n[song::ids::l],
+                                                                         (int) n[song::ids::p], (int) n[song::ids::v],
+                                                                         song::getNoteProperty (n, song::NoteProperty::release),
+                                                                         song::getNoteProperty (n, song::NoteProperty::pan),
+                                                                         song::getNoteProperty (n, song::NoteProperty::fine) });
+
+        return it->second;
+    };
+
     for (auto* track : song::getChannels (edit))
     {
         if (song::isAudioChannel (*track))
@@ -226,19 +261,23 @@ void PatternCompiler::compileNow()
 
         // What the placements say this channel should play (notes cut at each clip's end).
         std::vector<NoteData> wanted;
+        const auto channelID = song::getChannelID (*track);
 
         for (auto& pl : placements)
         {
-            for (auto& n : song::getNotes (pl.pattern, song::getChannelID (*track)))
+            const auto& byChannel = notesOf (pl.pattern);
+            const auto found = byChannel.find (channelID);
+
+            if (found == byChannel.end())
+                continue;
+
+            for (auto& n : found->second)
             {
-                const double b = (double) n[song::ids::b] - pl.offset;   // within the placement
+                const double b = n.beat - pl.offset;   // within the placement
 
                 if (b >= -1.0e-6 && b < pl.length - 1.0e-6)
-                    wanted.push_back ({ (int) n[song::ids::p], (int) n[song::ids::v], pl.start + juce::jmax (0.0, b),
-                                        juce::jmin ((double) n[song::ids::l], pl.length - b),
-                                        song::getNoteProperty (n, song::NoteProperty::release),
-                                        song::getNoteProperty (n, song::NoteProperty::pan),
-                                        song::getNoteProperty (n, song::NoteProperty::fine) });
+                    wanted.push_back ({ n.pitch, n.velocity, pl.start + juce::jmax (0.0, b),
+                                        juce::jmin (n.length, pl.length - b), n.release, n.pan, n.fine });
             }
         }
 
@@ -260,31 +299,55 @@ void PatternCompiler::compileNow()
         if (clip->getPosition().time != range)
             clip->setPosition ({ range, te::TimeDuration() });
 
-        // Only rewrite the notes when they actually differ.
+        // Only the notes that differ change: one moved note is one note out and one in. Rewriting
+        // the whole channel on every change (clear, then add every note again) was slow in big
+        // songs, because the engine looks each note up in its whole list as it comes and goes:
+        // thousands of notes per channel made every edit freeze the window for a moment.
         auto& seq = clip->getSequence();
-        std::vector<NoteData> current;
+        std::vector<std::pair<NoteData, te::MidiNote*>> current;
 
         for (auto* n : seq.getNotes())
-            current.push_back ({ n->getNoteNumber(), n->getVelocity(), n->getStartBeat().inBeats(), n->getLengthBeats().inBeats(),
-                                 n->getNoteOffVelocity(), (int) n->state[notePanID], (int) n->state[noteFineID] });
+            current.push_back ({ { n->getNoteNumber(), n->getVelocity(), n->getStartBeat().inBeats(), n->getLengthBeats().inBeats(),
+                                   n->getNoteOffVelocity(), (int) n->state[notePanID], (int) n->state[noteFineID] }, n });
 
-        std::sort (current.begin(), current.end());
+        std::sort (current.begin(), current.end(), [] (const auto& a, const auto& b) { return a.first < b.first; });
 
-        if (current != wanted)
+        std::vector<te::MidiNote*> toRemove;
+        std::vector<const NoteData*> toAdd;
+
+        for (size_t i = 0, j = 0; i < current.size() || j < wanted.size();)
         {
-            seq.clear (nullptr);
+            if (i < current.size() && j < wanted.size() && current[i].first == wanted[j])
+                { ++i; ++j; }
+            else if (j >= wanted.size() || (i < current.size() && current[i].first < wanted[j]))
+                toRemove.push_back (current[i++].second);
+            else
+                toAdd.push_back (&wanted[j++]);
+        }
 
-            for (auto& n : wanted)
-                if (auto* added = seq.addNote (n.pitch, te::BeatPosition::fromBeats (n.beat), te::BeatDuration::fromBeats (n.length),
-                                               n.velocity, 0, nullptr))
-                {
-                    // Release velocity is MIDI's note-off velocity; pan and fine pitch ride along on the
-                    // engine's note and reach our own instruments (see notePropertiesInto).
-                    added->setNoteOffVelocity (n.release, nullptr);
+        if (! toRemove.empty() && toRemove.size() == current.size())
+            seq.clear (nullptr);   // (nothing stays: one go)
+        else
+            for (auto* n : toRemove)
+                seq.removeNote (*n, nullptr);
 
-                    if (n.pan != 0)   added->state.setProperty (notePanID, n.pan, nullptr);
-                    if (n.fine != 0)  added->state.setProperty (noteFineID, n.fine, nullptr);
-                }
+        for (auto* n : toAdd)
+        {
+            // Made complete before it goes in, so the engine takes it in once. Release velocity is
+            // MIDI's note-off velocity; pan and fine pitch ride along on the engine's note and
+            // reach our own instruments (see notePropertiesInto).
+            juce::ValueTree note (te::IDs::NOTE);
+            note.setProperty (te::IDs::p, n->pitch, nullptr);
+            note.setProperty (te::IDs::b, n->beat, nullptr);
+            note.setProperty (te::IDs::l, std::max (0.0, n->length), nullptr);
+            note.setProperty (te::IDs::v, n->velocity, nullptr);
+            note.setProperty (te::IDs::c, 0, nullptr);
+            note.setProperty (te::IDs::lift, juce::jlimit (0, 127, n->release), nullptr);
+
+            if (n->pan != 0)   note.setProperty (notePanID, n->pan, nullptr);
+            if (n->fine != 0)  note.setProperty (noteFineID, n->fine, nullptr);
+
+            seq.state.addChild (note, -1, nullptr);
         }
     }
 

@@ -326,6 +326,9 @@ private:
     juce::File testRoot, toneFile, voiceFile, bigFile;
     bool pointerHidden = false;
     int playCompilesBefore = 0, playResult = -1;
+    int bigSongResult = -1;                          // 2.2 speed test (1 = passed)
+    juce::String bigFake;                            // 2.2: a damaged big transfer
+    bool bigFakeAccepted = false, bigFakeChecking = false;
     juce::String secondHash;
     juce::uint32 secondAskedAt = 0;
     int secondHostTook = -1;
@@ -889,6 +892,173 @@ private:
         dumpDir.createDirectory();
         dumpDir.getChildFile (name + "-full.xml").replaceWithText (e.state.toXmlString());
         dumpDir.getChildFile (name + "-shared.xml").replaceWithText (collab::EditSync::filteredCopy (e.state, true).toXmlString());
+    }
+
+    //==============================================================================
+    // 2.2: speed with a big song, made here on its own (not shared). It times what runs all
+    // the time on the window's thread - comparing copies (the host, every 1.5 s), the
+    // unsaved-changes check (every 2 s while editing), compiling the song in SONG mode (after
+    // every change) - and checks that the comparison is still exactly 2.1's, so 2.1 and 2.2
+    // PCs in one session don't keep fetching fresh copies.
+
+    /** The shared part of a song exactly as 2.1 builds it for the comparison. */
+    static juce::ValueTree filteredCopyAs21 (const juce::ValueTree& v, const juce::StringArray& automated)
+    {
+        juce::ValueTree copy (v.getType());
+        const bool skipKnobs = v.hasType (te::IDs::PLUGIN) && automated.contains (v[te::IDs::id].toString());
+        juce::Array<juce::Identifier> names;
+
+        for (int i = 0; i < v.getNumProperties(); ++i)
+            names.add (v.getPropertyName (i));
+
+        std::sort (names.begin(), names.end(), [] (const juce::Identifier& a, const juce::Identifier& b)
+                   { return a.toString() < b.toString(); });
+
+        for (auto& name : names)
+            if (! (skipKnobs && name != te::IDs::type && name != te::IDs::id) && ! collab::EditSync::isLocalProperty (v, name, true))
+                copy.setProperty (name, v.getProperty (name), nullptr);
+
+        for (const auto& child : v)
+            if (! collab::EditSync::isLocalNode (child))
+                copy.appendChild (filteredCopyAs21 (child, automated), nullptr);
+
+        if (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")
+             || v.hasType ("PCLIP") || v.hasType ("SENDS"))
+        {
+            struct ByKey
+            {
+                static juce::String key (const juce::ValueTree& c)
+                {
+                    const auto stable = c.hasProperty (te::IDs::id) ? c.getType().toString() + ":" + c[te::IDs::id].toString()
+                                      : c.hasProperty (collab::ids::sid) ? c.getType().toString() + "~" + c[collab::ids::sid].toString()
+                                      : juce::String();
+                    return c.getType().toString() + stable + c.toXmlString();
+                }
+
+                static int compareElements (const juce::ValueTree& a, const juce::ValueTree& b)   { return key (a).compare (key (b)); }
+            };
+
+            ByKey sorter;
+            copy.sort (sorter, nullptr, true);
+        }
+
+        return copy;
+    }
+
+    static juce::int64 hashAs21 (const juce::ValueTree& root)
+    {
+        return filteredCopyAs21 (root, collab::EditSync::findAutomatedPlugins (root)).toXmlString().hashCode64();
+    }
+
+    bool runBigSongSpeedTest()
+    {
+        auto edit = te::createEmptyEdit (engine, juce::File());
+        song::createDefaultSong (*edit);
+
+        // 40 channels, 60 patterns of 4 bars with 480 notes each (12 channels x 40), 600 clips.
+        while (song::getChannels (*edit).size() < 40)
+            song::addChannel (*edit, (song::InstrumentKind) (song::getChannels (*edit).size() % 4));
+
+        auto channels = song::getChannels (*edit);
+        juce::Random rng (2202);
+        juce::Array<juce::ValueTree> patterns;
+        int numNotes = 0;
+
+        for (int i = 0; i < 60; ++i)
+        {
+            auto p = song::addPattern (*edit, "Big " + juce::String (i + 1), 4);
+            patterns.add (p);
+
+            for (int c = 0; c < 12; ++c)
+            {
+                const auto channelID = song::getChannelID (*channels[(i * 7 + c * 3) % channels.size()]);
+
+                for (int n = 0; n < 40; ++n, ++numNotes)
+                    song::addNote (*edit, p, channelID, 36 + rng.nextInt (48), rng.nextInt (64) * 0.25, 0.25 + rng.nextInt (4) * 0.25,
+                                   40 + rng.nextInt (80));
+            }
+        }
+
+        for (int i = 0; i < 600; ++i)
+            song::addClip (*edit, patterns[i % patterns.size()][song::ids::sid].toString(), i % 30, (double) (i / 30) * 16.0);
+
+        edit->getUndoManager().clearUndoHistory();
+
+        auto sync = std::make_unique<collab::EditSync> (*edit);
+        auto compiler = std::make_unique<PatternCompiler> (*edit, host.getAssetStore());
+        auto now = [] { return juce::Time::getMillisecondCounterHiRes(); };
+
+        auto t = now();
+        const auto hash = sync->computeHash();
+        const double hashMs = now() - t;
+
+        // (where the time goes: the shared copy, its XML)
+        t = now();
+        const auto sharedCopy = collab::EditSync::filteredCopy (edit->state, true);
+        const double copyMs = now() - t;
+        t = now();
+        const auto sharedXml = sharedCopy.toXmlString();
+        const double xmlMs = now() - t;
+        t = now();
+        juce::ignoreUnused (sharedXml.hashCode64());
+        const double hashCodeMs = now() - t;
+
+        t = now();
+        const auto oldHash = hashAs21 (edit->state);
+        const double oldHashMs = now() - t;
+
+        t = now();
+        const auto again = sync->computeHash();
+        const double unchangedMs = now() - t;
+
+        t = now();
+        const auto content = sync->computeContentHash();
+        const double contentMs = now() - t;
+
+        t = now();
+        compiler->setSongMode (true);   // (compiles the whole song)
+        const double compileMs = now() - t;
+        const int compiledNotes = compiler->describeCompiledNotes (*channels[0]).size();
+
+        // A change is seen (also by the cached hashes), and undoing it gives the same fingerprint back.
+        auto note = patterns[3].getChild (17);
+        const int velocity = note[song::ids::v];
+        note.setProperty (song::ids::v, velocity == 100 ? 101 : 100, nullptr);
+        const bool changeSeen = sync->computeHash() != hash && sync->computeContentHash() != content;
+
+        t = now();
+        compiler->compileNow();
+        const double recompileMs = now() - t;
+
+        note.setProperty (song::ids::v, velocity, nullptr);
+        const bool backToSame = sync->computeHash() == hash && sync->computeContentHash() == content;
+
+        // The order of notes in a pattern still doesn't count (2.1 and now).
+        patterns[5].moveChild (0, patterns[5].getNumChildren() - 1, nullptr);
+        const bool orderIgnored = sync->computeHash() == hash && hashAs21 (edit->state) == oldHash;
+
+        std::cout << "    big song: " << channels.size() << " channels, " << numNotes << " notes, 600 clips" << std::endl
+                  << "    comparing copies: " << juce::String (hashMs, 1) << " ms (2.1's way: " << juce::String (oldHashMs, 1)
+                  << " ms, same result: " << (hash == oldHash ? "yes" : "NO") << "), unchanged since: "
+                  << juce::String (unchangedMs, 3) << " ms (copy " << juce::String (copyMs, 1) << " ms, XML "
+                  << juce::String (xmlMs, 1) << " ms, " << juce::String (sharedXml.length() / 1024) << " KB, hash "
+                  << juce::String (hashCodeMs, 1) << " ms)" << std::endl
+                  << "    unsaved-changes check: " << juce::String (contentMs, 1) << " ms; SONG compile: "
+                  << juce::String (compileMs, 1) << " ms, after a change: " << juce::String (recompileMs, 1) << " ms ("
+                  << compiledNotes << " notes on the first channel)" << std::endl;
+
+        compiler.reset();
+        sync.reset();
+        edit.reset();
+
+        // And the session's own song (audio, automation, sends, markers...) compares as in 2.1 too.
+        const bool sessionSongAs21 = host.getSync() == nullptr || host.getSync()->computeHash() == hashAs21 (H().state);
+        std::cout << "    the session's song compares as in 2.1: " << (sessionSongAs21 ? "yes" : "NO") << std::endl;
+
+        return hash == oldHash && again == hash && unchangedMs < 1.0 && changeSeen && backToSame && orderIgnored
+            && sessionSongAs21 && compiledNotes > 0
+            // (generous limits for slower PCs and CI machines; 2.1 took ~2-2.7 s / ~0.7 s / ~4.5 s here)
+            && hashMs < 1500.0 && recompileMs < 500.0 && compileMs < 10000.0;
     }
 
     static te::AudioTrack* insert (te::Edit& e, const juce::String& name)
@@ -2417,6 +2587,32 @@ private:
                 const bool rejected = store.receiveChunk (fake, 0, 19, junk, 999) == AssetStore::ChunkResult::failed;
                 return ignoredMidway && rejected && ! store.has (fake) && ! store.isDownloading (fake);
             } });
+
+        steps.push_back ({ "2.2 audio: a big damaged transfer (3 MB) is checked in the background, then rejected and never used",
+            [this]
+            {
+                auto& store = peer1.getAssetStore();
+                bigFake = "fedcba9876543210fedcba9876543210";
+                juce::MemoryBlock junk ((size_t) (3 * 1024 * 1024), true);
+                const auto total = (juce::int64) junk.getSize();
+                bigFakeAccepted = true;
+
+                for (juce::int64 offset = 0; offset < total; offset += collab::PeerConnection::assetChunkBytes)
+                {
+                    const auto size = (size_t) juce::jmin ((juce::int64) collab::PeerConnection::assetChunkBytes, total - offset);
+                    juce::MemoryBlock chunk (juce::addBytesToPointer (junk.getData(), offset), size);
+                    bigFakeAccepted = bigFakeAccepted && store.receiveChunk (bigFake, offset, total, chunk, 998) == AssetStore::ChunkResult::accepted;
+                }
+
+                bigFakeChecking = store.isDownloading (bigFake) && store.getProgress (bigFake) == 1.0;   // all there, being checked
+            },
+            [this]
+            {
+                auto& store = peer1.getAssetStore();
+                return bigFakeAccepted && bigFakeChecking && ! store.has (bigFake) && ! store.isDownloading (bigFake)
+                    && ! store.getFolder().getChildFile (bigFake + ".part").existsAsFile();
+            },
+            8000 });
 
         steps.push_back ({ "Audio: host deletes the voice channel -> it and its clip are gone everywhere",
             [this] { song::removeChannel (H(), *ch (H(), "voice")); },
@@ -6545,6 +6741,29 @@ private:
                 return playResult == 1;
             },
             20000 });
+
+        // 2.2: big messages (the song itself, pasted patterns...) travel compressed between 2.2 PCs.
+        steps.push_back ({ "2.2 network: messages between these PCs travel compressed (far fewer bytes on the line)",
+            {},
+            [this]
+            {
+                bool ok = true;
+
+                for (auto* s : { &host, &peer1, &peer2 })
+                {
+                    const auto t = s->getMessageTraffic();
+                    std::cout << "    " << s->peerName << " sent " << juce::File::descriptionOfSizeInBytes (t.raw) << " of messages as "
+                              << juce::File::descriptionOfSizeInBytes (t.sent) << std::endl;
+                    ok = ok && t.raw > 0 && t.sent < t.raw;
+                }
+
+                return ok;
+            } });
+
+        steps.push_back ({ "2.2 speed: a big song (40 channels, 60 patterns of 480 notes, 600 clips) - comparing copies, the unsaved-changes check and a SONG-mode compile are fast; copies compare exactly as in 2.1",
+            [this] { bigSongResult = runBigSongSpeedTest() ? 1 : 0; },
+            [this] { return bigSongResult == 1; },
+            120000 });
 
         steps.push_back ({ "Final check: all copies identical, and so is what they play",
             [this] { dump ("host-final", H()); dump ("peer1-final", P1()); dump ("peer2-final", P2()); },

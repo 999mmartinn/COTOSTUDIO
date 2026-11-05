@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <map>
+#include <set>
 
 /**
     This PC's folder of shared audio files ("assets").
@@ -63,6 +64,13 @@ public:
 
     /** Called on the message thread when a new asset becomes available. */
     std::function<void (const juce::String& hash)> onAssetAdded;
+    /** Called on the message thread when a big file that arrived complete turned out damaged
+        (big files are checked in the background; a small one's receiveChunk says "failed"). */
+    std::function<void (const juce::String& hash)> onAssetFailed;
+
+    /** Files bigger than this are checked (SHA-256 of every byte) on a background thread once
+        they've arrived: on the window's thread, a 30 MB file froze it for a moment. */
+    static constexpr juce::int64 checkInBackgroundAbove = 2 * 1024 * 1024;
 
     //==============================================================================
     // Clean-up: files that arrived while a song was open (recorded, imported, received,
@@ -94,9 +102,13 @@ private:
     };
 
     std::map<juce::String, Download> downloads;
+    std::set<juce::String> checking;    // arrived complete, being checked in the background (message thread)
+    juce::ThreadPool checker { 1 };
 
     juce::File getPartFile (const juce::String& hash) const;
     void abandon (const juce::String& hash);
+    void finishChecking (const juce::String& hash, bool ok);
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE (AssetStore)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AssetStore)
 };

@@ -32,8 +32,13 @@ PeerConnection::~PeerConnection()
     dead = true;
     signalThreadShouldExit();
     notify();
-    stopThread (4000);
+
+    // Close the socket first: a send to someone whose connection is slow or stuck can block
+    // for a long time (an audio chunk waiting for room on the line), and closing it is what
+    // ends that send. Stopping the thread first waited 4 s per such person (the window
+    // frozen when you left a session or quit), then killed the thread mid-send.
     disconnect();
+    stopThread (4000);
 }
 
 void PeerConnection::sendTree (const juce::ValueTree& msg)
@@ -89,7 +94,15 @@ void PeerConnection::run()
             }
 
             if (! dead && isConnected())
+            {
+                messageBytesRaw += (juce::int64) next.getSize();
+
+                if (peerTakesCompressed && next.getSize() > compressAbove)
+                    next = compressMessage (next);   // (here, on this link's thread: never the window's)
+
+                messageBytesSent += (juce::int64) next.getSize();
                 sendMessage (next);
+            }
 
             didSomething = true;
         }
@@ -182,12 +195,75 @@ bool PeerConnection::sendNextAssetChunk()
 void PeerConnection::connectionMade()    { session.handleConnectionMade (*this); }
 void PeerConnection::connectionLost()    { dead = true; session.handleConnectionLost (*this); }
 
-void PeerConnection::messageReceived (const juce::MemoryBlock& data)
+void PeerConnection::messageReceived (const juce::MemoryBlock& received)
 {
+    auto data = received;
+
+    if (! decompressMessage (data))
+        return;
+
     auto msg = juce::ValueTree::readFromData (data.getData(), data.getSize());
 
     if (msg.isValid())
         session.handleMessage (*this, msg);
+}
+
+//==============================================================================
+// Compressed messages: a marker no ValueTree starts with (its type name comes first, and a
+// name never starts with byte 0xff), the original size, then the zlib data.
+static const juce::uint8 compressedMarker[] = { 0xff, 'C', 'Z', '1' };
+static constexpr juce::uint32 maxDecompressedBytes = 1024u * 1024u * 1024u;   // (a whole song with big presets is far less)
+
+juce::MemoryBlock PeerConnection::compressMessage (const juce::MemoryBlock& raw)
+{
+    juce::MemoryOutputStream out (raw.getSize() / 3 + 64);
+    out.write (compressedMarker, sizeof (compressedMarker));
+    out.writeInt ((int) raw.getSize());
+
+    {
+        // Level 3: most of the gain of the best levels at several times their speed.
+        juce::GZIPCompressorOutputStream zip (out, 3);
+        zip.write (raw.getData(), raw.getSize());
+        zip.flush();
+    }
+
+    // Already-compressed content (rare in a message) isn't worth unpacking at the other end.
+    if (out.getDataSize() >= raw.getSize())
+        return raw;
+
+    return out.getMemoryBlock();
+}
+
+bool PeerConnection::decompressMessage (juce::MemoryBlock& data)
+{
+    const auto headerSize = sizeof (compressedMarker) + sizeof (juce::uint32);
+
+    if (data.getSize() < headerSize || std::memcmp (data.getData(), compressedMarker, sizeof (compressedMarker)) != 0)
+        return true;   // not compressed
+
+    const auto size = (juce::uint32) juce::ByteOrder::littleEndianInt (juce::addBytesToPointer (data.getData(), sizeof (compressedMarker)));
+
+    if (size == 0 || size > maxDecompressedBytes)
+        return false;
+
+    juce::GZIPDecompressorInputStream unzip (new juce::MemoryInputStream (juce::addBytesToPointer (data.getData(), headerSize),
+                                                                         data.getSize() - headerSize, false),
+                                             true);
+    juce::MemoryBlock result ((size_t) size);
+    size_t done = 0;
+
+    while (done < size)
+    {
+        const auto n = unzip.read (juce::addBytesToPointer (result.getData(), done), (int) juce::jmin ((size_t) (1 << 20), size - done));
+
+        if (n <= 0)
+            return false;   // cut short or damaged
+
+        done += (size_t) n;
+    }
+
+    data = std::move (result);
+    return true;
 }
 
 //==============================================================================
@@ -217,6 +293,11 @@ static juce::File defaultAssetFolder()
 Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
 {
     assets.onAssetAdded = [this] (const juce::String& hash) { handleAssetAdded (hash); };
+    assets.onAssetFailed = [this] (const juce::String& hash)   // (a big file, checked in the background)
+    {
+        log (assetName (hash) + " arrived damaged; asking for it again");
+        lastAssetRequest[hash] = 0;
+    };
 
     recorder = std::make_unique<Recorder> (engine, assets);
     recorder->onLog = [this] (const juce::String& s) { log (s); };
@@ -425,7 +506,7 @@ static const juce::Identifier ROSTER ("ROSTER"), PERSON ("PERSON"), LINE ("LINE"
                               focusID ("focus"), listeningID ("listening"), shareID ("share"), shareNoteID ("shareNote"),
                               sharerID ("sharer"), toID ("to"), bpmID ("bpm"), oldBpmID ("oldBpm"), resultID ("result"),
                               yesID ("yes"), fromID_ ("from"), soloID ("solo"),
-                              listeningToID ("listeningTo"), shareTargetID ("shareTarget");
+                              listeningToID ("listeningTo"), shareTargetID ("shareTarget"), zipID ("zip");
 
 juce::Colour Session::personColour (int index)
 {
@@ -895,6 +976,7 @@ void Session::handleConnectionMade (PeerConnection& c)
         hello.setProperty (ids::type, "hello", nullptr);
         hello.setProperty (ids::protocol, protocolVersion, nullptr);
         hello.setProperty (ids::peerName, peerName, nullptr);
+        hello.setProperty (zipID, true, nullptr);   // (2.2) this PC reads compressed messages
         c.sendTree (hello);
     }
 }
@@ -908,8 +990,10 @@ void Session::handleConnectionLost (PeerConnection& c)
         log ("Lost the connection to the host. You keep your copy of the song.");
         resetSessionOnlyState();
         mode = Mode::offline;
-        juce::MessageManager::callAsync ([weak = juce::WeakReference<Session> (this)]
-                                        { if (weak != nullptr) weak->hostLink.reset(); });
+
+        // (Only this link: if you joined again meanwhile, the new one stays.)
+        juce::MessageManager::callAsync ([weak = juce::WeakReference<Session> (this), lost = &c]
+                                        { if (weak != nullptr && weak->hostLink.get() == lost) weak->hostLink.reset(); });
     }
     else
     {
@@ -952,6 +1036,7 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
             }
 
             from.peerName = msg[ids::peerName].toString().substring (0, 30);
+            from.peerTakesCompressed = (bool) msg[zipID];   // (before the song goes: it's the biggest message)
             sendSnapshotTo (from, "join");
             log (from.peerName + " joined as peer " + juce::String (from.peerIndex));
 
@@ -1139,7 +1224,10 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
     }
 
     if (type == "snapshot")
+    {
+        from.peerTakesCompressed = (bool) msg[zipID];   // (a 2.1 host never says so: it gets plain messages)
         loadSnapshot (msg);
+    }
     else if (type == "ops")
     {
         if ((int) msg[songNumberID] == songNumber)   // (not changes to the song before)
@@ -2180,6 +2268,7 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason, con
     msg.setProperty (ids::reason, reason, nullptr);
     msg.setProperty (songNumberID, songNumber, nullptr);
     msg.setProperty (ids::pattern, getPlayingPattern(), nullptr);   // a starting pattern for newcomers
+    msg.setProperty (zipID, true, nullptr);                          // (2.2) the host reads compressed messages
 
     if (premade.isValid())
     {
@@ -2191,6 +2280,22 @@ void Session::sendSnapshotTo (PeerConnection& c, const juce::String& reason, con
     msg.appendChild (editSync->createSnapshot(), nullptr);
     c.sendTree (msg);
     flushOutgoing();   // plugin states written by the snapshot go to everyone else
+}
+
+Session::Traffic Session::getMessageTraffic() const
+{
+    Traffic t;
+    auto add = [&t] (const PeerConnection& c) { t.raw += c.messageBytesRaw; t.sent += c.messageBytesSent; };
+
+    if (hostLink != nullptr)
+        add (*hostLink);
+
+    const juce::ScopedLock sl (clients.getLock());
+
+    for (auto* c : clients)
+        add (*c);
+
+    return t;
 }
 
 //==============================================================================

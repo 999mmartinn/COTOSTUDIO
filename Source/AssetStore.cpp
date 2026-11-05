@@ -265,8 +265,8 @@ AssetStore::ChunkResult AssetStore::receiveChunk (const juce::String& hash, juce
     if (hash.length() != 32 || ! hash.containsOnly ("0123456789abcdef") || total <= 0)
         return ChunkResult::ignored;
 
-    if (has (hash))
-        return ChunkResult::ignored;   // already here (another PC may have sent it too)
+    if (has (hash) || checking.count (hash) > 0)
+        return ChunkResult::ignored;   // already here (another PC may have sent it too), or being checked
 
     auto it = downloads.find (hash);
 
@@ -311,6 +311,28 @@ AssetStore::ChunkResult AssetStore::receiveChunk (const juce::String& hash, juce
 
     auto part = getPartFile (hash);
 
+    if (total > checkInBackgroundAbove)
+    {
+        // Still "downloading" for everyone asking (nobody asks for it again meanwhile).
+        checking.insert (hash);
+
+        checker.addJob ([weak = juce::WeakReference<AssetStore> (this), hash, part, finalFile = getFile (hash)]
+        {
+            const bool ok = fingerprint (part) == hash && part.moveFileTo (finalFile);
+
+            if (! ok)
+                part.deleteFile();
+
+            juce::MessageManager::callAsync ([weak, hash, ok]
+            {
+                if (auto* self = weak.get())
+                    self->finishChecking (hash, ok);
+            });
+        });
+
+        return ChunkResult::accepted;
+    }
+
     if (fingerprint (part) != hash)
     {
         part.deleteFile();
@@ -331,15 +353,35 @@ AssetStore::ChunkResult AssetStore::receiveChunk (const juce::String& hash, juce
     return ChunkResult::complete;
 }
 
+void AssetStore::finishChecking (const juce::String& hash, bool ok)
+{
+    checking.erase (hash);
+
+    if (ok)
+    {
+        noteAdded (hash);
+
+        if (onAssetAdded)
+            onAssetAdded (hash);
+    }
+    else if (onAssetFailed)
+    {
+        onAssetFailed (hash);
+    }
+}
+
 bool AssetStore::isDownloading (const juce::String& hash) const
 {
-    return downloads.find (hash) != downloads.end();
+    return downloads.find (hash) != downloads.end() || checking.count (hash) > 0;
 }
 
 double AssetStore::getProgress (const juce::String& hash) const
 {
     if (has (hash))
         return 1.0;
+
+    if (checking.count (hash) > 0)
+        return 1.0;   // all there, being checked
 
     auto it = downloads.find (hash);
 

@@ -2370,7 +2370,21 @@ void PianoRoll::timerCallback()
                 viewport.setViewPosition (juce::jmax (0, x - 16), viewport.getViewPositionY());
         }
 
-        grid->repaint (viewport.getViewArea());
-        ruler->repaint();
+        // Only the strips where the playhead was and is now (the grid draws nothing else that
+        // moves with it). Repainting every note 30 times a second made big patterns lag while
+        // playing, the more so with ghost notes; the playlist already works this way.
+        const int x = playBeat >= 0.0 ? juce::roundToInt (grid->xForBeat (playBeat)) : -1;
+
+        if (x != lastPlayheadX)
+        {
+            const auto view = viewport.getViewArea();
+
+            for (int px : { lastPlayheadX, x })
+                if (px >= 0)
+                    grid->repaint (px - 3, view.getY(), 6, view.getHeight());
+
+            lastPlayheadX = x;
+            ruler->repaint();
+        }
     }
 }

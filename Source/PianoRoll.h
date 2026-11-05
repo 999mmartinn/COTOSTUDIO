@@ -94,6 +94,7 @@ private:
     juce::Colour headingColour { theme::colours::muted };
     static constexpr int titleHeight = 32;
     int lastPlayhead = -2;
+    int lastPlayheadX = -1;   // where the grid last drew the playhead (-1: nowhere)
     bool scrolledOnce = false;
 
     void timerCallback() override;

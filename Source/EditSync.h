@@ -181,6 +181,13 @@ private:
     int tick = 0;
     juce::int64 pluginSignature = 0;   // cheap fingerprint of which plugins/knobs exist
     juce::String lastTweaked;
+
+    // The last hashes, kept until the song changes: the host compares copies every 1.5 s and
+    // the window checks for unsaved changes every 2 s, and both used to turn the whole song
+    // into text each time even when nothing had changed.
+    mutable juce::int64 cachedHash = 0, cachedContentHash = 0;
+    mutable bool hashValid = false, contentHashValid = false;
+    void songTreeChanged() noexcept     { hashValid = contentHashValid = false; }
     Stats stats;
     std::map<juce::String, int> sentKinds;
     bool trace = false;

@@ -107,20 +107,51 @@ juce::ValueTree EditSync::filteredCopy (const juce::ValueTree& v, bool forHash, 
     // The order of notes inside a pattern (ours: PATTERN, the engine's: SEQUENCE) doesn't change the music, and two
     // people adding notes at the same moment can end up with them in a different
     // order: don't count that as a difference.
-    if (forHash && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")
-                     || v.hasType ("PCLIP") || v.hasType ("SENDS")))
+    if (forHash && copy.getNumChildren() > 1
+         && (v.hasType (te::IDs::SEQUENCE) || v.hasType ("PATTERN") || v.hasType ("PLAYLIST") || v.hasType ("ASSETS")
+              || v.hasType ("PCLIP") || v.hasType ("SENDS")))
     {
-        struct ByKey
+        // The order is by "type + ID + the child's whole XML". 2.1 built that text inside every
+        // comparison: a pattern of 500 notes was turned into XML ~10,000 times, every 1.5 s on
+        // the host and every 2 s while editing. Now "type + ID" decides on its own whenever it
+        // differs - the XML always starts with '<', which an ID never contains, so appending '<'
+        // stands in for it exactly - and the XML is only made for children whose type + ID are
+        // the same (those without an ID). Same order, so the hash is exactly 2.1's.
+        struct Keyed
         {
-            static int compareElements (const juce::ValueTree& a, const juce::ValueTree& b)
+            juce::String prefix;
+            juce::ValueTree child;
+            mutable juce::String xml;
+            mutable bool hasXml = false;
+
+            const juce::String& getXml() const
             {
-                return (a.getType().toString() + stableKeyOf (a) + a.toXmlString())
-                         .compare (b.getType().toString() + stableKeyOf (b) + b.toXmlString());
+                if (! hasXml)
+                {
+                    xml = child.toXmlString();
+                    hasXml = true;
+                }
+
+                return xml;
             }
         };
 
-        ByKey sorter;
-        copy.sort (sorter, nullptr, true);
+        std::vector<Keyed> keyed;
+        keyed.reserve ((size_t) copy.getNumChildren());
+
+        for (const auto& child : copy)
+            keyed.push_back ({ child.getType().toString() + stableKeyOf (child) + "<", child });
+
+        std::stable_sort (keyed.begin(), keyed.end(), [] (const Keyed& a, const Keyed& b)
+        {
+            const int c = a.prefix.compare (b.prefix);
+            return c != 0 ? c < 0 : a.getXml().compare (b.getXml()) < 0;
+        });
+
+        copy.removeAllChildren (nullptr);
+
+        for (auto& k : keyed)
+            copy.appendChild (k.child, nullptr);
     }
 
     return copy;
@@ -326,6 +357,11 @@ juce::ValueTree EditSync::resolve (const juce::String& path) const
 
 void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& prop)
 {
+    // Any change the hashes could see (local or remote) makes them be worked out again.
+    // "generated" turns a clip into this PC's own: the hashes leave it out from then on.
+    if (prop == generatedProperty || ! (isLocalProperty (v, prop, false) || isInsideLocal (v)))
+        songTreeChanged();
+
     if (applyingDepth > 0 || isLocalProperty (v, prop, false) || isInsideLocal (v))
         return;
 
@@ -358,6 +394,9 @@ void EditSync::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identif
 
 void EditSync::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& child)
 {
+    if (! isLocalNode (child) && ! isInsideLocal (parent))
+        songTreeChanged();
+
     if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
         return;
 
@@ -371,6 +410,9 @@ void EditSync::valueTreeChildAdded (juce::ValueTree& parent, juce::ValueTree& ch
 
 void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& child, int)
 {
+    if (! isLocalNode (child) && ! isInsideLocal (parent))
+        songTreeChanged();
+
     if (applyingDepth > 0 || isLocalNode (child) || isInsideLocal (parent))
         return;
 
@@ -393,6 +435,9 @@ void EditSync::valueTreeChildRemoved (juce::ValueTree& parent, juce::ValueTree& 
 
 void EditSync::valueTreeChildOrderChanged (juce::ValueTree& parent, int, int)
 {
+    if (! isInsideLocal (parent))
+        songTreeChanged();
+
     if (applyingDepth > 0 || isInsideLocal (parent))
         return;
 
@@ -887,14 +932,26 @@ void EditSync::timerCallback()
 
     // Plugin instances (and so their knobs) appear asynchronously. A cheap check
     // every tick notices new ones within ~30 ms, so an early knob move isn't
-    // missed; the full check a few times a second catches anything else.
+    // missed; the full check about once a second catches anything else. (It ran
+    // ~7 times a second, listing every knob of every plugin: thousands with big
+    // instruments, all on the window's thread.) The cheap check also notices a plugin
+    // that rebuilt its knobs (its first and last knob are new objects then).
     juce::int64 signature = 0;
 
     for (auto plugin : te::getAllPlugins (edit, false))
-        if (dynamic_cast<te::ExternalPlugin*> (plugin) != nullptr)
-            signature = signature * 31 + (juce::int64) (juce::pointer_sized_int) plugin + plugin->getNumAutomatableParameters();
+    {
+        if (dynamic_cast<te::ExternalPlugin*> (plugin) == nullptr)
+            continue;
 
-    if (signature != pluginSignature || ++tick % 5 == 0)
+        const int numParams = plugin->getNumAutomatableParameters();
+        signature = signature * 31 + (juce::int64) (juce::pointer_sized_int) plugin + numParams;
+
+        if (numParams > 0)
+            signature = signature * 31 + (juce::int64) (juce::pointer_sized_int) plugin->getAutomatableParameter (0).get()
+                                       + (juce::int64) (juce::pointer_sized_int) plugin->getAutomatableParameter (numParams - 1).get();
+    }
+
+    if (signature != pluginSignature || ++tick % 33 == 0)
     {
         pluginSignature = signature;
         refreshParameterListeners();
@@ -976,22 +1033,34 @@ bool EditSync::isAutomationWrite (const juce::ValueTree& v, const juce::Identifi
 
 juce::int64 EditSync::computeHash() const
 {
-    const auto automated = findAutomatedPlugins (root);
-    return filteredCopy (root, true, &automated).toXmlString().hashCode64();
+    if (! hashValid)
+    {
+        const auto automated = findAutomatedPlugins (root);
+        cachedHash = filteredCopy (root, true, &automated).toXmlString().hashCode64();
+        hashValid = true;
+    }
+
+    return cachedHash;
 }
 
 juce::int64 EditSync::computeContentHash() const
 {
-    const auto automated = findAutomatedPlugins (root);
-    auto copy = filteredCopy (root, true, &automated);
-    juce::StringArray parts;
+    if (! contentHashValid)
+    {
+        const auto automated = findAutomatedPlugins (root);
+        auto copy = filteredCopy (root, true, &automated);
+        juce::StringArray parts;
 
-    for (auto child : copy)
-        parts.add (child.toXmlString());
+        for (auto child : copy)
+            parts.add (child.toXmlString());
 
-    parts.sort (false);
-    copy.removeAllChildren (nullptr);
-    return (copy.toXmlString() + parts.joinIntoString ("\n")).hashCode64();
+        parts.sort (false);
+        copy.removeAllChildren (nullptr);
+        cachedContentHash = (copy.toXmlString() + parts.joinIntoString ("\n")).hashCode64();
+        contentHashValid = true;
+    }
+
+    return cachedContentHash;
 }
 
 bool EditSync::applySnapshotInPlace (const juce::ValueTree& snapshot)

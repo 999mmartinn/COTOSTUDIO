@@ -1117,6 +1117,7 @@ MainComponent::MainComponent (te::Engine& e)
     appendLog ("COTOSTUDIO " + juce::JUCEApplication::getInstance()->getApplicationVersion() + " - "
                 + TRANS ("first time? Settings (gear, top right) > Find my plugins, so your VST3 and VST2 plugins can be used"));
     setSize (1600, 940);
+    refreshLater.callback = [this] { refresh(); };
     startTimerHz (5);
 }
 
@@ -1125,6 +1126,8 @@ MainComponent::~MainComponent()
     pluginwindows::forwardKey = nullptr;
     bottomTabs.getTabbedButtonBar().removeChangeListener (&tabWatcher);
     stopTimer();
+    refreshLater.stopTimer();
+    refreshLater.callback = nullptr;
     saveSoundsState();
     settings()->setValue ("recordInputs", session.getRecorder().saveChoices());
 
@@ -1205,8 +1208,22 @@ void MainComponent::refreshPatternControls()
     songModeButton.setToggleState (session.isSongMode(), juce::dontSendNotification);
 }
 
+void MainComponent::handleAsyncUpdate()
+{
+    const double since = juce::Time::getMillisecondCounterHiRes() - lastRefreshMs;
+
+    if (since >= minRefreshGapMs)
+        refresh();
+    else if (! refreshLater.isTimerRunning())
+        refreshLater.startTimer (juce::jmax (1, (int) std::ceil (minRefreshGapMs - since)));
+}
+
 void MainComponent::refresh()
 {
+    lastRefreshMs = juce::Time::getMillisecondCounterHiRes();
+    refreshLater.stopTimer();
+    cancelPendingUpdate();   // (this is the refresh it was waiting for)
+
     using Mode = collab::Session::Mode;
     auto mode = session.getMode();
 

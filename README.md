@@ -29,6 +29,46 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.2
+
+Speed, for big songs and slow connections. Nothing to learn: everything works as
+before, only faster. A PC still on 2.1 can be in the same session as 2.2 PCs.
+
+* **Big songs stay smooth while you (or your friends) edit.** Three things the app
+  does again and again got much faster. Measured on a test song with 40 channels,
+  60 patterns, 28,800 notes and 600 clips:
+  * **Comparing everyone's copies of the song** (the host every 1.5 s, and your PC
+    every 2 s while you edit, for the "unsaved changes" star): **about 2.3 s → 0.25 s**,
+    and **nothing at all while the song doesn't change** (the result is kept until
+    it does). It still compares exactly like 2.1 (checked by the self-test), so
+    2.1 and 2.2 PCs agree.
+  * **Building what the engine plays in SONG mode** (after every change): each
+    pattern's notes are read once instead of once per channel, and only the notes
+    that changed are swapped in the engine (moving one note used to rewrite every
+    note of its channel). After a change: **0.7 s → 0.09 s**; switching to SONG
+    mode: **4.5 s → 1.1 s**.
+  * **Redrawing the playlist**: the little notes inside each pattern clip are
+    worked out once per pattern, not once for every clip and every channel.
+* **The piano roll no longer redraws every note 30 times a second while the song
+  plays**, only the playhead (the playlist works this way since 2.0).
+* **The window redraws at most about 60 times a second** when changes come in a
+  burst (dragging, a friend dragging, a song arriving), instead of once per change.
+* **Joining and fresh copies are faster on slow connections**: big messages (the
+  whole song when someone joins, pasted patterns, plugin presets) travel
+  compressed, a fraction of their size. Between 2.2 PCs only: a 2.1 PC just gets
+  them as before.
+* **Receiving a big audio file no longer freezes the window for a moment** at the
+  end: the check that it arrived intact (its fingerprint, every byte read) runs in
+  the background for files over 2 MB.
+* **Leaving a session or closing the app while sending audio to someone with a
+  slow connection** no longer freezes the window for 4 s per person (and no longer
+  stops the sending thread the hard way, which could crash).
+* **Big instruments with thousands of knobs** cost less: the full check of which
+  knobs exist runs once a second instead of 7 times a second (a new or reloaded
+  plugin is still noticed within 30 ms).
+* Fixed a rare mix-up: when the connection to the host dropped and you joined
+  again straight away, the clean-up of the old connection could close the new one.
+
 ## What's new in 2.1
 
 * **See the others' mouse pointers**, with their name just under the pointer, so you
@@ -871,7 +911,12 @@ and the master volume's automation clip,
 and 1.11: VST2 hosting (the test plugin's VST2 build loads from an FL beat, found by
 the path FL saved, with FL's saved chunk: its knob arrives, a test signal comes out at
 the right level, and its state saves and reloads), and FL effects (a real Fruity Delay 3,
-Reeverb 2 and Parametric EQ 2 come in as ours with their settings).
+Reeverb 2 and Parametric EQ 2 come in as ours with their settings),
+and 2.2: speed with a big song (40 channels, 28,800 notes, 600 clips: comparing copies,
+the unsaved-changes check and SONG-mode compiling timed and printed; copies still compare
+exactly as in 2.1, also for the session's own song; a change is noticed and undoing it
+gives the same fingerprint back), messages between the PCs travelling compressed, and a
+big damaged transfer checked in the background and rejected.
 The self-test looks for the test plugin's VST2 next to its VST3 (`.../VST/`), or takes
 `--plugin2=<path>`. It never touches your data folder. The Windows build on GitHub runs
 it automatically.

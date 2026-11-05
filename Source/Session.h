@@ -35,6 +35,21 @@ public:
     /** Queues an audio file to be sent in chunks (once per hash). */
     void queueAssetSend (const juce::String& hash, const juce::File& file);
 
+    /** The other PC can read compressed messages (2.2 and later say so when they connect;
+        older ones never get any). Big messages - a whole song, a pasted pattern, a plugin
+        preset - then travel zlib-compressed: a fraction of the bytes on a slow connection. */
+    std::atomic<bool> peerTakesCompressed { false };
+
+    /** Bytes of messages queued here (before compression) and bytes actually sent for them
+        (audio-file chunks not counted). */
+    std::atomic<juce::int64> messageBytesRaw { 0 }, messageBytesSent { 0 };
+
+    /** Compressed messages start with this (a ValueTree never does). */
+    static juce::MemoryBlock compressMessage (const juce::MemoryBlock&);
+    /** Undoes compressMessage; returns false if the data isn't valid. Uncompressed data is left as it is. */
+    static bool decompressMessage (juce::MemoryBlock&);
+    static constexpr size_t compressAbove = 1024;   // smaller messages aren't worth it
+
     Session& session;
     int peerIndex = -1;          // assigned by the host
     juce::String peerName;
@@ -303,6 +318,10 @@ public:
         The self-test uses it to imitate a home internet upload. */
     void setUploadLimit (int bytesPerSecond)       { uploadLimit = juce::jmax (0, bytesPerSecond); }
     int getUploadLimit() const noexcept            { return uploadLimit; }
+
+    /** Messages sent by this PC so far (all links): bytes before compression and bytes sent. */
+    struct Traffic { juce::int64 raw = 0, sent = 0; };
+    Traffic getMessageTraffic() const;
     void logMessage (const juce::String& s)        { log (s); }
     MixerRouter* getRouter() const noexcept        { return router.get(); }
 

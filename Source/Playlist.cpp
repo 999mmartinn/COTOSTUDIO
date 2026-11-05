@@ -563,6 +563,66 @@ public:
         // Clips
         const auto viewedSid = state.getPattern()[ids::sid].toString();
 
+        // Patterns by ID and each pattern's mini preview, worked out once per paint. (Each clip
+        // used to ask every channel for its notes in the pattern: clips x channels x notes per
+        // paint, which made big songs slow to redraw.)
+        std::map<juce::String, juce::ValueTree> patternsBySid;   // the first one with an ID wins, like findPattern
+
+        for (auto& p : getPatterns (*edit))
+            patternsBySid.try_emplace (p[ids::sid].toString(), p);
+
+        auto patternOf = [&patternsBySid] (const juce::ValueTree& clip)
+        {
+            const auto it = patternsBySid.find (clip[ids::pattern].toString());
+            return it != patternsBySid.end() ? it->second : juce::ValueTree();
+        };
+
+        std::map<juce::String, int> channelOrder;   // channel ID -> its place in the rack
+
+        {
+            const auto channels = getChannels (*edit);
+
+            for (int i = 0; i < channels.size(); ++i)
+                channelOrder.try_emplace (getChannelID (*channels[i]), i);
+        }
+
+        struct PreviewNote { double beat, length; int row; };
+        struct Preview { int numRows = 0; std::vector<PreviewNote> notes; };
+        std::map<juce::String, Preview> previews;
+
+        // One thin row per channel that has notes in the pattern (in rack order), like FL.
+        auto previewOf = [&previews, &channelOrder] (const juce::ValueTree& pattern) -> const Preview&
+        {
+            auto [it, isNew] = previews.try_emplace (pattern[ids::sid].toString());
+
+            if (isNew)
+            {
+                std::vector<int> rowOf (channelOrder.size(), -1);
+                std::vector<PreviewNote> raw;   // row = the channel's place in the rack, for now
+
+                for (const auto& n : pattern)
+                {
+                    if (! n.hasType (ids::PNOTE))
+                        continue;
+
+                    if (const auto ch = channelOrder.find (n[ids::ch].toString()); ch != channelOrder.end())
+                    {
+                        rowOf[(size_t) ch->second] = 0;
+                        raw.push_back ({ (double) n[ids::b], (double) n[ids::l], ch->second });
+                    }
+                }
+
+                for (auto& row : rowOf)
+                    if (row == 0)
+                        row = it->second.numRows++;
+
+                for (auto& n : raw)
+                    it->second.notes.push_back ({ n.beat, n.length, rowOf[(size_t) n.row] });
+            }
+
+            return it->second;
+        };
+
         for (auto& clip : getClips (*edit))
         {
             auto r = clipBounds (clip).reduced (0.5f, 1.5f);
@@ -573,7 +633,7 @@ public:
             // In a folded group: just a small bar in the clip's colour.
             if (owner.isLaneHidden (clip[ids::lane]))
             {
-                const auto p = findPattern (*edit, clip[ids::pattern].toString());
+                const auto p = patternOf (clip);
                 const auto c = isAudioClip (clip) ? theme::colours::sky
                              : isAutomationClip (clip) ? theme::colours::teal
                              : (p.isValid() ? patternColour (p) : theme::colours::dim);
@@ -594,7 +654,7 @@ public:
                 continue;
             }
 
-            auto pattern = findPattern (*edit, clip[ids::pattern].toString());
+            auto pattern = patternOf (clip);
 
             const auto colour = pattern.isValid() ? patternColour (pattern) : theme::colours::dim;
             g.setColour (colour.withAlpha (0.30f));
@@ -611,33 +671,24 @@ public:
             // Mini preview, FL-style: one thin row per channel that has notes in this pattern.
             const double clipLen = getClipLength (*edit, clip);
             const double patternOffset = getPatternOffset (clip);
-            juce::StringArray rows;
+            const auto& preview = previewOf (pattern);
 
-            for (auto* t : getChannels (*edit))
-                if (! getNotes (pattern, getChannelID (*t)).isEmpty())
-                    rows.add (getChannelID (*t));
-
-            if (! rows.isEmpty())
+            if (preview.numRows > 0)
             {
                 const float top = r.getY() + 16.0f, h = r.getHeight() - 18.0f;
-                const float rowH = h / (float) rows.size();
+                const float rowH = h / (float) preview.numRows;
                 g.setColour (colour.brighter (0.6f));
 
-                for (auto n : pattern)
+                for (auto& n : preview.notes)
                 {
-                    const double b = (double) n[ids::b] - patternOffset;   // within the clip
+                    const double b = n.beat - patternOffset;   // within the clip
 
-                    if (! n.hasType (ids::PNOTE) || b < -1.0e-6 || b >= clipLen)
-                        continue;
-
-                    const int row = rows.indexOf (n[ids::ch].toString());
-
-                    if (row < 0)
+                    if (b < -1.0e-6 || b >= clipLen)
                         continue;
 
                     const float x = r.getX() + xForBeat (b);
-                    const float w = juce::jmax (1.5f, xForBeat (juce::jmin ((double) n[ids::l], clipLen - b)) - 1.0f);
-                    g.fillRect (x, top + row * rowH, w, juce::jmax (1.0f, rowH - 1.0f));
+                    const float w = juce::jmax (1.5f, xForBeat (juce::jmin (n.length, clipLen - b)) - 1.0f);
+                    g.fillRect (x, top + (float) n.row * rowH, w, juce::jmax (1.0f, rowH - 1.0f));
                 }
             }
 

@@ -239,7 +239,18 @@ private:
     void showAudioSettings();
     void undo (bool redo);
 
-    void handleAsyncUpdate() override                          { refresh(); }
+    // Redraws every panel - at most about 60 times a second. A burst of changes (dragging, a
+    // friend dragging, a song arriving) used to redo every panel for each change.
+    void handleAsyncUpdate() override;
+    double lastRefreshMs = -1.0e9;
+    static constexpr double minRefreshGapMs = 16.0;
+
+    struct RefreshLater  : juce::Timer
+    {
+        std::function<void()> callback;
+        void timerCallback() override   { stopTimer(); if (callback) callback(); }
+    } refreshLater;   // (last: stops before anything it refreshes goes)
+
     // The song changed: redraw (once per message-loop turn). Changes that are only this PC's
     // playback - the playhead, the clips built for playing, automation moving knobs - don't
     // count: the engine writes them many times a second while a song plays, and redrawing
