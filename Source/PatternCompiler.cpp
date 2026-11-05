@@ -55,8 +55,9 @@ void PatternCompiler::changed (const juce::ValueTree& v)
     // Ignore anything happening inside our own generated clips, and knob values
     // (automation moves them all the time while playing; they don't change what's compiled).
     for (auto t = v; t.isValid(); t = t.getParent())
-        if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN) || t.hasType (song::ids::MARKERS))
-            return;   // (markers are only notes on the ruler)
+        if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN) || t.hasType (song::ids::MARKERS)
+             || t.hasType (te::IDs::TRANSPORT))
+            return;   // (markers are only notes on the ruler; the transport is the playhead moving)
 
     if (held)
     {
@@ -435,6 +436,10 @@ void PatternCompiler::compileSamplers()
 
 void PatternCompiler::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& id)
 {
+    // The engine stamps the song with "last changed" all the time while it plays: not a change.
+    if (id == te::IDs::lastSignificantChange)
+        return;
+
     // A sampler got a new sound: that's inside a plugin, which changed() ignores.
     if (id == SamplerPlugin::assetID && v.hasType (te::IDs::PLUGIN))
     {

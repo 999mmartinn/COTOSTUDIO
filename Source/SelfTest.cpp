@@ -325,6 +325,7 @@ private:
     // Audio file sharing
     juce::File testRoot, toneFile, voiceFile, bigFile;
     bool pointerHidden = false;
+    int playCompilesBefore = 0;
     juce::String secondHash;
     juce::uint32 secondAskedAt = 0;
     int secondHostTook = -1;
@@ -6500,7 +6501,7 @@ private:
         // 2.0: while a song plays, the engine writes the playhead, the clips it builds and
         // automated knobs into the song's tree many times a second. None of it may count as a
         // change to the song (each one made the window redraw every panel: big songs froze).
-        steps.push_back ({ "2.0: while the host plays its song the engine's own writes don't count as song changes (no redraw storms)",
+        steps.push_back ({ "2.0: while the host plays its song the engine's own writes don't count as song changes (no redraw storms), and (2.1) don't recompile it",
             [this]
             {
                 // An automation clip on the Kick's volume (a ramp over the first 2 bars), so knobs move as it plays.
@@ -6513,6 +6514,7 @@ private:
                 playWasSong = host.isSongMode();
                 host.setSongMode (true);
                 host.getCompiler()->compileNow();
+                playCompilesBefore = host.getCompiler()->getCompileCount();
                 H().state.addListener (playCounter.get());
                 host.setPlaying (true, 0.0);
                 playFed = 0.0;
@@ -6527,14 +6529,15 @@ private:
 
                 const bool played = H().getTransport().isPlaying();
                 const float knob = kickVolume (H())->getCurrentNormalisedValue();
+                const int compiles = host.getCompiler()->getCompileCount() - playCompilesBefore;
                 host.setPlaying (false, 0.0);
                 H().state.removeListener (playCounter.get());
                 song::removeClip (H(), playAutoClip);
                 host.setSongMode (playWasSong);
                 std::cout << "    the automated Kick volume moved to " << knob << std::endl;
                 std::cout << "    while playing: " << playCounter->raw << " writes to the song's tree, " << playCounter->song
-                          << " of them song changes (" << playCounter->what.joinIntoString (", ") << ")" << std::endl;
-                return played && playCounter->song == 0;
+                          << " of them song changes (" << playCounter->what.joinIntoString (", ") << "); recompiles: " << compiles << std::endl;
+                return played && playCounter->song == 0 && compiles == 0;
             },
             20000 });
 
