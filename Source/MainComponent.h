@@ -193,6 +193,8 @@ private:
     void toggleInstrumentWindow();
     void showPanel (Panel);
     void togglePanelFullScreen (Panel);
+    /** The piano roll full screen, wherever it lives (docked, floating or its own window). */
+    void showPianoRollFullScreen();
     void showMixer()                             { showPanel (Panel::mixer); }
 
     // Full screen inside the main window: the playlist or the piano roll fills the body.

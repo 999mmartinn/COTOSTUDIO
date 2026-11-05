@@ -250,10 +250,39 @@ public:
     std::function<void()> onPeopleChanged;
     std::function<void()> onChatChanged;
 
+    //==============================================================================
+    // Other people's mouse pointers (2.1). Each PC says where its pointer is: a place
+    // ("playlist", or "piano:<pattern sid>:<channel ID>" for one instrument in one pattern)
+    // and a spot in song terms (beat + track, or beat + note), so it lands right whatever the
+    // zoom and scroll. You only see the pointers of the people in the same place as you.
+    struct Cursor
+    {
+        juce::String id, name;     // roster ID, their name
+        juce::Colour colour;
+        double x = 0.0, y = 0.0;   // playlist: beat, track (+ fraction); piano roll: beat, note (+ fraction)
+    };
+
+    /** Where your pointer is now; an empty place = not over anything shared (hidden).
+        Sent at most 20 times a second, a change of place straight away. */
+    void setMyCursor (const juce::String& place, double x, double y);
+    /** The others' pointers in a place (yours isn't in it). Empty unless that's also where
+        your own pointer was last (in the playlist you see the playlist's pointers, not the
+        piano roll's, even with both on screen). */
+    juce::Array<Cursor> getCursorsIn (const juce::String& place) const;
+    /** Goes up by one whenever anyone's pointer moves (the views check it ~30 times a second). */
+    int getCursorsVersion() const noexcept           { return cursorsVersion; }
+
+    static juce::String playlistPlace()              { return "playlist"; }
+    static juce::String pianoPlace (const juce::String& patternSid, const juce::String& channelID)
+                                                     { return "piano:" + patternSid + ":" + channelID; }
+
     /** PAT / SONG mode (yours, like play/stop). */
     void setSongMode (bool shouldBeSong);
     bool isSongMode() const;
     PatternCompiler* getCompiler() const noexcept  { return compiler.get(); }
+    /** Holds back recompiling while a clip is dragged on this PC (see PatternCompiler::setHeld).
+        Counted: every hold(true) needs its hold(false). Survives a song switch. */
+    void holdCompile (bool);
 
     /** This PC's shared audio files. Missing ones are fetched automatically. */
     AssetStore& getAssetStore() noexcept           { return assets; }
@@ -324,6 +353,23 @@ private:
     std::unique_ptr<te::Edit> edit;
     std::unique_ptr<EditSync> editSync;
     std::unique_ptr<PatternCompiler> compiler;
+
+    struct RemoteCursor { juce::String place; double x = 0.0, y = 0.0; };
+    std::map<juce::String, RemoteCursor> cursors;   // roster ID -> where their pointer is
+    int cursorsVersion = 0;
+    RemoteCursor myCursor, myCursorSent;
+    juce::String myLastPlace;   // the last shared place your pointer was in: you see the others there
+    double myCursorSentMs = 0.0;
+    struct CursorTimer : juce::Timer
+    {
+        std::function<void()> callback;
+        void timerCallback() override   { stopTimer(); callback(); }
+    } cursorTimer;
+    void sendMyCursor();
+    void storeCursor (const juce::String& id, const juce::ValueTree& msg);
+    /** Forgets the pointers of people who left; tells newcomers where yours is. */
+    void rosterChangedForCursors();
+    int compileHolds = 0;
     std::unique_ptr<MixerRouter> router;
     std::unique_ptr<Server> server;
     juce::OwnedArray<PeerConnection, juce::CriticalSection> clients;   // host side (added from the server thread)

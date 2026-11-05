@@ -13,7 +13,8 @@
     updates those clips; if nothing differs it changes nothing.
 */
 class PatternCompiler  : private juce::ValueTree::Listener,
-                         private juce::AsyncUpdater
+                         private juce::AsyncUpdater,
+                         private juce::Timer
 {
 public:
     PatternCompiler (te::Edit&, AssetStore&);
@@ -29,6 +30,18 @@ public:
 
     /** Brings the generated clips up to date right away. */
     void compileNow();
+
+    /** While held (a clip edge being dragged on this PC), changes don't recompile the song:
+        each recompile can make the engine rebuild its playback, and doing that on every
+        mouse move made dragging lag in big songs. Letting go compiles once. */
+    void setHeld (bool);
+    bool isHeld() const noexcept                         { return held; }
+
+    /** How many times the song was compiled (for tests). */
+    int getCompileCount() const noexcept                 { return compileCount; }
+
+    /** Changes coming in a burst (someone else dragging a clip) compile at most this often. */
+    static constexpr int minGapMs = 150;
 
     /** The notes the engine will play for a channel, as "pitch@beat+len*vel" strings (for tests). */
     juce::StringArray describeCompiledNotes (te::AudioTrack&) const;
@@ -55,7 +68,10 @@ private:
     te::Edit& edit;
     AssetStore& assets;
     juce::String patternSid;
-    bool compiling = false, songMode = false;
+    bool compiling = false, songMode = false, held = false, heldChanges = false;
+    int compileCount = 0;
+    double lastCompileMs = -1.0e9;
+    void timerCallback() override;
 
     void handleAsyncUpdate() override                       { compileNow(); }
     void compileAudio (te::AudioTrack&);

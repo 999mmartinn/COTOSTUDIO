@@ -1,6 +1,7 @@
 #include "PianoRoll.h"
 #include "FileImport.h"
 #include "Scales.h"
+#include "RemoteCursors.h"
 
 using namespace song;
 
@@ -75,6 +76,39 @@ public:
     std::function<void (const juce::String&)> onGhostChosen; // a ghost note was double-clicked: edit its instrument
 
     int pitchAtY (float y) const       { return juce::jlimit (lowestPitch, highestPitch, highestPitch - (int) std::floor (y / rowHeight)); }
+
+    // The others' pointers (2.1): only theirs on the same instrument in the same pattern.
+    // Yours goes out as beat + note (a note's row spans p .. p + 1), whatever the zoom.
+    remotecursors::Layer cursorLayer;
+
+    juce::String pointerPlace() const
+    {
+        auto* channel = getNoteChannel();
+        const auto pattern = state.getPattern();
+
+        if (channel == nullptr || ! pattern.isValid())
+            return {};
+
+        return collab::Session::pianoPlace (pattern[ids::sid].toString(), song::getChannelID (*channel));
+    }
+
+    void sendPointer (juce::Point<float> p)
+    {
+        state.session.setMyCursor (pointerPlace(), beatAtX (p.x), highestPitch + 1 - (double) p.y / rowHeight);
+    }
+
+    std::vector<remotecursors::Shown> othersPointers() const
+    {
+        std::vector<remotecursors::Shown> list;
+
+        if (const auto place = pointerPlace(); place.isNotEmpty())
+            for (auto& c : state.session.getCursorsIn (place))
+                list.push_back ({ { xForBeat (c.x), (float) ((highestPitch + 1 - c.y) * rowHeight) }, c.name, c.colour });
+
+        return list;
+    }
+
+    void mouseExit (const juce::MouseEvent&) override   { state.session.setMyCursor ({}, 0.0, 0.0); }
     float yForPitch (int pitch) const   { return (float) ((highestPitch - pitch) * rowHeight); }
     double beatAtX (float x) const     { return juce::jmax (0.0, x / pixelsPerBeat); }
     float xForBeat (double beat) const  { return (float) (beat * pixelsPerBeat); }
@@ -463,6 +497,8 @@ public:
     //==============================================================================
     void mouseMove (const juce::MouseEvent& e) override
     {
+        sendPointer (e.position);
+
         if (state.pianoTool == EditorState::PianoTool::slice)
         {
             setMouseCursor (sliceCursor);
@@ -599,6 +635,8 @@ public:
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        sendPointer (e.position);
+
         auto* edit = state.getEdit();
 
         if (edit == nullptr)
@@ -1220,6 +1258,8 @@ public:
 
     void paintOverChildren (juce::Graphics& g) override
     {
+        cursorLayer.paint (g);
+
         if (midiDrop == juce::File())
             return;
 
@@ -2287,6 +2327,15 @@ void PianoRoll::viewMoved()
 
 void PianoRoll::timerCallback()
 {
+    grid->cursorLayer.update (*grid, grid->othersPointers());
+
+    // Another instrument or pattern picked with the mouse still on the notes: you're there now.
+    if (grid->isMouseOver() && grid->pointerPlace() != lastPointerPlace)
+    {
+        lastPointerPlace = grid->pointerPlace();
+        grid->sendPointer (grid->getMouseXYRelative().toFloat());
+    }
+
     // The lane follows the notes (edited here or by someone else).
     if (lane->isVisible())
     {

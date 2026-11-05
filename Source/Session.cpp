@@ -226,6 +226,7 @@ Session::Session (te::Engine& e) : engine (e), assets (defaultAssetFolder())
             onRemoteChange();   // refresh the screens
     };
 
+    cursorTimer.callback = [this] { sendMyCursor(); };
     startTimer (500);
 }
 
@@ -381,6 +382,7 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit, bool assignSyncIDs
     setUpLocalTransport (*edit);
     attachSync();
     compiler = std::make_unique<PatternCompiler> (*edit, assets);
+    compiler->setHeld (compileHolds > 0);
     router = std::make_unique<MixerRouter> (*edit);
     recorder->attachTo (edit.get());
     applySolo();
@@ -397,6 +399,14 @@ void Session::installEdit (std::unique_ptr<te::Edit> newEdit, bool assignSyncIDs
 
     if (onEditReplaced)
         onEditReplaced();
+}
+
+void Session::holdCompile (bool hold)
+{
+    compileHolds = juce::jmax (0, compileHolds + (hold ? 1 : -1));
+
+    if (compiler != nullptr)
+        compiler->setHeld (compileHolds > 0);
 }
 
 void Session::attachSync()
@@ -592,6 +602,7 @@ void Session::rebuildRoster()
     myRosterID = "0";
     sendShareToNewListeners();   // people who just joined the host's playback get it
     checkFollowedPerson();
+    rosterChangedForCursors();
 
     {
         const juce::ScopedLock sl (clients.getLock());
@@ -611,6 +622,126 @@ void Session::rebuildRoster()
 
     if (onPeopleChanged)
         onPeopleChanged();
+}
+
+//==============================================================================
+// Mouse pointers (2.1)
+static const juce::Identifier placeID ("place"), cursorXID ("x"), cursorYID ("y");
+
+void Session::setMyCursor (const juce::String& place, double x, double y)
+{
+    myCursor = { place, x, y };
+
+    if (place.isNotEmpty() && place != myLastPlace)
+    {
+        myLastPlace = place;
+        ++cursorsVersion;   // (the views show the pointers of where you are now)
+    }
+
+    if (mode != Mode::hosting && mode != Mode::joined)
+        return;
+
+    if (place == myCursorSent.place && x == myCursorSent.x && y == myCursorSent.y)
+        return;
+
+    const double since = juce::Time::getMillisecondCounterHiRes() - myCursorSentMs;
+
+    if (place != myCursorSent.place || since >= 50.0)
+    {
+        cursorTimer.stopTimer();
+        sendMyCursor();
+    }
+    else if (! cursorTimer.isTimerRunning())
+    {
+        cursorTimer.startTimer (juce::jmax (1, (int) (50.0 - since)));
+    }
+}
+
+void Session::sendMyCursor()
+{
+    if (mode != Mode::hosting && mode != Mode::joined)
+        return;
+
+    juce::ValueTree msg (ids::MSG);
+    msg.setProperty (ids::type, "cursor", nullptr);
+    msg.setProperty (placeID, myCursor.place, nullptr);
+    msg.setProperty (cursorXID, myCursor.x, nullptr);
+    msg.setProperty (cursorYID, myCursor.y, nullptr);
+    myCursorSent = myCursor;
+    myCursorSentMs = juce::Time::getMillisecondCounterHiRes();
+
+    if (mode == Mode::hosting)
+    {
+        msg.setProperty (fromID_, "0", nullptr);
+        const juce::ScopedLock sl (clients.getLock());
+
+        for (auto* c : clients)   // (not broadcast(): no need to push song edits out first)
+            if (c->welcomed && ! c->dead)
+                c->sendTree (msg);
+    }
+    else if (hostLink != nullptr)
+    {
+        hostLink->sendTree (msg);
+    }
+}
+
+void Session::storeCursor (const juce::String& id, const juce::ValueTree& msg)
+{
+    if (id.isEmpty() || id == myRosterID)
+        return;
+
+    const auto place = msg[placeID].toString().substring (0, 200);
+
+    if (place.isEmpty())
+        cursors.erase (id);
+    else
+        cursors[id] = { place, (double) msg[cursorXID], (double) msg[cursorYID] };
+
+    ++cursorsVersion;
+}
+
+juce::Array<Session::Cursor> Session::getCursorsIn (const juce::String& place) const
+{
+    juce::Array<Cursor> list;
+
+    if (place.isEmpty() || place != myLastPlace || cursors.empty())
+        return list;
+
+    for (auto& p : getPeople())
+    {
+        if (p.isMe)
+            continue;
+
+        if (auto it = cursors.find (p.id); it != cursors.end() && it->second.place == place)
+            list.add ({ p.id, p.name, p.colour, it->second.x, it->second.y });
+    }
+
+    return list;
+}
+
+void Session::rosterChangedForCursors()
+{
+    for (auto it = cursors.begin(); it != cursors.end();)
+    {
+        bool present = false;
+
+        for (auto p : roster)
+            present = present || p[ids::id].toString() == it->first;
+
+        if (present)
+        {
+            ++it;
+        }
+        else
+        {
+            it = cursors.erase (it);
+            ++cursorsVersion;
+        }
+    }
+
+    if (myCursor.place.isNotEmpty())
+        juce::MessageManager::callAsync ([weak = juce::WeakReference<Session> (this)]
+                                        { if (weak != nullptr) weak->sendMyCursor(); });
 }
 
 void Session::addChatLine (const ChatLine& line)
@@ -911,6 +1042,18 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
             if (msg.hasProperty (shareNoteID))
                 handleShareNote (from.peerName, msg[shareNoteID].toString(), msg[shareTargetID].toString());
         }
+        else if (type == "cursor")
+        {
+            // Someone's mouse pointer: kept here, and passed on to everyone else.
+            auto relay = msg.createCopy();
+            relay.setProperty (fromID_, juce::String (from.tag), nullptr);
+            storeCursor (juce::String (from.tag), relay);
+            const juce::ScopedLock sl (clients.getLock());
+
+            for (auto* c : clients)
+                if (c != &from && c->welcomed && ! c->dead)
+                    c->sendTree (relay);
+        }
         else if (type == "tempoAsk")
         {
             startTempoVote (juce::String (from.tag), from.peerName, (double) msg[bpmID]);
@@ -947,6 +1090,7 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
         myRosterID = msg[yourID].toString();
         sendShareToNewListeners();
         checkFollowedPerson();
+        rosterChangedForCursors();
 
         if (onPeopleChanged)
             onPeopleChanged();
@@ -957,6 +1101,12 @@ void Session::handleMessage (PeerConnection& from, const juce::ValueTree& msg)
     if (type == "chat" && msg.getNumChildren() == 1)
     {
         addChatLine (treeToChat (msg.getChild (0)));
+        return;
+    }
+
+    if (type == "cursor")
+    {
+        storeCursor (msg[fromID_].toString(), msg);
         return;
     }
 
@@ -1441,6 +1591,11 @@ int Session::getCountInBars() const         { return recorder->getCountInBars();
 // Sharing playback
 void Session::resetSessionOnlyState()
 {
+    cursors.clear();          // (the others' pointers: only while together)
+    ++cursorsVersion;
+    myCursorSent = {};
+    cursorTimer.stopTimer();
+
     if (following)
     {
         following = false;

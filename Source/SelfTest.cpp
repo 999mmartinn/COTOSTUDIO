@@ -28,6 +28,7 @@
 #include "AppData.h"
 #include "FlpImport.h"
 #include "MoreFx.h"
+#include "SelfTestMp3.h"
 
 namespace
 {
@@ -323,6 +324,8 @@ private:
 
     // Audio file sharing
     juce::File testRoot, toneFile, voiceFile, bigFile;
+    bool pointerHidden = false;
+    struct DragTest { int before = 0, duringHold = -1; double original = 0.0; bool released = false; } dragTest;
     juce::String toneHash, voiceHash, bigHash;
     bool bigStillTransferring = false;
 
@@ -2105,6 +2108,38 @@ private:
             },
             15000 });
 
+        steps.push_back ({ "2.1 MP3 import: an MP3 with fewer frames than its header says (cut-off download) still imports (about 1.5 s, no error)",
+            {},
+            [this]
+            {
+                auto file = testRoot.getChildFile ("cut.mp3");
+                file.replaceWithData (selfTestCutMp3, sizeof (selfTestCutMp3));
+                auto r = host.getAssetStore().importAudioFile (file);
+                std::cout << "    cut MP3: " << (r.ok() ? juce::String (r.lengthSeconds, 3) + " s" : r.error) << std::endl;
+
+                if (! r.ok())
+                    return false;
+
+                // The FLAC copy holds real sound right up to its end (no long stretch of padding).
+                juce::AudioFormatManager fm;
+                fm.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (host.getAssetStore().getFile (r.hash)));
+
+                if (reader == nullptr)
+                    return false;
+
+                juce::AudioBuffer<float> tail (1, 4410);
+                reader->read (&tail, 0, 4410, reader->lengthInSamples - 4410 - 1200, true, false);
+                const float tailPeak = tail.getMagnitude (0, 0, 4410);
+                reader->read (&tail, 0, 4410, 22050, true, false);
+                const float middlePeak = tail.getMagnitude (0, 0, 4410);
+                std::cout << "    FLAC copy " << reader->lengthInSamples << " samples, peak at 0.5 s " << middlePeak
+                          << ", in the last 0.1 s " << tailPeak << std::endl;
+                return r.lengthSeconds > 1.3 && r.lengthSeconds < 1.7 && middlePeak > 0.05f && tailPeak > middlePeak * 0.8f
+                    && std::abs ((double) reader->lengthInSamples / reader->sampleRate - r.lengthSeconds) < 0.001;
+            },
+            3000 });
+
         steps.push_back ({ "Audio: everyone switches to SONG mode -> the audio clip is put into playback the same way on every PC",
             [this] { for (auto* sess : { &host, &peer1, &peer2 }) sess->setSongMode (true); },
             [this]
@@ -2122,6 +2157,108 @@ private:
                 std::cout << "    peer 1 audio channel peak " << peak << std::endl;
                 return peak > 0.2f;
             } });
+
+        steps.push_back ({ "2.1 Pointers: host and peer 1 in the playlist see each other's (with names); peer 2 on an instrument in the piano roll sees neither",
+            [this]
+            {
+                host.setMyCursor (collab::Session::playlistPlace(), 4.25, 1.5);
+                peer1.setMyCursor (collab::Session::playlistPlace(), 8.5, 2.75);
+                peer2.setMyCursor (collab::Session::pianoPlace ("patternA", "channelB"), 1.0, 60.5);
+            },
+            [this]
+            {
+                auto in = [] (collab::Session& s, const juce::String& place) { return s.getCursorsIn (place); };
+                auto h = in (host, collab::Session::playlistPlace()), p1 = in (peer1, collab::Session::playlistPlace());
+                auto p2 = in (peer2, collab::Session::pianoPlace ("patternA", "channelB"));
+                auto p2list = in (peer2, collab::Session::playlistPlace());
+
+                return h.size() == 1 && h[0].name == peer1.getUserName() && std::abs (h[0].x - 8.5) < 1e-9 && std::abs (h[0].y - 2.75) < 1e-9
+                    && p1.size() == 1 && p1[0].name == host.getUserName() && std::abs (p1[0].x - 4.25) < 1e-9
+                    && p2.isEmpty() && p2list.isEmpty();
+            },
+            4000 });
+
+        steps.push_back ({ "2.1 Pointers: peer 1 moves to peer 2's instrument -> they see each other, the host no longer sees peer 1; peer 1 leaves the view -> hidden",
+            [this] { peer1.setMyCursor (collab::Session::pianoPlace ("patternA", "channelB"), 2.0, 64.25); },
+            [this]
+            {
+                const auto piano = collab::Session::pianoPlace ("patternA", "channelB");
+                auto p2 = peer2.getCursorsIn (piano), p1 = peer1.getCursorsIn (piano);
+                const bool together = p2.size() == 1 && p2[0].name == peer1.getUserName() && std::abs (p2[0].y - 64.25) < 1e-9
+                                   && p1.size() == 1 && p1[0].name == peer2.getUserName()
+                                   && host.getCursorsIn (collab::Session::playlistPlace()).isEmpty()
+                                   && peer1.getCursorsIn (collab::Session::playlistPlace()).isEmpty();
+
+                if (together && ! pointerHidden)
+                {
+                    pointerHidden = true;
+                    peer1.setMyCursor ({}, 0.0, 0.0);   // the mouse leaves the notes
+                    return false;
+                }
+
+                return pointerHidden && peer2.getCursorsIn (piano).isEmpty();
+            },
+            4000 });
+
+        steps.push_back ({ "2.1 Dragging a clip's edge: while held, 10 changes don't recompile the song; letting go compiles once",
+            [this]
+            {
+                dragTest = {};
+                dragTest.before = host.getCompiler()->getCompileCount();
+                dragTest.original = audioClipOf (H(), toneHash)[song::ids::duration];
+                host.holdCompile (true);
+
+                for (int i = 1; i <= 10; ++i)
+                    juce::Timer::callAfterDelay (i * 25, [this, i]
+                    {
+                        auto clip = audioClipOf (H(), toneHash);
+                        clip.setProperty (song::ids::duration, i == 10 ? dragTest.original : dragTest.original - 0.01 * i, nullptr);
+                    });
+
+                juce::Timer::callAfterDelay (450, [this]
+                {
+                    dragTest.duringHold = host.getCompiler()->getCompileCount() - dragTest.before;
+                    host.holdCompile (false);
+                    dragTest.released = true;
+                });
+            },
+            [this]
+            {
+                if (! dragTest.released)
+                    return false;
+
+                const int after = host.getCompiler()->getCompileCount() - dragTest.before;
+                std::cout << "    compiles while held " << dragTest.duringHold << ", after letting go " << after << std::endl;
+                return dragTest.duringHold == 0 && after == 1 && ! host.getCompiler()->isHeld();
+            },
+            4000, 900 });
+
+        steps.push_back ({ "2.1 A burst of 20 changes from peer 1 (someone dragging) compiles at most a few times on the host, and every PC ends up the same",
+            [this]
+            {
+                dragTest = {};
+                dragTest.before = host.getCompiler()->getCompileCount();
+                dragTest.original = audioClipOf (P1(), toneHash)[song::ids::duration];
+
+                for (int i = 1; i <= 20; ++i)
+                    juce::Timer::callAfterDelay (i * 12, [this, i]
+                    {
+                        auto clip = audioClipOf (P1(), toneHash);
+                        clip.setProperty (song::ids::duration, i == 20 ? dragTest.original : dragTest.original - 0.005 * i, nullptr);
+                    });
+
+                juce::Timer::callAfterDelay (1200, [this] { dragTest.released = true; });
+            },
+            [this]
+            {
+                if (! dragTest.released)
+                    return false;
+
+                const int compiles = host.getCompiler()->getCompileCount() - dragTest.before;
+                std::cout << "    host compiles for 20 changes: " << compiles << std::endl;
+                return compiles >= 1 && compiles <= 6 && hashesEqual() && compiledEqualEverywhere();
+            },
+            6000, 1300 });
 
         steps.push_back ({ "Audio: peer 2 imports a file -> the host fetches it from peer 2 and passes it on to peer 1",
             [this]

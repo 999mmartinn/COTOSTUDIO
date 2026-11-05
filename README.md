@@ -29,6 +29,34 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.1
+
+* **See the others' mouse pointers**, with their name just under the pointer, so you
+  can show each other things and stay organised. You see someone's pointer only when
+  you are in the same place: both in the **playlist**, or both on the **same
+  instrument of the same pattern** in the piano roll. If you move to the instrument
+  someone else is editing, you see each other there, and the people you left in the
+  playlist stop seeing you. Pointers land on the same spot of the song whatever your
+  zoom or scroll. (Everyone needs 2.1 for this; older copies just don't show them.)
+* **Double-click a pattern in the playlist**: the piano roll opens full screen, on the
+  instrument you last edited in that pattern (Esc goes back).
+* **MP3s that failed with "Failed while converting" now import.** Some MP3s have
+  fewer frames than their header says (a download that stopped early, an encoder that
+  wrote a wrong length). The last bit then failed to read, and COTOSTUDIO threw the
+  whole file away. Now it keeps all the sound that is really there.
+* **Zoom much further into the playlist**: up to a few samples per pixel. Close in,
+  the clips show the file's real waveform (with a zero line), the grid gets finer
+  lines, and the ruler shows beats and then the exact time (m:ss.mmm), so you can cut
+  the silence at the start of a loop exactly.
+* **Snap "auto"** (the new default, like FL's "Line"): clips snap to the grid lines
+  you see, so the closer you zoom, the finer you can trim or cut. Bar / beat / step /
+  none are still there, and Alt still moves freely. Audio clips can now be trimmed
+  down to 5 ms.
+* **Trimming and dragging clips no longer lags in big songs.** Every mouse move used
+  to recompile the whole song and make the engine rebuild its playback (heavy with
+  Omnisphere, Auto-Tune...). Now, while you drag, the song is compiled once when you
+  let go; on the other PCs a burst of changes compiles at most about 7 times a second.
+
 ## What's new in 2.0.1
 
 * **Big songs no longer freeze the window while they play.** While a song plays,

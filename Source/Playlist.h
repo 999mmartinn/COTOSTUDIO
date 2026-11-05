@@ -13,8 +13,14 @@
       - Tracks (lane headers) have a name, a colour and the insert that takes dropped on
         them play through (right-click the header); dropping or moving a take onto such a
         track routes it there.
-      - Click a clip: open its pattern in the channel rack and piano roll.
-      - Ctrl + mouse wheel: zoom.  Ruler: set where SONG mode starts.
+      - Click a clip: open its pattern in the channel rack and piano roll. Double-click a
+        pattern clip (2.1): the piano roll full screen, on the instrument you last edited in it.
+      - Ctrl + mouse wheel: zoom, out to a whole song, in to a few samples a pixel (2.1: the
+        real waveform is drawn then, to cut the silence before a loop). Snap "auto" (the
+        default) snaps to the grid lines on screen, finer the closer you zoom.
+        Ruler: set where SONG mode starts.
+      - Other people's mouse pointers (2.1): you see the pointers of whoever is in the
+        playlist too, with their name under it (see Session::setMyCursor).
       - Drop audio files (or "Import audio...") to add audio clips; each file gets
         its own audio channel. Clips can be trimmed from both edges.
       - Tools (like FL): Draw (P) places, moves and resizes; Slice (C) cuts clips in two
@@ -118,6 +124,16 @@ private:
     void setGroupFolded (const juce::String& groupSid, bool folded);
 
     void setZoom (float newPixelsPerBeat, float anchorX);
+    /** Beats shown across the lanes (the song plus room after it). */
+    double shownBeats() const;
+    /** How far in the playlist zooms: far enough to cut the silence before a loop by eye
+        (thousands of pixels a beat), as long as the lanes stay a size the drawing handles. */
+    float maxPixelsPerBeat() const;
+    /** The finest grid lines drawn at this zoom, in beats: a bar zoomed out, then a beat,
+        then halves of it down to 1/256 beat, the first at least minGridPixels apart.
+        Snap "auto" snaps to these. */
+    double gridBeats() const;
+    static constexpr float minGridPixels = 16.0f;
     void layoutContent();
     void timerCallback() override;
 };

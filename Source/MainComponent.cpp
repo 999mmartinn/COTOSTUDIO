@@ -694,6 +694,7 @@ MainComponent::MainComponent (te::Engine& e)
 
     state.onSelectionChanged = [this] { refresh(); };
     state.showPianoRoll = [this] { showPanel (Panel::pianoRoll); };
+    state.showPianoRollFullScreen = [this] { showPianoRollFullScreen(); };
 
     // Browser (left): patterns, audio files, people + chat.
     browser.onPatternChosen = [this] (const juce::String& sid) { selectPattern (sid); };
@@ -882,26 +883,7 @@ MainComponent::MainComponent (te::Engine& e)
         if (state.onSelectionChanged)
             state.onSelectionChanged();
 
-        if (auto& w = panelWindows[(int) Panel::pianoRoll])
-        {
-            w->setFullScreen (true);
-            w->toFront (true);
-            updateFullScreenButtons();
-        }
-        else if (isFloating (Panel::pianoRoll))
-        {
-            setFloatShown (Panel::pianoRoll, true);
-            pianoRoll.focusNotes();
-        }
-        else
-        {
-            setMaximised (Maximised::pianoRoll);
-
-            // The menu came from the rack, which is hidden now: take the keyboard back so
-            // Esc (leave full screen), Space and the other shortcuts work straight away.
-            grabKeyboardFocus();
-            pianoRoll.focusNotes();   // (the notes pass Esc, Space... on to here)
-        }
+        showPianoRollFullScreen();
     };
     playlist.onFullScreenToggle = [this]
     {
@@ -1683,6 +1665,36 @@ void MainComponent::togglePanelFullScreen (Panel p)
     else if (p == Panel::pianoRoll)
     {
         setMaximised (maximised == Maximised::pianoRoll ? Maximised::none : Maximised::pianoRoll);
+    }
+
+    updateFullScreenButtons();
+}
+
+void MainComponent::showPianoRollFullScreen()
+{
+    if (auto& w = panelWindows[(int) Panel::pianoRoll])
+    {
+        w->setFullScreen (true);
+        w->toFront (true);
+    }
+    else if (auto& f = floaters[(int) Panel::pianoRoll])
+    {
+        setFloatShown (Panel::pianoRoll, true);
+
+        if (! f->isMaximised())
+            f->toggleMaximised();
+
+        f->toFront (false);
+        pianoRoll.focusNotes();
+    }
+    else
+    {
+        setMaximised (Maximised::pianoRoll);
+
+        // The click came from a panel that is hidden now (rack menu, playlist): take the
+        // keyboard back so Esc (leave full screen), Space and the other shortcuts work.
+        grabKeyboardFocus();
+        pianoRoll.focusNotes();   // (the notes pass Esc, Space... on to here)
     }
 
     updateFullScreenButtons();

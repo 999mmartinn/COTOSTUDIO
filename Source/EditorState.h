@@ -17,7 +17,9 @@ struct EditorState
     double startBeat = 0.0;         // where Play starts in PAT mode (marker on the piano-roll ruler)
     double songStartBeat = 0.0;     // where Play starts in SONG mode (marker on the playlist ruler)
     static constexpr double snapBar = -1.0;   // a snap setting meaning "a bar" (its length depends on the time signature)
-    double playlistSnapBeats = snapBar;       // playlist snap: bar / beat / step, 0 = none
+    static constexpr double snapAuto = -2.0;  // a snap setting meaning "the grid lines on screen" (follows the playlist zoom, like FL's "Line")
+    double playlistSnapBeats = snapAuto;      // playlist snap: auto / bar / beat / step, 0 = none
+    double playlistAutoGrid = 1.0;            // what "auto" means at the playlist's zoom now (set by the playlist)
     juce::String placeAudioChannel; // if set, clicking empty playlist space places this audio
                                     // channel's file; otherwise the viewed pattern
     juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
@@ -45,7 +47,11 @@ struct EditorState
     }
 
     /** A snap setting in beats (snapBar becomes the bar's length). */
-    double resolveSnap (double setting) const          { return setting < 0.0 ? getBeatsPerBar() : setting; }
+    double resolveSnap (double setting) const
+    {
+        if (setting < snapAuto + 0.5)   return playlistAutoGrid;
+        return setting < 0.0 ? getBeatsPerBar() : setting;
+    }
 
     std::function<void()> onSelectionChanged;
 
@@ -201,6 +207,8 @@ struct EditorState
 
     /** Brings the piano roll to the front (set by the main window). */
     std::function<void()> showPianoRoll;
+    /** Shows the piano roll full screen (main window, its floating panel or its own window). */
+    std::function<void()> showPianoRollFullScreen;
 
     /** Starts a new undo step for a user action. */
     void beginAction() const

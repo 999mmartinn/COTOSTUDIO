@@ -10,6 +10,7 @@ PatternCompiler::PatternCompiler (te::Edit& e, AssetStore& a) : edit (e), assets
 PatternCompiler::~PatternCompiler()
 {
     cancelPendingUpdate();
+    stopTimer();
     edit.state.removeListener (this);
 
     // Take our automation out of the engine (the knobs keep their last value).
@@ -57,7 +58,40 @@ void PatternCompiler::changed (const juce::ValueTree& v)
         if ((bool) t[song::ids::generated] || t.hasType (te::IDs::PLUGIN) || t.hasType (song::ids::MARKERS))
             return;   // (markers are only notes on the ruler)
 
+    if (held)
+    {
+        heldChanges = true;
+        return;
+    }
+
+    // One change compiles straight away; a burst of them (a clip being dragged on another
+    // PC: one change per mouse move) at most every minGapMs, and once more at the end.
+    const double sinceLast = juce::Time::getMillisecondCounterHiRes() - lastCompileMs;
+
+    if (sinceLast >= minGapMs)
+        triggerAsyncUpdate();
+    else if (! isTimerRunning())
+        startTimer (juce::jmax (1, (int) (minGapMs - sinceLast)));
+}
+
+void PatternCompiler::timerCallback()
+{
+    stopTimer();
     triggerAsyncUpdate();
+}
+
+void PatternCompiler::setHeld (bool shouldHold)
+{
+    if (shouldHold == held)
+        return;
+
+    held = shouldHold;
+
+    if (! held && heldChanges)
+    {
+        heldChanges = false;
+        triggerAsyncUpdate();
+    }
 }
 
 const juce::Identifier PatternCompiler::notePanID ("cotoPan"), PatternCompiler::noteFineID ("cotoFine");
@@ -134,6 +168,10 @@ namespace
 void PatternCompiler::compileNow()
 {
     cancelPendingUpdate();
+    stopTimer();
+    heldChanges = false;
+    ++compileCount;
+    lastCompileMs = juce::Time::getMillisecondCounterHiRes();
     const juce::ScopedValueSetter<bool> svs (compiling, true);
 
     compileAutomation();

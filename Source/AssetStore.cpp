@@ -133,6 +133,7 @@ AssetStore::ImportResult AssetStore::importAudioFile (const juce::File& source)
     // Write a FLAC copy into the store under a temporary name...
     auto temp = folder.getNonexistentChildFile ("import", ".tmp", false);
     const int channels = (int) juce::jlimit (1u, 2u, reader->numChannels);
+    juce::int64 importedLength = 0;   // samples really converted (can be less than the header said)
 
     {
         juce::FlacAudioFormat flac;
@@ -157,13 +158,61 @@ AssetStore::ImportResult AssetStore::importAudioFile (const juce::File& source)
             return result;
         }
 
-        if (! writer->writeFromAudioReader (*reader, 0, -1))
+        // In blocks. Some MP3s have fewer frames than their header says (a download that
+        // stopped early, an encoder that wrote a wrong VBR header): the reader then fails on
+        // the last block, and the whole import used to fail with it. Now everything up to
+        // where the sound really ends is kept.
+        constexpr int blockSize = 16384;
+        juce::AudioBuffer<float> block (channels, blockSize);
+        juce::int64 position = 0;
+        bool cutShort = false;
+
+        while (position < reader->lengthInSamples && ! cutShort)
+        {
+            int count = (int) juce::jmin ((juce::int64) blockSize, reader->lengthInSamples - position);
+
+            if (! reader->read (&block, 0, count, position, true, channels > 1))
+            {
+                // The largest part of this block that reads fine.
+                int good = 0, bad = count;
+
+                while (bad - good > 1)
+                {
+                    const int mid = (good + bad) / 2;
+
+                    if (reader->read (&block, 0, mid, position, true, channels > 1))
+                        good = mid;
+                    else
+                        bad = mid;
+                }
+
+                count = good;
+                cutShort = true;
+
+                if (count > 0)
+                    reader->read (&block, 0, count, position, true, channels > 1);
+            }
+
+            if (count > 0 && ! writer->writeFromAudioSampleBuffer (block, 0, count))
+            {
+                writer.reset();
+                temp.deleteFile();
+                result.error = "Failed while converting " + source.getFileName();
+                return result;
+            }
+
+            position += count;
+        }
+
+        if (position <= 0)
         {
             writer.reset();
             temp.deleteFile();
-            result.error = "Failed while converting " + source.getFileName();
+            result.error = "Can't read the sound in " + source.getFileName() + " (damaged audio file)";
             return result;
         }
+
+        importedLength = position;
     }
 
     // ...then name it after its fingerprint.
@@ -183,7 +232,7 @@ AssetStore::ImportResult AssetStore::importAudioFile (const juce::File& source)
 
     result.sampleRate = reader->sampleRate;
     result.numChannels = channels;
-    result.lengthSeconds = (double) reader->lengthInSamples / reader->sampleRate;
+    result.lengthSeconds = (double) importedLength / reader->sampleRate;
     result.bytes = finalFile.getSize();
     return result;
 }

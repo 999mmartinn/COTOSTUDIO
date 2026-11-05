@@ -97,4 +97,5 @@ private:
     bool scrolledOnce = false;
 
     void timerCallback() override;
+    juce::String lastPointerPlace;
 };
