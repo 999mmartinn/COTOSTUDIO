@@ -325,7 +325,7 @@ private:
     // Audio file sharing
     juce::File testRoot, toneFile, voiceFile, bigFile;
     bool pointerHidden = false;
-    int playCompilesBefore = 0;
+    int playCompilesBefore = 0, playResult = -1;
     juce::String secondHash;
     juce::uint32 secondAskedAt = 0;
     int secondHostTook = -1;
@@ -6514,13 +6514,17 @@ private:
                 playWasSong = host.isSongMode();
                 host.setSongMode (true);
                 host.getCompiler()->compileNow();
-                playCompilesBefore = host.getCompiler()->getCompileCount();
                 H().state.addListener (playCounter.get());
                 host.setPlaying (true, 0.0);
+                playCompilesBefore = host.getCompiler()->getCompileCount();   // (Play compiles once on purpose)
                 playFed = 0.0;
+                playResult = -1;
             },
             [this]
             {
+                if (playResult >= 0)
+                    return playResult == 1;   // (measured once)
+
                 soundCard->feedSilenceAndMeasure (0.1);
                 playFed += 0.1;
 
@@ -6537,7 +6541,8 @@ private:
                 std::cout << "    the automated Kick volume moved to " << knob << std::endl;
                 std::cout << "    while playing: " << playCounter->raw << " writes to the song's tree, " << playCounter->song
                           << " of them song changes (" << playCounter->what.joinIntoString (", ") << "); recompiles: " << compiles << std::endl;
-                return played && playCounter->song == 0 && compiles == 0;
+                playResult = played && playCounter->song == 0 && compiles == 0 ? 1 : 0;
+                return playResult == 1;
             },
             20000 });
 
