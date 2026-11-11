@@ -1,4 +1,5 @@
 #include "MoreFx.h"
+#include "ExtraFx.h"
 
 const char* CompressorFxPlugin::xmlTypeName = "cotocomp";
 const char* EnhancerPlugin::xmlTypeName = "cotoenhancer";
@@ -369,6 +370,35 @@ MoreFxEditor::MoreFxEditor (CotoFxPlugin& p) : plugin (p)
                   { f->pan });
         addChoice (TRANS ("Stages"), amber, *f->stages, { TRANS ("Off"), "1x", "2x", "3x" });
         help = TRANS ("Low, band and high are how much of each part of the filter you hear: low only = muffled, band only = telephone. More stages = steeper.");
+    }
+    else if (auto* ess = dynamic_cast<DeEsserPlugin*> (&p))
+    {
+        addKnobs (TRANS ("De-esser"), orange, { { ess->frequency, TRANS ("Frequency") }, { ess->threshold, TRANS ("Threshold") }, { ess->range, TRANS ("Range") } });
+        addChoice (TRANS ("Turns down"), amber, *ess->mode, { TRANS ("Everything (wide)"), TRANS ("Only the highs (split)") });
+        addChoice (TRANS ("Listen to what it watches"), teal, *ess->listen, { TRANS ("Off"), TRANS ("On") });
+        help = TRANS ("Tames harsh S sounds: when the highs above the frequency pass the threshold, they are turned down by up to the range. Turn Listen on to find where the S is, then lower the threshold until only the S is caught.");
+    }
+    else if (auto* multi = dynamic_cast<MultibandPlugin*> (&p))
+    {
+        addKnobs (TRANS ("Low band"), orange, { { multi->threshold[0], TRANS ("Threshold") }, { multi->ratio[0], TRANS ("Ratio") }, { multi->gain[0], TRANS ("Gain") } });
+        addKnobs (TRANS ("Mid band"), amber, { { multi->threshold[1], TRANS ("Threshold") }, { multi->ratio[1], TRANS ("Ratio") }, { multi->gain[1], TRANS ("Gain") } });
+        addKnobs (TRANS ("High band"), teal, { { multi->threshold[2], TRANS ("Threshold") }, { multi->ratio[2], TRANS ("Ratio") }, { multi->gain[2], TRANS ("Gain") } });
+        addKnobs (TRANS ("Bands and timing"), teal, { { multi->lowCross, TRANS ("Low / mid") }, { multi->highCross, TRANS ("Mid / high") }, { multi->attack, TRANS ("Attack") }, { multi->release, TRANS ("Release") } });
+        help = TRANS ("Three compressors, one each for the lows, the mids and the highs. A ratio of 1 : 1 leaves a band alone; gain makes a band louder or quieter. Low / mid and Mid / high set where the bands meet.");
+    }
+    else if (auto* dist = dynamic_cast<DistortionPlugin*> (&p))
+    {
+        addKnobs (TRANS ("Distortion"), orange, { { dist->drive, TRANS ("Drive") }, { dist->tone, TRANS ("Tone") }, { dist->mix, TRANS ("Mix") }, { dist->output, TRANS ("Out") } });
+        addKnobs (TRANS ("Crush"), teal, { { dist->bits, TRANS ("Bits") }, { dist->downsample, TRANS ("Downsample") } });
+        addChoice (TRANS ("Shape"), amber, *dist->shape, DistortionPlugin::typeNames());
+        help = TRANS ("Drive pushes the sound into the shape: Warm rounds it, Hard clips it flat, Fold bends it back on itself. Tone takes the fizz off. Crush: fewer bits and a lower sample rate for a lo-fi, gritty sound.");
+    }
+    else if (auto* stereo = dynamic_cast<StereoShaperPlugin*> (&p))
+    {
+        addKnobs (TRANS ("Stereo"), teal, { { stereo->width, TRANS ("Width") }, { stereo->delay, TRANS ("Delay") }, { stereo->bassMono, TRANS ("Bass mono") } });
+        addKnobs (TRANS ("Output"), orange, { { stereo->pan, TRANS ("Pan") }, { stereo->output, TRANS ("Out") } }, { stereo->pan });
+        addChoice (TRANS ("Channels"), amber, *stereo->channels, StereoShaperPlugin::channelNames());
+        help = TRANS ("Width: 0% is mono, 100% unchanged, 200% extra wide. Delay makes the right side a little late, which spreads a mono voice out. Bass mono keeps everything below that frequency in the middle.");
     }
 
     int width = 0;

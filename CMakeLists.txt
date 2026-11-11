@@ -72,6 +72,7 @@ target_sources(COTOSTUDIO PRIVATE
     Source/SidechainPlugin.cpp
     Source/SidechainEditor.cpp
     Source/MoreFx.cpp
+    Source/ExtraFx.cpp
     Source/ReverbPlugin.cpp
     Source/ReverbEditor.cpp
     Source/SamplerEditor.cpp

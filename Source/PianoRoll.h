@@ -22,6 +22,8 @@
     Notes are heard while placed or dragged only when the song is stopped (the keyboard
     on the left always plays). The Scale button keeps notes on a key's scale.
     The ruler on top sets where Play starts (jumps there while playing).
+    The Tools button (2.3) works on the selected notes (or all of them): chords, arpeggio,
+    chop, strum, humanize, flip, reverse, half / double length, velocity ramps.
 */
 class PianoRoll  : public juce::Component,
                    private juce::Timer
@@ -67,7 +69,8 @@ private:
     std::unique_ptr<Keys> keys;
     std::unique_ptr<ChannelPicker> picker;   // which instrument's notes you edit (menu, < >)
     std::unique_ptr<PropertyLane> lane;      // velocity / release / pan / fine pitch of each note
-    juce::TextButton ghostButton;
+    juce::TextButton ghostButton, toolsButton;
+    void showToolsMenu();
     static constexpr int laneHeight = 72;
     juce::int64 laneSignature = 0;
     juce::TextButton prevChannelButton, nextChannelButton;

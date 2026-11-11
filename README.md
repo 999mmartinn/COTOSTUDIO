@@ -29,6 +29,43 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.3
+
+New tools for vocals, beats and the master. **Everyone in a session needs 2.3**
+(a song can now hold effects that 2.2 doesn't know, so 2.2 and 2.3 PCs can't share
+a session). Songs made with older versions open as before.
+
+* **Five new effects of our own** (mixer → an empty effect slot → *Built-in*; like
+  the others they are shared, saved in the song and every knob can be automated):
+  * **De-esser** - tames harsh "s" sounds. *Frequency* is where it watches,
+    *Threshold* when it reacts, *Range* how much it turns down at most. It can turn
+    down everything (*wide*) or only the highs (*split*). *Listen* plays only what it
+    watches, to find the "s".
+  * **Multiband compressor** - three compressors (low / mid / high), each with its
+    threshold, ratio and gain, and two crossovers you can move. A ratio of 1 : 1
+    leaves a band alone.
+  * **Distortion** - *Drive* into a *Warm*, *Hard* or *Fold* shape, a *Tone* knob,
+    a bit crusher (*Bits*, *Downsample*) and *Mix*. Good on 808s and for lo-fi adlibs.
+  * **Stereo shaper** - *Width* (0% mono ... 200% extra wide), a short *Delay* on
+    the right side (widens a mono voice), *Bass mono*, pan, and swapping or
+    flipping the two sides.
+  * **Loudness meter (LUFS)** - changes nothing in the sound. Put it last on the
+    Master: it shows the loudness *now*, over the *last 3 s* and of the *whole song*
+    (what streaming services measure; they aim at about -14 LUFS), and the peak.
+* **Piano roll → Tools** (new button next to *Ghosts*). Works on the selected notes,
+  or on all of them when none is selected; every tool is one undo step:
+  * **Add a chord on each note** - major, minor, power, sus, 7ths, 9ths...
+  * **Arpeggio** - a chord becomes a run of single notes (up, down, or up and
+    down), one note per snap step.
+  * **Chop** - cuts each note into pieces one snap step long (hi-hat rolls: set the
+    snap to *1/2 step* or *1/3 step* first).
+  * **Strum** - a chord's notes start one after the other.
+  * **Humanize** - small random changes to timing, velocity or both.
+  * **Velocity ramp** up or down (a roll that grows), **Flip**, **Reverse**,
+    **Half / Twice as long**.
+* **Normalize** in an audio clip's settings (double-click the clip): sets the clip's
+  volume so its loudest moment just reaches 0 dB.
+
 ## What's new in 2.2
 
 Speed, for big songs and slow connections. Nothing to learn: everything works as
@@ -916,7 +953,10 @@ and 2.2: speed with a big song (40 channels, 28,800 notes, 600 clips: comparing 
 the unsaved-changes check and SONG-mode compiling timed and printed; copies still compare
 exactly as in 2.1, also for the session's own song; a change is noticed and undoing it
 gives the same fingerprint back), messages between the PCs travelling compressed, and a
-big damaged transfer checked in the background and rejected.
+big damaged transfer checked in the background and rejected,
+and 2.3: the De-esser, Multiband compressor, Distortion, Stereo shaper and Loudness
+meter measured on test tones, and the piano roll's tools (chord, arpeggio, chop, strum,
+flip, reverse, half length, velocity ramp, humanize) checked note by note.
 The self-test looks for the test plugin's VST2 next to its VST3 (`.../VST/`), or takes
 `--plugin2=<path>`. It never touches your data folder. The Windows build on GitHub runs
 it automatically.

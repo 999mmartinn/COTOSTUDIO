@@ -3660,6 +3660,12 @@ public:
         resetButton.onClick = [this] { resetAll(); };
         addAndMakeVisible (resetButton);
 
+        normalizeButton.setButtonText (TRANS ("Normalize"));
+        normalizeButton.setTooltip (TRANS ("Sets the volume so the loudest moment of this clip just reaches 0 dB "
+                                           "(as loud as it goes without clipping)"));
+        normalizeButton.onClick = [this] { normalize(); };
+        addAndMakeVisible (normalizeButton);
+
         readValues();
         setSize (340, 316);
     }
@@ -3694,7 +3700,9 @@ public:
         fit.removeFromLeft (6);
         fitButton.setBounds (fit);
         r.removeFromTop (8);
-        resetButton.setBounds (r.removeFromTop (26).removeFromRight (90));
+        auto last = r.removeFromTop (26);
+        resetButton.setBounds (last.removeFromRight (90));
+        normalizeButton.setBounds (last.removeFromLeft (130));
     }
 
 private:
@@ -3710,7 +3718,7 @@ private:
     juce::ToggleButton keepPitch;
     juce::Label fitLabel;
     juce::TextEditor bpmField;
-    juce::TextButton fitButton, resetButton;
+    juce::TextButton fitButton, resetButton, normalizeButton;
     bool reading = false;
 
     juce::ValueTree findClip() const
@@ -3807,6 +3815,56 @@ private:
         const double songBpm = ts.getTempoAt (ts.toTime (te::BeatPosition::fromBeats ((double) clip[ids::start]))).getBpm();
         state.beginAction();
         setClipSpeed (*edit, clip, songBpm / itsBpm);
+        readValues();
+    }
+
+    /** Normalize (2.3, Pro Tools' clip gain "to peak"): the part of the file this clip
+        plays is read once, and the clip's volume set so its loudest sample reaches 0 dB. */
+    void normalize()
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+
+        if (! clip.isValid() || edit == nullptr)
+            return;
+
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        const auto file = state.session.getAssetStore().getFile (clip[ids::asset].toString());
+        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+
+        if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
+        {
+            state.session.logMessage (TRANS ("Normalize: this clip's sound isn't on this PC yet"));
+            return;
+        }
+
+        const double offset = clip[ids::offset];
+        const double used = (double) clip[ids::duration] * getClipSpeed (clip);   // seconds of the file the clip plays
+        const auto first = juce::jlimit ((juce::int64) 0, reader->lengthInSamples, (juce::int64) (offset * reader->sampleRate));
+        const auto count = juce::jmin (reader->lengthInSamples - first, (juce::int64) std::ceil (used * reader->sampleRate));
+
+        if (count <= 0)
+            return;
+
+        float lowL = 0.0f, highL = 0.0f, lowR = 0.0f, highR = 0.0f;
+        reader->readMaxLevels (first, count, lowL, highL, lowR, highR);
+        const float peak = juce::jmax (std::abs (lowL), std::abs (highL), std::abs (lowR), std::abs (highR));
+
+        if (peak < 1.0e-5f)
+        {
+            state.session.logMessage (TRANS ("Normalize: this clip is silent"));
+            return;
+        }
+
+        const double gainDb = juce::jlimit (minClipGainDb, maxClipGainDb, -(double) juce::Decibels::gainToDecibels (peak));
+        state.beginAction();
+
+        if (std::abs (gainDb) < 0.005)  clip.removeProperty (ids::gain, &edit->getUndoManager());
+        else                            clip.setProperty (ids::gain, gainDb, &edit->getUndoManager());
+
+        state.session.logMessage (TRANS ("Normalized: the clip's volume is now {DB} dB")
+                                    .replace ("{DB}", (gainDb > 0.0 ? "+" : "") + juce::String (gainDb, 1)));
         readValues();
     }
 

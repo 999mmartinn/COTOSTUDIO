@@ -345,9 +345,10 @@ public:
 
     juce::String peerName = juce::SystemStats::getComputerName();
 
-    static constexpr int protocolVersion = 11;  // 9 (1.2): 200 playlist tracks instead of 16
+    static constexpr int protocolVersion = 12;  // 9 (1.2): 200 playlist tracks instead of 16
                                                 // 10 (1.12.2): changes carry the song's number; fresh copies merge in place
                                                 // 11 (2.0): everyone's playback is shared; listening along is each person's choice
+                                                // 12 (2.3): five new built-in effects an older version can't load
     static constexpr juce::uint32 magicNumber = 0x53594e43; // "SYNC"
     static constexpr juce::int64 idRangePerPeer = 1000000000; // keeps new IDs from clashing
 

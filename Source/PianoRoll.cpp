@@ -1,6 +1,7 @@
 #include "PianoRoll.h"
 #include "FileImport.h"
 #include "Scales.h"
+#include "NoteTools.h"
 #include "RemoteCursors.h"
 
 using namespace song;
@@ -1187,6 +1188,71 @@ public:
     }
 
     //==============================================================================
+    // The Tools menu (2.3): one of notetools' edits on the selected notes (or all of them).
+    enum NoteTool
+    {
+        toolArpUp = 1, toolArpDown, toolArpUpDown, toolChop, toolStrumUp, toolStrumDown,
+        toolHumanizeTiming, toolHumanizeVelocity, toolHumanizeBoth, toolFlip, toolReverse,
+        toolHalf, toolDouble, toolRampUp, toolRampDown,
+        toolChordFirst = 100   // + index in notetools::chords
+    };
+
+    bool applyNoteTool (int tool)
+    {
+        te::Edit* edit; juce::ValueTree pattern; te::AudioTrack* channel;
+
+        if (! begin (edit, pattern, channel))
+            return true;
+
+        auto notes = targetNotes();
+
+        if (notes.isEmpty())
+            return true;
+
+        const auto channelID = getChannelID (*channel);
+        const double length = getLengthBeats (pattern), step = moveStep();
+        juce::Array<juce::ValueTree> now;   // what to select afterwards, if the notes were replaced
+        bool replaced = false;
+
+        if (tool >= toolChordFirst)
+        {
+            now = notes;
+            now.addArray (notetools::addChord (*edit, pattern, channelID, notes, tool - toolChordFirst, lowestPitch, highestPitch));
+            replaced = true;
+        }
+        else switch (tool)
+        {
+            case toolArpUp:              now = notetools::arpeggiate (*edit, pattern, channelID, notes, step, notetools::Arp::up);      replaced = true; break;
+            case toolArpDown:            now = notetools::arpeggiate (*edit, pattern, channelID, notes, step, notetools::Arp::down);    replaced = true; break;
+            case toolArpUpDown:          now = notetools::arpeggiate (*edit, pattern, channelID, notes, step, notetools::Arp::upDown);  replaced = true; break;
+            case toolChop:               now = notetools::chop (*edit, pattern, channelID, notes, step);                               replaced = true; break;
+            case toolStrumUp:            notetools::strum (*edit, notes, stepBeats / 6.0, false, length); break;
+            case toolStrumDown:          notetools::strum (*edit, notes, stepBeats / 6.0, true, length); break;
+            case toolHumanizeTiming:     notetools::humanize (*edit, notes, juce::Random::getSystemRandom(), stepBeats / 10.0, 0, length); break;
+            case toolHumanizeVelocity:   notetools::humanize (*edit, notes, juce::Random::getSystemRandom(), 0.0, 12, length); break;
+            case toolHumanizeBoth:       notetools::humanize (*edit, notes, juce::Random::getSystemRandom(), stepBeats / 10.0, 12, length); break;
+            case toolFlip:               notetools::flip (*edit, notes); break;
+            case toolReverse:            notetools::reverse (*edit, notes); break;
+            case toolHalf:               notetools::scaleLengths (*edit, notes, 0.5, length); break;
+            case toolDouble:             notetools::scaleLengths (*edit, notes, 2.0, length); break;
+            case toolRampUp:             notetools::velocityRamp (*edit, notes, 40, 127); break;
+            case toolRampDown:           notetools::velocityRamp (*edit, notes, 127, 40); break;
+            default: break;
+        }
+
+        if (replaced)
+        {
+            selected.clear();
+
+            for (auto& n : now)
+                selected.add (n[ids::sid].toString());
+        }
+
+        repaint();
+        return true;
+    }
+
+    //==============================================================================
     // A MIDI file dropped here (sound browser or Explorer): its notes replace the
     // selected channel's notes in this pattern.
     bool isInterestedInDragSource (const SourceDetails& d) override
@@ -1833,6 +1899,17 @@ PianoRoll::PianoRoll (EditorState& s) : state (s)
     };
     addAndMakeVisible (ghostButton);
 
+    // Tools: chords, arpeggio, chop, strum, humanize... on the selected notes.
+    toolsButton.setButtonText (TRANS ("Tools"));
+    toolsButton.setTooltip (TRANS ("Tools for the selected notes (or all of them when none is selected): chords, arpeggio, "
+                                   "chop into a roll, strum, humanize, flip, reverse, half / double length, velocity ramps"));
+    theme::setStyle (toolsButton, "toggle");
+    toolsButton.setClickingTogglesState (false);
+    toolsButton.setWantsKeyboardFocus (false);
+    toolsButton.setMouseClickGrabsKeyboardFocus (false);
+    toolsButton.onClick = [this] { showToolsMenu(); };
+    addAndMakeVisible (toolsButton);
+
     // Which instrument: its name (a menu of all of them) between < and >.
     picker = std::make_unique<ChannelPicker> (*this);
     addAndMakeVisible (*picker);
@@ -2020,6 +2097,62 @@ void PianoRoll::showSnapMenu()
 
         if (safe->onScaleChanged)
             safe->onScaleChanged();
+    });
+}
+
+void PianoRoll::showToolsMenu()
+{
+    auto* channel = state.getSelectedChannel();
+    const bool can = state.getEdit() != nullptr && channel != nullptr && ! song::isAudioChannel (*channel)
+                       && ! grid->targetNotes().isEmpty();
+    // (Arpeggio and chop work on the snap grid; with snap off, on steps.)
+    const auto stepName = snapName (state.pianoSnapBeats == 0.0 ? stepBeats : state.pianoSnapBeats).toLowerCase();
+
+    juce::PopupMenu m, chordMenu, arp, strum, human, velocity;
+
+    for (int i = 0; i < notetools::numChords; ++i)
+    {
+        if (i == 4 || i == 8)
+            chordMenu.addSeparator();
+
+        chordMenu.addItem (Grid::toolChordFirst + i, TRANS (notetools::chords[i].name), can);
+    }
+
+    arp.addItem (Grid::toolArpUp, TRANS ("Up"), can);
+    arp.addItem (Grid::toolArpDown, TRANS ("Down"), can);
+    arp.addItem (Grid::toolArpUpDown, TRANS ("Up and down"), can);
+    strum.addItem (Grid::toolStrumUp, TRANS ("Upwards (low notes first)"), can);
+    strum.addItem (Grid::toolStrumDown, TRANS ("Downwards (high notes first)"), can);
+    human.addItem (Grid::toolHumanizeTiming, TRANS ("Timing (starts a hair early or late)"), can);
+    human.addItem (Grid::toolHumanizeVelocity, TRANS ("Velocity (some hits softer, some harder)"), can);
+    human.addItem (Grid::toolHumanizeBoth, TRANS ("Both"), can);
+    velocity.addItem (Grid::toolRampUp, TRANS ("Ramp up (soft to hard: a roll that grows)"), can);
+    velocity.addItem (Grid::toolRampDown, TRANS ("Ramp down (hard to soft)"), can);
+
+    m.addSectionHeader (grid->selectedNotes().isEmpty() ? TRANS ("Tools - on every note (none selected)")
+                                                        : TRANS ("Tools - on the selected notes"));
+    m.addSubMenu (TRANS ("Add a chord on each note"), chordMenu);
+    m.addSubMenu (TRANS ("Arpeggio: chords into runs, a note every") + " " + stepName, arp);
+    m.addItem (Grid::toolChop, TRANS ("Chop: cut each note into pieces of a") + " " + stepName + " " + TRANS ("(rolls)"), can);
+    m.addSubMenu (TRANS ("Strum: a chord's notes one after the other"), strum);
+    m.addSeparator();
+    m.addSubMenu (TRANS ("Humanize: small random changes"), human);
+    m.addSubMenu (TRANS ("Velocity"), velocity);
+    m.addSeparator();
+    m.addItem (Grid::toolFlip, TRANS ("Flip upside down"), can);
+    m.addItem (Grid::toolReverse, TRANS ("Reverse (last note first)"), can);
+    m.addItem (Grid::toolHalf, TRANS ("Half as long"), can);
+    m.addItem (Grid::toolDouble, TRANS ("Twice as long"), can);
+
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (toolsButton),
+                     [safe = juce::Component::SafePointer<PianoRoll> (this)] (int r)
+    {
+        if (safe == nullptr || r <= 0)
+            return;
+
+        safe->grid->applyNoteTool (r);
+        safe->lane->repaint();
+        safe->focusNotes();
     });
 }
 
@@ -2252,6 +2385,8 @@ void PianoRoll::resized()
     snapButton.setBounds (buttons.removeFromRight (juce::jmin (140, snapWidth)));
     buttons.removeFromRight (6);
     ghostButton.setBounds (buttons.removeFromRight (juce::jmax (58, (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), ghostButton.getButtonText()) + 20)));
+    buttons.removeFromRight (6);
+    toolsButton.setBounds (buttons.removeFromRight (juce::jmax (52, (int) juce::GlyphArrangement::getStringWidth (theme::ui (13.0f, theme::Weight::semibold), toolsButton.getButtonText()) + 20)));
     buttons.removeFromRight (10);
     sliceButton.setBounds (buttons.removeFromRight (30));
     buttons.removeFromRight (2);

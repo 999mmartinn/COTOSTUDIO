@@ -7,6 +7,7 @@
 #include "LimiterPlugin.h"
 #include "SidechainPlugin.h"
 #include "MoreFx.h"
+#include "ExtraFx.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 #include "AppData.h"
@@ -364,6 +365,11 @@ private:
         engine->getPluginManager().createBuiltInType<EnhancerPlugin>();
         engine->getPluginManager().createBuiltInType<FlangerPlugin>();
         engine->getPluginManager().createBuiltInType<FilterFxPlugin>();
+        engine->getPluginManager().createBuiltInType<DeEsserPlugin>();
+        engine->getPluginManager().createBuiltInType<MultibandPlugin>();
+        engine->getPluginManager().createBuiltInType<DistortionPlugin>();
+        engine->getPluginManager().createBuiltInType<StereoShaperPlugin>();
+        engine->getPluginManager().createBuiltInType<LoudnessMeterPlugin>();
 
         // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
         engine->getDeviceManager().setAllWaveInputsToNumChannels (1);

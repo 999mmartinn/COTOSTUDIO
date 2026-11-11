@@ -5,6 +5,7 @@
 #include "LimiterPlugin.h"
 #include "SidechainPlugin.h"
 #include "MoreFx.h"
+#include "ExtraFx.h"
 #include "DelayPlugin.h"
 #include "ReverbPlugin.h"
 
@@ -1911,6 +1912,11 @@ juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
     list.add ({ EnhancerPlugin::xmlTypeName,       "Enhancer (A-D: fuller, louder)" });
     list.add ({ FlangerPlugin::xmlTypeName,        "Flanger" });
     list.add ({ FilterFxPlugin::xmlTypeName,       "Filter (low / band / high)" });
+    list.add ({ DeEsserPlugin::xmlTypeName,        "De-esser (tames harsh S sounds)" });
+    list.add ({ MultibandPlugin::xmlTypeName,      "Multiband compressor (3 bands)" });
+    list.add ({ DistortionPlugin::xmlTypeName,     "Distortion (drive, bit crusher)" });
+    list.add ({ StereoShaperPlugin::xmlTypeName,   "Stereo shaper (width, Haas delay)" });
+    list.add ({ LoudnessMeterPlugin::xmlTypeName,  "Loudness meter (LUFS)" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
     list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor (simple)" });
     list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb (simple)" });

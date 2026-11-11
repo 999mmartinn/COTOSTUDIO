@@ -28,6 +28,8 @@
 #include "AppData.h"
 #include "FlpImport.h"
 #include "MoreFx.h"
+#include "ExtraFx.h"
+#include "NoteTools.h"
 #include "SelfTestMp3.h"
 
 namespace
@@ -6759,6 +6761,210 @@ private:
 
                 return ok;
             } });
+
+        //==============================================================================
+        // 2.3: five more effects of our own (measured) and the piano roll's tools
+        steps.push_back ({ "2.3 effects measured: De-esser turns a harsh high tone down and leaves a low one, Multiband squeezes only its own band, Distortion clips, Stereo shaper narrows to nothing, Loudness meter reads LUFS",
+            {},
+            [this]
+            {
+                const double sr = 44100.0;
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, double got, double lo, double hi)
+                {
+                    const bool good = got >= lo && got <= hi && ! std::isnan (got);
+                    std::cout << "    " << what << ": " << juce::String (got, 4) << (good ? "" : "   <-- expected " + juce::String (lo) + " .. " + juce::String (hi)) << std::endl;
+                    ok = ok && good;
+                };
+
+                auto edit = te::createEmptyEdit (engine, juce::File());
+
+                // A sine (the same on both sides) through a plugin for a second; returns the
+                // left side's peak in the last 0.2 s.
+                auto peakThrough = [&] (te::Plugin& plugin, double hz, float level)
+                {
+                    plugin.initialise ({ te::TimePosition(), sr, 512 });
+                    plugin.reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    float peak = 0.0f;
+                    const int total = (int) sr;
+
+                    for (int pos = 0; pos < total; pos += 512)
+                    {
+                        for (int i = 0; i < 512; ++i)
+                            for (int c = 0; c < 2; ++c)
+                                buffer.setSample (c, i, level * (float) std::sin (juce::MathConstants<double>::twoPi * hz * (pos + i) / sr));
+
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        plugin.applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                            if (pos + i > total - (int) (0.2 * sr))
+                                peak = juce::jmax (peak, std::abs (buffer.getSample (0, i)));
+                    }
+
+                    return peak;
+                };
+                auto set = [] (te::Plugin& p, const char* id, float v) { p.getAutomatableParameterByID (id)->setParameter (v, juce::sendNotificationSync); };
+                auto db = [] (float g) { return juce::Decibels::gainToDecibels (g, -100.0f); };
+                auto change = [&] (te::Plugin& p, double hz, float level) { return (double) (db (peakThrough (p, hz, level)) - db (level)); };
+                auto make = [&] (const char* type) { return edit->getPluginCache().createNewPlugin (type, {}); };
+
+                auto deEsser = make (DeEsserPlugin::xmlTypeName);
+                auto multiband = make (MultibandPlugin::xmlTypeName);
+                auto distortion = make (DistortionPlugin::xmlTypeName);
+                auto stereo = make (StereoShaperPlugin::xmlTypeName);
+                auto meterPlugin = make (LoudnessMeterPlugin::xmlTypeName);
+
+                if (deEsser == nullptr || multiband == nullptr || distortion == nullptr || stereo == nullptr || meterPlugin == nullptr)
+                {
+                    std::cout << "    one of the new effects could not be made" << std::endl;
+                    return false;
+                }
+
+                set (*deEsser, "frequency", 5000.0f);  set (*deEsser, "threshold", -30.0f);  set (*deEsser, "range", 12.0f);
+                check ("de-esser (5 kHz, -30 dB, range 12): an 8 kHz tone at -6 dB changes by (dB)", change (*deEsser, 8000.0, 0.5f), -13.0, -11.0);
+                check ("de-esser: a 200 Hz tone changes by (dB)", change (*deEsser, 200.0, 0.5f), -0.5, 0.5);
+
+                for (auto* id : { "lowRatio", "midRatio", "highRatio" })
+                    set (*multiband, id, 1.0f);
+
+                check ("multiband, every ratio 1 : 1: a 1 kHz tone changes by (dB)", change (*multiband, 1000.0, 0.5f), -0.3, 0.3);
+                check ("multiband, every ratio 1 : 1: a 200 Hz tone (on the crossover) changes by (dB)", change (*multiband, 200.0, 0.5f), -0.3, 0.3);
+                set (*multiband, "lowThresh", -30.0f);  set (*multiband, "lowRatio", 20.0f);
+                check ("multiband, low band 20 : 1 at -30 dB: a 60 Hz tone at -6 dB changes by (dB)", change (*multiband, 60.0, 0.5f), -24.0, -18.0);
+                check ("multiband, the same: a 1 kHz tone (mid band) changes by (dB)", change (*multiband, 1000.0, 0.5f), -0.3, 0.3);
+
+                set (*distortion, "drive", 0.0f);  set (*distortion, "shape", 0.0f);
+                check ("distortion, no drive: a quiet 1 kHz tone changes by (dB)", change (*distortion, 1000.0, 0.05f), -0.6, 0.3);
+                set (*distortion, "drive", 24.0f);  set (*distortion, "shape", 1.0f);
+                // Clipped flat at 0 dB, then half the drive (12 dB) taken back: -12 dB, from -6 dB.
+                check ("distortion, hard, drive 24 dB: a -6 dB tone changes by (dB)", change (*distortion, 1000.0, 0.5f), -7.0, -5.0);
+
+                check ("stereo shaper as it comes: a tone changes by (dB)", change (*stereo, 1000.0, 0.5f), -0.1, 0.1);
+                set (*stereo, "chanMode", 3.0f);  set (*stereo, "width", 0.0f);
+                // The right side flipped: the two sides cancel in the middle, and width 0 keeps only the middle.
+                check ("stereo shaper, right side flipped, width 0: what is left (dB)", db (peakThrough (*stereo, 1000.0, 0.5f)), -101.0, -60.0);
+
+                peakThrough (*meterPlugin, 1000.0, 0.1f);
+
+                if (auto* meter = dynamic_cast<LoudnessMeterPlugin*> (meterPlugin.get()))
+                {
+                    check ("loudness meter, a -20 dB 1 kHz tone on both sides: now (LUFS)", meter->momentary.load(), -20.5, -19.5);
+                    check ("loudness meter: whole song (LUFS)", meter->integrated.load(), -20.5, -19.5);
+                    check ("loudness meter: peak (dB)", meter->peak.load(), -20.2, -19.8);
+                }
+                else
+                {
+                    ok = false;
+                }
+
+                return ok;
+            },
+            15000 });
+
+        steps.push_back ({ "2.3 piano roll tools: a chord on a note, an arpeggio from it, a note chopped into a roll, a strum, flip, reverse, half length, a velocity ramp, humanize",
+            {},
+            [this]
+            {
+                auto edit = te::createEmptyEdit (engine, juce::File());
+                song::createDefaultSong (*edit);
+
+                if (song::getChannels (*edit).isEmpty())
+                    song::addChannel (*edit, song::InstrumentKind::synth);
+
+                const auto id = song::getChannelID (*song::getChannels (*edit).getFirst());
+                auto pattern = song::addPattern (*edit, "Tools", 1);
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, bool good)
+                {
+                    std::cout << "    " << what << ": " << (good ? "yes" : "NO") << std::endl;
+                    ok = ok && good;
+                };
+                auto near = [] (double a, double b) { return std::abs (a - b) < 1.0e-6; };
+                auto notesNow = [&] { return song::getNotes (pattern, id); };
+                auto has = [&] (int pitch, double beat, double length)
+                {
+                    for (auto& n : notesNow())
+                        if ((int) n[song::ids::p] == pitch && near (n[song::ids::b], beat) && near (n[song::ids::l], length))
+                            return true;
+
+                    return false;
+                };
+
+                // A minor chord on C5, for a beat.
+                juce::Array<juce::ValueTree> one;
+                one.add (song::addNote (*edit, pattern, id, 60, 0.0, 1.0, 100));
+                const int added = notetools::addChord (*edit, pattern, id, one, 1, 24, 96).size();
+                const int addedAgain = notetools::addChord (*edit, pattern, id, one, 1, 24, 96).size();
+                check ("minor chord on C5 adds D#5 and G5, once", added == 2 && addedAgain == 0 && notesNow().size() == 3
+                                                                     && has (63, 0.0, 1.0) && has (67, 0.0, 1.0));
+
+                // Up and down, a step each: C D# G D#.
+                const int arp = notetools::arpeggiate (*edit, pattern, id, notesNow(), 0.25, notetools::Arp::upDown).size();
+                check ("arpeggio up and down: C D# G D#, a step each", arp == 4 && notesNow().size() == 4 && has (60, 0.0, 0.25) && has (63, 0.25, 0.25)
+                                                                          && has (67, 0.5, 0.25) && has (63, 0.75, 0.25));
+
+                // Back to front: G is still third, the two D# swap, C comes last.
+                notetools::reverse (*edit, notesNow());
+                check ("reverse: D# G D# C", has (63, 0.0, 0.25) && has (67, 0.25, 0.25) && has (63, 0.5, 0.25) && has (60, 0.75, 0.25));
+
+                // Upside down: C (lowest) <-> G (highest), D# stays 3 above the low one -> E.
+                notetools::flip (*edit, notesNow());
+                check ("flip: the highest and lowest swap", has (64, 0.0, 0.25) && has (60, 0.25, 0.25) && has (64, 0.5, 0.25) && has (67, 0.75, 0.25));
+
+                notetools::velocityRamp (*edit, notesNow(), 40, 127);
+                int firstVelocity = 0, lastVelocity = 0;
+
+                for (auto& n : notesNow())
+                {
+                    if (near (n[song::ids::b], 0.0))    firstVelocity = n[song::ids::v];
+                    if (near (n[song::ids::b], 0.75))   lastVelocity = n[song::ids::v];
+                }
+
+                check ("velocity ramp: 40 at the first note, 127 at the last", firstVelocity == 40 && lastVelocity == 127);
+
+                notetools::scaleLengths (*edit, notesNow(), 0.5, 4.0);
+                check ("half as long: every note an eighth of a beat", has (64, 0.0, 0.125) && has (67, 0.75, 0.125));
+
+                for (auto& n : notesNow())
+                    song::removeNote (*edit, n);
+
+                // A beat-long note chopped into four steps.
+                juce::Array<juce::ValueTree> longNote;
+                longNote.add (song::addNote (*edit, pattern, id, 72, 2.0, 1.0, 90));
+                const int pieces = notetools::chop (*edit, pattern, id, longNote, 0.25).size();
+                check ("chop: a beat becomes 4 steps", pieces == 4 && notesNow().size() == 4 && has (72, 2.0, 0.25) && has (72, 2.75, 0.25));
+
+                for (auto& n : notesNow())
+                    song::removeNote (*edit, n);
+
+                // A strummed chord: later starts going up, the same end.
+                for (int pitch : { 48, 52, 55 })
+                    song::addNote (*edit, pattern, id, pitch, 3.0, 1.0, 100);
+
+                notetools::strum (*edit, notesNow(), 0.05, false, 4.0);
+                check ("strum up: each note 0.05 beats after the one below, all ending together",
+                       has (48, 3.0, 1.0) && has (52, 3.05, 0.95) && has (55, 3.1, 0.9));
+
+                juce::Random random (23);
+                notetools::humanize (*edit, notesNow(), random, 0.02, 10, 4.0);
+                bool humanOk = notesNow().size() == 3;
+
+                for (auto& n : notesNow())
+                {
+                    const int pitch = n[song::ids::p];
+                    const double wanted = pitch == 48 ? 3.0 : pitch == 52 ? 3.05 : 3.1;
+                    const int velocity = n[song::ids::v];
+                    humanOk = humanOk && std::abs ((double) n[song::ids::b] - wanted) <= 0.02 + 1.0e-9 && velocity >= 90 && velocity <= 110;
+                }
+
+                check ("humanize: starts within 0.02 beats, velocities within 10", humanOk);
+                edit = nullptr;
+                return ok;
+            },
+            10000 });
 
         steps.push_back ({ "2.2 speed: a big song (40 channels, 60 patterns of 480 notes, 600 clips) - comparing copies, the unsaved-changes check and a SONG-mode compile are fast; copies compare exactly as in 2.1",
             [this] { bigSongResult = runBigSongSpeedTest() ? 1 : 0; },
