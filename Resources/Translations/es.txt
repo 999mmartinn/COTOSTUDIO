@@ -1070,3 +1070,8 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "Normalize: this clip's sound isn't on this PC yet" = "Normalizar: el sonido de este clip todavía no está en este PC"
 "Normalize: this clip is silent" = "Normalizar: este clip está en silencio"
 "Normalized: the clip's volume is now {DB} dB" = "Normalizado: el volumen del clip es ahora {DB} dB"
+
+// 2.3.1
+"Move to" = "Mover a"
+"Move to..." = "Mover a..."
+"Puts this clip on another playlist track, exactly where it is in time (it can't slip off the beat)" = "Pone este clip en otra pista de la lista de reproducción, exactamente donde está en el tiempo (no se puede salir del compás)"

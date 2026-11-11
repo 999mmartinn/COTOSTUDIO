@@ -400,6 +400,7 @@ public:
         if (auto* channel = channelFor (*edit, hash))
         {
             state.selectedChannel = state.placeAudioChannel = getChannelID (*channel);
+            state.placeAudioClip = {};   // (picked in the browser: the whole file)
 
             if (state.onSelectionChanged)
                 state.onSelectionChanged();

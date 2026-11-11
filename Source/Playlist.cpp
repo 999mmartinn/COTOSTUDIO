@@ -41,6 +41,52 @@ static juce::PopupMenu colourMenu (int firstID, int noneID, const juce::String& 
     return m;
 }
 
+static void routeTakeAndTell (EditorState&, const juce::ValueTree& clip);
+
+/** "Move to" (2.3.1): the playlist tracks as a menu (item IDs firstID + track), up to a
+    little past the last one in use; the clip's own track is ticked. */
+static juce::PopupMenu moveToMenu (te::Edit& edit, int currentLane, int firstID)
+{
+    int last = currentLane;
+
+    for (auto& c : getClips (edit))
+        last = juce::jmax (last, (int) c[ids::lane]);
+
+    for (int lane = numLanes - 1; lane > last; --lane)
+        if (getLaneName (edit, lane).isNotEmpty())
+        {
+            last = lane;
+            break;
+        }
+
+    last = juce::jlimit (0, numLanes - 1, last + 2);
+    juce::PopupMenu m;
+
+    for (int lane = 0; lane <= last; ++lane)
+    {
+        const auto name = getLaneName (edit, lane);
+        m.addItem (firstID + lane, juce::String (lane + 1) + "  " + (name.isNotEmpty() ? name : TRANS ("Track") + " " + juce::String (lane + 1)),
+                   true, lane == currentLane);
+    }
+
+    return m;
+}
+
+/** Puts a clip on another playlist track without moving it in time (a take then plays
+    through that track's insert, as when dragged there). Part of the caller's undo step. */
+static void moveClipToLane (EditorState& state, juce::ValueTree clip, int lane)
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr || ! clip.isValid() || ! juce::isPositiveAndBelow (lane, numLanes) || (int) clip[ids::lane] == lane)
+        return;
+
+    clip.setProperty (ids::lane, lane, &edit->getUndoManager());
+
+    if (isAudioClip (clip))
+        routeTakeAndTell (state, clip);
+}
+
 static void askForText (const juce::String& title, const juce::String& message, const juce::String& initial,
                         std::function<void (juce::String)> onOK)
 {
@@ -1261,6 +1307,20 @@ public:
             if (auto* audio = state.getPlaceAudioChannel())
             {
                 dragClip = placeAudioChannel (*edit, *audio, laneAtY (e.position.y), snap (beatAtX (e.position.x)));
+
+                // (2.3.1) The clip you clicked last, if it is this sound: the copy is cut
+                // the same way, with its volume, fades, pitch and speed.
+                if (dragClip.isValid())
+                    for (auto& source : getClips (*edit))
+                        if (source[ids::sid].toString() == state.placeAudioClip && source != dragClip && isAudioClip (source)
+                              && source[ids::ch].toString() == dragClip[ids::ch].toString())
+                        {
+                            for (auto* id : { &ids::offset, &ids::duration, &ids::gain, &ids::pitch, &ids::speed, &ids::smode, &ids::fi, &ids::fo })
+                                if (source.hasProperty (*id))
+                                    dragClip.setProperty (*id, source[*id], &edit->getUndoManager());
+
+                            break;
+                        }
             }
             else
             {
@@ -1542,6 +1602,7 @@ public:
             {
                 state.selectedChannel = dragClip[ids::ch].toString();
                 state.placeAudioChannel = state.selectedChannel;
+                state.placeAudioClip = dragClip[ids::sid].toString();   // a click on empty space places a copy of this clip
             }
             else
             {
@@ -1558,6 +1619,8 @@ public:
 
         dragClip = {};
     }
+
+    static constexpr int moveToFirstID = 5000;   // "Move to" items: this + the track
 
     /** Right-click on a clip's name: pattern (rename, colour, make unique, delete) or
         audio take (insert, rename, delete). */
@@ -1593,6 +1656,7 @@ public:
                 m.addSubMenu (TRANS ("Insert") + ": " + (now != nullptr ? now->getName() : TRANS ("Master")), inserts);
             }
 
+            m.addSubMenu (TRANS ("Move to"), moveToMenu (*edit, clip[ids::lane], moveToFirstID));
             m.addItem (8, TRANS ("Make unique (its own channel, so it can use another insert)"),
                        channel != nullptr && countClipsOfChannel (*edit, getChannelID (*channel)) > 1);
             m.addItem (5, TRANS ("Properties (volume, fades, pitch, speed)..."));
@@ -1614,6 +1678,7 @@ public:
             const auto c = pattern[ids::colour].toString();
             m.addSubMenu (TRANS ("Colour"), colourMenu (200, 299, TRANS ("Default colour"),
                                                         c.isNotEmpty() ? juce::Colour::fromString (c) : juce::Colours::transparentBlack));
+            m.addSubMenu (TRANS ("Move to"), moveToMenu (*edit, clip[ids::lane], moveToFirstID));
             m.addItem (4, TRANS ("Make unique (a copy of the pattern for this clip only)"));
             m.addItem (6, TRANS ("Cut here"));
             m.addItem (7, TRANS ("Bounce to audio (one audio clip per channel)"), owner.bouncer == nullptr || ! owner.bouncer->isRunning());
@@ -1643,7 +1708,25 @@ public:
             auto pattern = findPattern (*e, target[ids::pattern].toString());
             auto* channel = findChannel (*e, target[ids::ch].toString());
 
-            if (r == 3)
+            if (r >= moveToFirstID)
+            {
+                // Move to: straight up or down to that track, in time where it is (the
+                // whole selection, if this clip is part of it).
+                st.beginAction();
+                const int lane = r - moveToFirstID;
+
+                if (safe->selected.contains (clipSid))
+                {
+                    for (auto& cl : getClips (*e))
+                        if (safe->selected.contains (cl[ids::sid].toString()))
+                            moveClipToLane (st, cl, lane);
+                }
+                else
+                {
+                    moveClipToLane (st, target, lane);
+                }
+            }
+            else if (r == 3)
             {
                 st.beginAction();
                 removeClip (*e, target);
@@ -3666,6 +3749,11 @@ public:
         normalizeButton.onClick = [this] { normalize(); };
         addAndMakeVisible (normalizeButton);
 
+        moveButton.setButtonText (TRANS ("Move to..."));
+        moveButton.setTooltip (TRANS ("Puts this clip on another playlist track, exactly where it is in time (it can't slip off the beat)"));
+        moveButton.onClick = [this] { showMoveMenu(); };
+        addAndMakeVisible (moveButton);
+
         readValues();
         setSize (340, 316);
     }
@@ -3701,8 +3789,9 @@ public:
         fitButton.setBounds (fit);
         r.removeFromTop (8);
         auto last = r.removeFromTop (26);
-        resetButton.setBounds (last.removeFromRight (90));
-        normalizeButton.setBounds (last.removeFromLeft (130));
+        resetButton.setBounds (last.removeFromRight (84));
+        normalizeButton.setBounds (last.removeFromLeft (100));
+        moveButton.setBounds (last.reduced (6, 0));
     }
 
 private:
@@ -3718,7 +3807,7 @@ private:
     juce::ToggleButton keepPitch;
     juce::Label fitLabel;
     juce::TextEditor bpmField;
-    juce::TextButton fitButton, resetButton, normalizeButton;
+    juce::TextButton fitButton, resetButton, normalizeButton, moveButton;
     bool reading = false;
 
     juce::ValueTree findClip() const
@@ -3816,6 +3905,30 @@ private:
         state.beginAction();
         setClipSpeed (*edit, clip, songBpm / itsBpm);
         readValues();
+    }
+
+    /** Move to (2.3.1): the playlist tracks as a menu; the clip goes straight to the one picked. */
+    void showMoveMenu()
+    {
+        auto clip = findClip();
+        auto* edit = state.getEdit();
+
+        if (! clip.isValid() || edit == nullptr)
+            return;
+
+        moveToMenu (*edit, clip[ids::lane], 1)
+            .showMenuAsync (juce::PopupMenu::Options().withTargetComponent (moveButton),
+                            [safe = juce::Component::SafePointer<ClipPropertiesPanel> (this)] (int r)
+        {
+            if (safe == nullptr || r <= 0)
+                return;
+
+            if (auto c = safe->findClip(); c.isValid())
+            {
+                safe->state.beginAction();
+                moveClipToLane (safe->state, c, r - 1);
+            }
+        });
     }
 
     /** Normalize (2.3, Pro Tools' clip gain "to peak"): the part of the file this clip

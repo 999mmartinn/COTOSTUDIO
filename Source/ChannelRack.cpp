@@ -116,6 +116,7 @@ public:
         // An audio channel becomes what the playlist places on click; any other
         // channel means you're working on patterns again.
         rack.state.placeAudioChannel = isAudio() ? channelID : juce::String();
+        rack.state.placeAudioClip = {};   // (picked in the rack: the whole file)
 
         if (rack.state.onSelectionChanged)
             rack.state.onSelectionChanged();

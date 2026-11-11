@@ -22,6 +22,8 @@ struct EditorState
     double playlistAutoGrid = 1.0;            // what "auto" means at the playlist's zoom now (set by the playlist)
     juce::String placeAudioChannel; // if set, clicking empty playlist space places this audio
                                     // channel's file; otherwise the viewed pattern
+    juce::String placeAudioClip;    // (2.3.1) the audio clip clicked last: if it is that channel's, the
+                                    // placed copy is cut like it (empty: the whole file)
     juce::String selectedInsert;    // mixer selection: insert track ID, "" = master
     enum class RackFilter { all, instruments, audio };
     RackFilter rackFilter = RackFilter::all;   // which channels the rack shows (this PC only)

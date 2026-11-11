@@ -29,6 +29,19 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.3.1
+
+* **Move to** - right-click a clip's name (audio or pattern) → *Move to* → a playlist
+  track: the clip goes straight up or down to that track and stays exactly where it is
+  in time, so it can't slip off the beat as when dragging. A take then plays through
+  that track's insert, as when you drag it there. With several clips selected, they all
+  go. The same list is in an audio clip's settings (double-click it → *Move to...*).
+* **A copy of a cut clip is cut too.** Click an audio clip, then click empty space to
+  place a copy (as before): the copy now has the same start and end inside the
+  recording, and the same volume, fades, pitch and speed, instead of being the whole
+  recording again. (Pick the sound in the channel rack or the browser to place the
+  whole file.)
+
 ## What's new in 2.3
 
 New tools for vocals, beats and the master. **Everyone in a session needs 2.3**
