@@ -3483,6 +3483,57 @@ private:
 };
 
 //==============================================================================
+//==============================================================================
+/** The small handle at the top right of the playlist, above the scroll bar (where FL has
+    its own): drag it down for taller tracks, up for shorter ones; double-click = normal. */
+class Playlist::HeightHandle  : public juce::Component,
+                                public juce::SettableTooltipClient
+{
+public:
+    explicit HeightHandle (Playlist& p) : owner (p)
+    {
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+        setTooltip (TRANS ("Track height: drag down for taller playlist tracks, up for shorter ones (double-click: normal)"));
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto r = getLocalBounds().toFloat().reduced (2.0f, 10.0f);
+        g.setColour (isMouseOverOrDragging() ? theme::colours::accent : theme::colours::muted);
+        g.fillRoundedRectangle (r, 2.0f);
+    }
+
+    void mouseEnter (const juce::MouseEvent&) override         { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override          { repaint(); }
+    void mouseDown (const juce::MouseEvent&) override          { startHeight = Playlist::laneHeight; }
+    void mouseDrag (const juce::MouseEvent& e) override        { owner.setLaneHeight (startHeight + e.getDistanceFromDragStartY() / 2); }
+    void mouseUp (const juce::MouseEvent&) override            { repaint(); }
+    void mouseDoubleClick (const juce::MouseEvent&) override   { owner.setLaneHeight (Playlist::normalLaneHeight); }
+
+private:
+    Playlist& owner;
+    int startHeight = Playlist::normalLaneHeight;
+};
+
+void Playlist::setLaneHeight (int pixels)
+{
+    pixels = juce::jlimit (normalLaneHeight, maxLaneHeight, pixels);
+
+    if (pixels == laneHeight)
+        return;
+
+    // (The track at the top of the view stays there.)
+    const double topRow = (double) viewport->getViewPositionY() / laneHeight;
+    laneHeight = pixels;
+    layoutContent();
+    viewport->setViewPosition (viewport->getViewPositionX(), juce::roundToInt (topRow * laneHeight));
+    lanes->repaint();
+    header->repaint();
+
+    if (onLaneHeightChanged)
+        onLaneHeightChanged();
+}
+
 Playlist::Playlist (EditorState& s) : state (s)
 {
     updateRows();
@@ -3496,6 +3547,8 @@ Playlist::Playlist (EditorState& s) : state (s)
     viewport->onScroll = [this] { ruler->repaint(); header->repaint(); };
 
     addAndMakeVisible (*viewport);
+    heightHandle = std::make_unique<HeightHandle> (*this);
+    addAndMakeVisible (*heightHandle);
     addAndMakeVisible (*ruler);
     addAndMakeVisible (*header);
 
@@ -4206,7 +4259,8 @@ void Playlist::resized()
 
     auto rulerRow = r.removeFromTop (rulerHeight);
     rulerRow.removeFromLeft (laneHeaderWidth);
-    ruler->setBounds (rulerRow.withTrimmedRight (viewport->getScrollBarThickness()));
+    heightHandle->setBounds (rulerRow.removeFromRight (viewport->getScrollBarThickness()));
+    ruler->setBounds (rulerRow);
 
     header->setBounds (r.removeFromLeft (laneHeaderWidth).withTrimmedBottom (viewport->getScrollBarThickness()));
     viewport->setBounds (r);

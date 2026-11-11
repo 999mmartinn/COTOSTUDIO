@@ -29,6 +29,12 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.3.2
+
+* **Taller playlist tracks.** The small handle at the top right of the playlist (above
+  the scroll bar, where FL has it): drag it **down** for taller tracks, **up** for
+  shorter ones; double-click it for the normal height. Yours only, and remembered.
+
 ## What's new in 2.3.1
 
 * **Move to** - right-click a clip's name (audio or pattern) → *Move to* → a playlist

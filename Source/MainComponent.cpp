@@ -890,6 +890,10 @@ MainComponent::MainComponent (te::Engine& e)
         setMaximised (maximised == Maximised::playlist ? Maximised::none : Maximised::playlist);
     };
 
+    // The playlist's track height is remembered (this PC only).
+    playlist.setLaneHeight (prefs->getIntValue ("playlistTrackHeight", Playlist::normalLaneHeight));
+    playlist.onLaneHeightChanged = [this] { settings()->setValue ("playlistTrackHeight", Playlist::laneHeight); };
+
     // The scale helper is remembered (this PC only).
     state.scaleSnap = prefs->getBoolValue ("scaleSnap", false);
     state.scaleKey = juce::jlimit (0, 11, prefs->getIntValue ("scaleKey", 0));

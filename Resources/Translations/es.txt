@@ -1075,3 +1075,6 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "Move to" = "Mover a"
 "Move to..." = "Mover a..."
 "Puts this clip on another playlist track, exactly where it is in time (it can't slip off the beat)" = "Pone este clip en otra pista de la lista de reproducción, exactamente donde está en el tiempo (no se puede salir del compás)"
+
+// 2.3.2
+"Track height: drag down for taller playlist tracks, up for shorter ones (double-click: normal)" = "Altura de pista: arrastra hacia abajo para pistas más altas en la lista de reproducción, hacia arriba para más bajas (doble clic: normal)"

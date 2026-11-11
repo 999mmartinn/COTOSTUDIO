@@ -57,7 +57,14 @@ public:
     static constexpr int headerHeight = 36;
 
     // The ruler: bar numbers, tempo tags and punch range on top, markers in a strip below.
-    static constexpr int laneHeight = 30, laneHeaderWidth = 118, rulerBarsHeight = 20, rulerHeight = 34;
+    static constexpr int laneHeaderWidth = 118, rulerBarsHeight = 20, rulerHeight = 34;
+
+    /** How tall a playlist track is drawn (2.3.2: yours to change, like FL's playlist zoom:
+        drag the small handle above the scroll bar up or down). This PC only, remembered. */
+    static inline int laneHeight = 30;
+    static constexpr int normalLaneHeight = 30, maxLaneHeight = 160;
+    void setLaneHeight (int pixels);
+    std::function<void()> onLaneHeightChanged;
 
     /** Full screen: the playlist fills the main window (set up by the main window). */
     std::function<void()> onFullScreenToggle;
@@ -70,6 +77,8 @@ private:
     class Ruler;
     class LaneHeader;
     class ScrollViewport;
+    class HeightHandle;
+    std::unique_ptr<HeightHandle> heightHandle;
 
     EditorState& state;
     std::unique_ptr<Lanes> lanes;
