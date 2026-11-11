@@ -3048,7 +3048,8 @@ private:
                 }
 
                 return rejoinedAlone && peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
-            } });
+            },
+            25000 });   // (a slow build machine has needed more than the usual 8 s here: the song and the share both have to arrive)
 
         steps.push_back ({ "People: peer 1 is back in everyone's list and got the earlier chat",
             {},
