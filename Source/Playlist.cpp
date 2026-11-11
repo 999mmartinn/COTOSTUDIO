@@ -1,4 +1,5 @@
 #include "Playlist.h"
+#include "AudioTools.h"
 #include "FileImport.h"
 #include "RemoteCursors.h"
 
@@ -85,6 +86,103 @@ static void moveClipToLane (EditorState& state, juce::ValueTree clip, int lane)
 
     if (isAudioClip (clip))
         routeTakeAndTell (state, clip);
+}
+
+/** Strip silence (2.4, as in Pro Tools): the quiet parts of a take are cut out, leaving a
+    clip for each part with sound, exactly where it was. One undo step. */
+static void stripSilence (EditorState& state, juce::ValueTree clip)
+{
+    auto* edit = state.getEdit();
+
+    if (edit == nullptr || ! isAudioClip (clip))
+        return;
+
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (state.session.getAssetStore().getFile (clip[ids::asset].toString())));
+
+    if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0)
+    {
+        state.session.logMessage (TRANS ("Strip silence: this clip's sound isn't on this PC yet"));
+        return;
+    }
+
+    const double rate = reader->sampleRate, speed = getClipSpeed (clip);
+    const double offset = clip[ids::offset], duration = clip[ids::duration];
+    const auto first = juce::jlimit ((juce::int64) 0, reader->lengthInSamples, (juce::int64) (offset * rate));
+    const auto count = juce::jmin (reader->lengthInSamples - first, (juce::int64) std::ceil (duration * speed * rate));
+
+    // The loudest sample of every hundredth of a second of what the clip plays.
+    const int window = juce::jmax (1, juce::roundToInt (rate * 0.01));
+    juce::AudioBuffer<float> buffer ((int) juce::jmin ((unsigned int) 2, reader->numChannels), window * 512);
+    std::vector<float> peaks;
+    float loudest = 0.0f;
+
+    for (juce::int64 pos = 0; pos < count; pos += buffer.getNumSamples())
+    {
+        const int n = (int) juce::jmin ((juce::int64) buffer.getNumSamples(), count - pos);
+        reader->read (&buffer, 0, n, first + pos, true, true);
+
+        for (int from = 0; from < n; from += window)
+        {
+            float peak = 0.0f;
+
+            for (int c = 0; c < buffer.getNumChannels(); ++c)
+                peak = juce::jmax (peak, buffer.getMagnitude (c, from, juce::jmin (window, n - from)));
+
+            peaks.push_back (peak);
+            loudest = juce::jmax (loudest, peak);
+        }
+    }
+
+    const auto regions = audiotools::findSoundRegions (peaks, window / rate, audiotools::silenceThresholdDb (loudest));
+
+    if (loudest < 1.0e-5f || regions.empty())
+    {
+        state.session.logMessage (TRANS ("Strip silence: this clip is silent"));
+        return;
+    }
+
+    if (regions.size() == 1 && regions.front().getStart() / speed <= 0.002 && regions.front().getEnd() / speed >= duration - 0.002)
+    {
+        state.session.logMessage (TRANS ("Strip silence: no quiet part long enough to cut out"));
+        return;
+    }
+
+    // Cut at every start and end of a part with sound (seconds along the clip), dropping
+    // the quiet pieces in between.
+    state.beginAction();
+    const double startSeconds = beatsToSeconds (*edit, clip[ids::start]);
+    auto piece = clip;
+    bool quiet = true;   // the piece in hand: before the first part with sound
+    int kept = 0;
+
+    for (auto& region : regions)
+        for (double cut : { region.getStart() / speed, region.getEnd() / speed })
+        {
+            if (cut >= duration - 0.002)
+                break;   // (sound up to the clip's end: nothing after it)
+
+            if (cut > 0.002)
+            {
+                auto right = splitClip (*edit, piece, secondsToBeats (*edit, startSeconds + cut));
+
+                if (! right.isValid())
+                    continue;
+
+                if (quiet)  removeClip (*edit, piece);
+                else        ++kept;
+
+                piece = right;
+            }
+
+            quiet = ! quiet;
+        }
+
+    if (quiet)  removeClip (*edit, piece);
+    else        ++kept;
+
+    state.session.logMessage (TRANS ("Strip silence: {N} part(s) with sound kept (Ctrl+Z undoes it)").replace ("{N}", juce::String (kept)));
 }
 
 static void askForText (const juce::String& title, const juce::String& message, const juce::String& initial,
@@ -1661,6 +1759,7 @@ public:
                        channel != nullptr && countClipsOfChannel (*edit, getChannelID (*channel)) > 1);
             m.addItem (5, TRANS ("Properties (volume, fades, pitch, speed)..."));
             m.addItem (6, TRANS ("Cut here"));
+            m.addItem (9, TRANS ("Strip silence (cut the quiet parts out)"));
             m.addItem (7, TRANS ("Bounce to audio (apply its fades, volume, pitch and speed)"), owner.bouncer == nullptr || ! owner.bouncer->isRunning());
             m.addItem (2, TRANS ("Rename..."));
             m.addSeparator();
@@ -1744,6 +1843,10 @@ public:
             {
                 safe->owner.bounceClip (clipSid);
                 return;
+            }
+            else if (r == 9 && isAudioClip (target))
+            {
+                stripSilence (st, target);
             }
             else if (r == 8 && isAudioClip (target))
             {

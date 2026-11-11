@@ -83,6 +83,9 @@ public:
 
     juce::CachedValue<bool> cutValue, noteLengthValue;   // Cut itself; Stop at note end
     te::AutomatableParameter *tuneParam, *fineParam, *levelParam;
+    /** (2.4) Glide, for 808 slides: with a time set, a note that starts while another is
+        still held doesn't start the sound again - the sounding one bends to its pitch. */
+    te::AutomatableParameter* glideParam = nullptr;
     te::AutomatableParameter *startParam, *endParam, *fadeInParam, *fadeOutParam, *reverseParam;
     te::AutomatableParameter *envOnParam, *attackParam, *holdParam, *decayParam, *sustainParam, *releaseParam;
     te::AutomatableParameter *filterTypeParam, *cutoffParam, *resonanceParam;
@@ -117,6 +120,9 @@ private:
     struct Voice
     {
         bool active = false, released = false, useEnvelope = false;
+        bool held = false;                     // its note hasn't ended yet (glide bends held notes only)
+        double stepChange = 0.0;               // glide: added to step every sample...
+        int glideLeft = 0;                     // ...for this many more samples
         int note = -1;
         double position = 0.0, startPosition = 0.0, step = 1.0;   // in the file's samples (step < 0 = backwards)
         float gain = 1.0f, fade = 1.0f, fadeStep = 0.0f;           // velocity; the "cut itself" fade
@@ -136,6 +142,7 @@ private:
         float attackStep = 1.0f, decayStep = 1.0f, releaseSamples = 1.0f;
         int holdSamples = 0, filterType = 0;
         float cutoff = 20000.0f, resonance = 0.0f;
+        int glideSamples = 0;                  // 0 = no glide
     };
 
     std::unique_ptr<Sample> sample;          // swapped under sampleLock

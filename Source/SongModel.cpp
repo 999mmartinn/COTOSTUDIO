@@ -1917,6 +1917,7 @@ juce::Array<std::pair<juce::String, juce::String>> getBuiltInEffects()
     list.add ({ DistortionPlugin::xmlTypeName,     "Distortion (drive, bit crusher)" });
     list.add ({ StereoShaperPlugin::xmlTypeName,   "Stereo shaper (width, Haas delay)" });
     list.add ({ LoudnessMeterPlugin::xmlTypeName,  "Loudness meter (LUFS)" });
+    list.add ({ TrackDelayPlugin::xmlTypeName,     "Track delay (the whole insert later)" });
     list.add ({ te::EqualiserPlugin::xmlTypeName,  "Equaliser (4 band)" });
     list.add ({ te::CompressorPlugin::xmlTypeName, "Compressor (simple)" });
     list.add ({ te::ReverbPlugin::xmlTypeName,     "Reverb (simple)" });

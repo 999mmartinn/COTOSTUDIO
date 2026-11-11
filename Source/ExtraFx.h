@@ -257,6 +257,44 @@ private:
 };
 
 //==============================================================================
+/** Track delay (2.4): everything on the insert a set time later (up to half a second),
+    to line a track up with the others by hand, or to push it behind the beat. */
+class TrackDelayPlugin  : public CotoFxPlugin
+{
+public:
+    explicit TrackDelayPlugin (te::PluginCreationInfo);
+    ~TrackDelayPlugin() override;
+
+    static const char* getPluginName()                  { return NEEDS_TRANS ("Track delay"); }
+    static const char* xmlTypeName;
+    static constexpr float maxMs = 500.0f;
+
+    juce::String getName() const override               { return "Track delay"; }
+    juce::String getPluginType() override               { return xmlTypeName; }
+    juce::String getShortName (int) override            { return "T.Delay"; }
+    juce::String getSelectableDescription() override    { return getName(); }
+    int getNumOutputChannelsGivenInputs (int) override  { return 2; }
+    BusLayout getBusses() const override                { return BusLayout::singleStereoInOut(); }
+    bool takesMidiInput() override                      { return false; }
+    bool takesAudioInput() override                     { return true; }
+    bool producesAudioWhenNoAudioInput() override       { return true; }
+    double getTailLength() const override               { return maxMs * 0.001; }
+
+    void initialise (const te::PluginInitialisationInfo&) override;
+    void deinitialise() override                        {}
+    void reset() override;
+    void applyToBuffer (const te::PluginRenderContext&) override;
+
+    te::AutomatableParameter* time = nullptr;
+
+private:
+    double sampleRate = 44100.0;
+    juce::AudioBuffer<float> line;
+    int writePos = 0;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackDelayPlugin)
+};
+
+//==============================================================================
 /** The Loudness meter's window: four big numbers, a bar for "now" and Restart. */
 class LoudnessMeterEditor  : public juce::Component,
                              private juce::Timer

@@ -1078,3 +1078,23 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 
 // 2.3.2
 "Track height: drag down for taller playlist tracks, up for shorter ones (double-click: normal)" = "Altura de pista: arrastra hacia abajo para pistas más altas en la lista de reproducción, hacia arriba para más bajas (doble clic: normal)"
+
+// 2.4
+"Strip silence (cut the quiet parts out)" = "Quitar silencios (recorta las partes sin sonido)"
+"Strip silence: this clip's sound isn't on this PC yet" = "Quitar silencios: el sonido de este clip todavía no está en este PC"
+"Strip silence: this clip is silent" = "Quitar silencios: este clip está en silencio"
+"Strip silence: no quiet part long enough to cut out" = "Quitar silencios: no hay ninguna parte en silencio lo bastante larga para recortarla"
+"Strip silence: {N} part(s) with sound kept (Ctrl+Z undoes it)" = "Quitar silencios: quedan {N} parte(s) con sonido (Ctrl+Z lo deshace)"
+"Save its effects as a chain preset..." = "Guardar sus efectos como preset de cadena..."
+"(none yet: save an insert's effects first)" = "(ninguno todavía: guarda antes los efectos de un inserto)"
+"Add a chain preset's effects" = "Añadir los efectos de un preset de cadena"
+"Save chain preset" = "Guardar preset de cadena"
+"A name for these effects and their settings (kept on this PC):" = "Un nombre para estos efectos y sus ajustes (se guarda en este PC):"
+"Chain preset saved: {NAME}" = "Preset de cadena guardado: {NAME}"
+"The chain preset could not be saved" = "No se pudo guardar el preset de cadena"
+"{N} effect(s) added from the chain preset {NAME}" = "{N} efecto(s) añadido(s) desde el preset de cadena {NAME}"
+"Glide" = "Glide"
+"For 808 slides: with a time set, a note that starts while another is still held bends the sounding one to its pitch instead of starting again (overlap the notes in the piano roll)" = "Para slides de 808: con un tiempo puesto, una nota que empieza mientras otra sigue sonando desliza la que suena hasta su tono en vez de volver a empezar (solapa las notas en el piano roll)"
+"Track delay" = "Retardo de pista"
+"Track delay (the whole insert later)" = "Retardo de pista (todo el inserto más tarde)"
+"Everything on this insert plays this much later: to line a track up with the others by ear, or to sit it just behind the beat." = "Todo lo de este inserto suena este tiempo más tarde: para alinear una pista con las demás de oído, o para dejarla un pelín por detrás del ritmo."

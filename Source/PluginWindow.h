@@ -152,7 +152,8 @@ public:
         else if (dynamic_cast<CompressorFxPlugin*> (&plugin) != nullptr || dynamic_cast<EnhancerPlugin*> (&plugin) != nullptr
                   || dynamic_cast<FlangerPlugin*> (&plugin) != nullptr || dynamic_cast<FilterFxPlugin*> (&plugin) != nullptr
                   || dynamic_cast<DeEsserPlugin*> (&plugin) != nullptr || dynamic_cast<MultibandPlugin*> (&plugin) != nullptr
-                  || dynamic_cast<DistortionPlugin*> (&plugin) != nullptr || dynamic_cast<StereoShaperPlugin*> (&plugin) != nullptr)
+                  || dynamic_cast<DistortionPlugin*> (&plugin) != nullptr || dynamic_cast<StereoShaperPlugin*> (&plugin) != nullptr
+                  || dynamic_cast<TrackDelayPlugin*> (&plugin) != nullptr)
             content = std::make_unique<MoreFxEditor> (*dynamic_cast<CotoFxPlugin*> (&plugin));
         else if (auto* loudness = dynamic_cast<LoudnessMeterPlugin*> (&plugin))
             content = std::make_unique<LoudnessMeterEditor> (*loudness);

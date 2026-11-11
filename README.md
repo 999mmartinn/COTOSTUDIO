@@ -29,6 +29,30 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.4
+
+**Everyone in a session needs 2.4** (it has an effect and a Sampler knob that 2.3
+doesn't know).
+
+* **Strip silence** - right-click an audio clip's name → *Strip silence*: the quiet
+  parts of the take are cut out, leaving one clip for each part with sound, exactly
+  where it was (with a little room before and after each, so words keep their start
+  and their tail). One undo step.
+* **808 glide** - the Sampler's new **Glide** knob (*Edit sound...*, with the pitch
+  knobs). With a time set, a note that starts while another is still held doesn't hit
+  again: the sounding one slides to the new note's pitch. In the piano roll, overlap
+  the notes you want to slide between; notes that don't overlap play as before.
+* **Chain presets** - mixer → right-click an insert's name → *Save its effects as a
+  chain preset...*: its effects with all their settings (yours and VSTs) get a name.
+  *Add a chain preset's effects* puts them on any insert, in any song. They live on
+  your PC (`Settings\Chains`); the effects you add are shared like any others.
+* **Track delay** - a new built-in effect: everything on the insert plays up to half
+  a second later, to line a track up with the others by ear or sit it behind the beat.
+* **Tempo and key of your sounds** - click a sound in the Sounds column: a moment
+  later its tempo and key appear under its waveform (`~ 140 BPM - F# min`). They are
+  estimates from the first 30 seconds: a single hit or a voice shows no tempo, drums
+  show no key, and a tempo may be the half or the double of the one you count.
+
 ## What's new in 2.3.2
 
 * **Taller playlist tracks.** The small handle at the top right of the playlist (above
@@ -973,6 +997,9 @@ the unsaved-changes check and SONG-mode compiling timed and printed; copies stil
 exactly as in 2.1, also for the session's own song; a change is noticed and undoing it
 gives the same fingerprint back), messages between the PCs travelling compressed, and a
 big damaged transfer checked in the background and rejected,
+and 2.4: the quiet parts of a take found, a 140 BPM loop's tempo, no tempo in noise, the
+key of two melodies, and the Sampler's glide (the sounding note speeds up evenly to the
+new pitch, with no second hit),
 and 2.3: the De-esser, Multiband compressor, Distortion, Stereo shaper and Loudness
 meter measured on test tones, and the piano roll's tools (chord, arpeggio, chop, strum,
 flip, reverse, half length, velocity ramp, humanize) checked note by note.

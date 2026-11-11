@@ -1,4 +1,5 @@
 #include "SoundBrowser.h"
+#include "AudioTools.h"
 
 static const juce::Colour selectColour = theme::colours::accent, folderColour = theme::colours::amber,
                           audioColour = theme::colours::teal, midiColour = theme::colours::pink;
@@ -606,6 +607,7 @@ void SoundBrowser::showFile (const juce::File& file)
 {
     shownFile = file;
     shownInfo = {};
+    shownAnalysis = {};
 
     if (fileimport::isMidiFile (file))
     {
@@ -621,10 +623,63 @@ void SoundBrowser::showFile (const juce::File& file)
         shownInfo = (seconds < 10.0 ? juce::String (seconds, 2) : juce::String (seconds, 1)) + " s  -  "
                     + juce::String (r->sampleRate / 1000.0, 1) + " kHz  -  " + (r->numChannels > 1 ? "stereo" : "mono");
         thumbnail.setSource (new juce::FileInputSource (file));
+
+        if (seconds >= 1.0)
+            analyse (file);
     }
 
     playButton.setVisible (fileimport::isAudioFile (file));
     repaint (previewArea);
+}
+
+/** (2.4) The sound's tempo and key, worked out in the background from its first 30 s and
+    shown under its waveform when ready (if you are still on that sound). */
+void SoundBrowser::analyse (const juce::File& file)
+{
+    juce::Thread::launch ([safe = juce::Component::SafePointer<SoundBrowser> (this), file]
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+
+        if (reader == nullptr || reader->sampleRate <= 0.0)
+            return;
+
+        const int n = (int) juce::jmin (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));
+
+        if (n < (int) reader->sampleRate)
+            return;
+
+        juce::AudioBuffer<float> buffer ((int) juce::jmin ((unsigned int) 2, reader->numChannels), n);
+        reader->read (&buffer, 0, n, 0, true, true);
+
+        if (buffer.getNumChannels() > 1)
+        {
+            buffer.addFrom (0, 0, buffer, 1, 0, n);
+            buffer.applyGain (0, 0, n, 0.5f);
+        }
+
+        const double bpm = audiotools::estimateBpm (buffer.getReadPointer (0), n, reader->sampleRate);
+        const auto key = audiotools::estimateKey (buffer.getReadPointer (0), n, reader->sampleRate);
+        juce::StringArray parts;
+
+        if (bpm > 0.0)
+            parts.add (juce::String (juce::roundToInt (bpm)) + " BPM");
+
+        if (key.found())
+            parts.add (key.toString());
+
+        const auto text = parts.joinIntoString ("  -  ");
+
+        juce::MessageManager::callAsync ([safe, file, text]
+        {
+            if (safe != nullptr && safe->shownFile == file)
+            {
+                safe->shownAnalysis = text;
+                safe->repaint (safe->previewArea);
+            }
+        });
+    });
 }
 
 void SoundBrowser::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -825,6 +880,14 @@ void SoundBrowser::paint (juce::Graphics& g)
     g.setFont (theme::ui (10.0f));
     g.drawText (TRANS ("Only you"), infoRow.removeFromRight (56), juce::Justification::centredRight, false);
     theme::drawIcon (g, theme::Icon::wave, infoRow.removeFromLeft (14).toFloat().withSizeKeepingCentre (12.0f, 12.0f), lcdMuted);
+
+    // (2.4) Its tempo and key, once worked out (a guess: "~").
+    if (shownAnalysis.isNotEmpty())
+    {
+        g.setColour (lcdText);
+        g.setFont (theme::mono (10.0f));
+        g.drawText ("~ " + shownAnalysis, infoRow.withTrimmedLeft (6), juce::Justification::centredLeft, true);
+    }
 
     // Waveform
     if (! waveArea.isEmpty() && fileimport::isAudioFile (shownFile))

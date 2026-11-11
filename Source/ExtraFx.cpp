@@ -5,6 +5,7 @@ const char* MultibandPlugin::xmlTypeName = "cotomultiband";
 const char* DistortionPlugin::xmlTypeName = "cotodrive";
 const char* StereoShaperPlugin::xmlTypeName = "cotostereo";
 const char* LoudnessMeterPlugin::xmlTypeName = "cotometer";
+const char* TrackDelayPlugin::xmlTypeName = "cototrackdelay";
 
 namespace
 {
@@ -513,6 +514,55 @@ void LoudnessMeterPlugin::applyToBuffer (const te::PluginRenderContext& fc)
     }
 
     peak = juce::Decibels::gainToDecibels (peakGain, silence);
+}
+
+//==============================================================================
+TrackDelayPlugin::TrackDelayPlugin (te::PluginCreationInfo info) : CotoFxPlugin (info)
+{
+    time = makeParam ("time", TRANS ("Delay"), skewed (0.0f, maxMs, 60.0f), 0.0f,
+                      [] (float v) { return v < 0.05f ? TRANS ("Off") : juce::String (v, v < 20.0f ? 1 : 0) + " ms"; });
+}
+
+TrackDelayPlugin::~TrackDelayPlugin()    { notifyListenersOfDeletion(); }
+
+void TrackDelayPlugin::initialise (const te::PluginInitialisationInfo& info)
+{
+    sampleRate = info.sampleRate > 0.0 ? info.sampleRate : 44100.0;
+    line.setSize (2, (int) (sampleRate * maxMs * 0.001) + 8);
+    reset();
+}
+
+void TrackDelayPlugin::reset()
+{
+    line.clear();
+    writePos = 0;
+}
+
+void TrackDelayPlugin::applyToBuffer (const te::PluginRenderContext& fc)
+{
+    if (fc.destBuffer == nullptr || fc.bufferNumSamples <= 0 || line.getNumSamples() == 0)
+        return;
+
+    auto& buffer = *fc.destBuffer;
+    const int n = fc.bufferNumSamples, channels = juce::jmin (2, buffer.getNumChannels());
+    const int size = line.getNumSamples();
+    const int delaySamples = juce::jlimit (0, size - 1, juce::roundToInt (time->getCurrentValue() * 0.001f * (float) sampleRate));
+
+    for (int c = 0; c < channels; ++c)
+    {
+        auto* data = buffer.getWritePointer (c, fc.bufferStartSample);
+        auto* stored = line.getWritePointer (c);
+        int w = writePos;
+
+        for (int i = 0; i < n; ++i)
+        {
+            stored[w] = data[i];
+            data[i] = stored[(w - delaySamples + size) % size];
+            w = (w + 1) % size;
+        }
+    }
+
+    writePos = (writePos + n) % size;
 }
 
 //==============================================================================

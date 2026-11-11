@@ -393,6 +393,11 @@ MoreFxEditor::MoreFxEditor (CotoFxPlugin& p) : plugin (p)
         addChoice (TRANS ("Shape"), amber, *dist->shape, DistortionPlugin::typeNames());
         help = TRANS ("Drive pushes the sound into the shape: Warm rounds it, Hard clips it flat, Fold bends it back on itself. Tone takes the fizz off. Crush: fewer bits and a lower sample rate for a lo-fi, gritty sound.");
     }
+    else if (auto* trackDelay = dynamic_cast<TrackDelayPlugin*> (&p))
+    {
+        addKnobs (TRANS ("Track delay"), teal, { { trackDelay->time, TRANS ("Delay") } });
+        help = TRANS ("Everything on this insert plays this much later: to line a track up with the others by ear, or to sit it just behind the beat.");
+    }
     else if (auto* stereo = dynamic_cast<StereoShaperPlugin*> (&p))
     {
         addKnobs (TRANS ("Stereo"), teal, { { stereo->width, TRANS ("Width") }, { stereo->delay, TRANS ("Delay") }, { stereo->bassMono, TRANS ("Bass mono") } });

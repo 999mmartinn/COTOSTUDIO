@@ -370,6 +370,7 @@ private:
         engine->getPluginManager().createBuiltInType<DistortionPlugin>();
         engine->getPluginManager().createBuiltInType<StereoShaperPlugin>();
         engine->getPluginManager().createBuiltInType<LoudnessMeterPlugin>();
+        engine->getPluginManager().createBuiltInType<TrackDelayPlugin>();
 
         // One input per interface socket (a mic is mono): "Input 1", "Input 2"...
         engine->getDeviceManager().setAllWaveInputsToNumChannels (1);

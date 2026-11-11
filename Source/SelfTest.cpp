@@ -30,6 +30,7 @@
 #include "MoreFx.h"
 #include "ExtraFx.h"
 #include "NoteTools.h"
+#include "AudioTools.h"
 #include "SelfTestMp3.h"
 
 namespace
@@ -4257,6 +4258,38 @@ private:
                 check ("tune +12: twice as fast (sample 1000 plays 2000)", o[1000], ramp (2000) - 1e-4, ramp (2000) + 1e-4);
                 check ("tune +12: over after half a second", std::abs (o[22060]), 0.0, 1e-9);
 
+                // 2.4 Glide: C5 held, C6 starts 0.1 s in with a 100 ms glide -> no new hit: the
+                // sounding note speeds up evenly to twice as fast (the ramp tells where it reads).
+                defaults(); s->glideParam->setParameter (100.0f, juce::sendNotificationSync);
+                {
+                    s->reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    std::vector<float> glided;
+
+                    for (int pos = 0; pos < 12288; pos += 512)
+                    {
+                        midi.clear();
+
+                        if (pos == 0)
+                            midi.addMidiMessage (juce::MidiMessage::noteOn (1, 60, 1.0f), 0.0, te::MPESourceID {});
+
+                        if (4410 >= pos && 4410 < pos + 512)
+                            midi.addMidiMessage (juce::MidiMessage::noteOn (1, 72, 1.0f), (4410 - pos) / sr, te::MPESourceID {});
+
+                        buffer.clear();
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        s->applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                            glided.push_back (buffer.getSample (0, i));
+                    }
+
+                    check ("glide 100 ms: before the second note, as recorded (sample 4000)", glided[4000], ramp (4000) - 1e-4, ramp (4000) + 1e-4);
+                    check ("glide 100 ms: half way through the glide (sample 6615 reads about 7167)", glided[6615], ramp (7167) - 3e-4, ramp (7167) + 3e-4);
+                    check ("glide 100 ms: after it, twice as fast and no second hit (sample 10000 reads about 13385)", glided[10000], ramp (13385) - 3e-4, ramp (13385) + 3e-4);
+                }
+
                 defaults(); s->fineParam->setParameter (100.0f, juce::sendNotificationSync);
                 o = render (4096, hit);
                 check ("fine +100 cents = one semitone", o[1000], ramp (1000 * std::pow (2.0, 1.0 / 12.0)) - 1e-4, ramp (1000 * std::pow (2.0, 1.0 / 12.0)) + 1e-4);
@@ -6847,6 +6880,43 @@ private:
                 // The right side flipped: the two sides cancel in the middle, and width 0 keeps only the middle.
                 check ("stereo shaper, right side flipped, width 0: what is left (dB)", db (peakThrough (*stereo, 1000.0, 0.5f)), -101.0, -60.0);
 
+                // 2.4 Track delay: a click comes out exactly 100 ms (4410 samples) later.
+                if (auto trackDelay = make (TrackDelayPlugin::xmlTypeName))
+                {
+                    set (*trackDelay, "time", 100.0f);
+                    trackDelay->initialise ({ te::TimePosition(), sr, 512 });
+                    trackDelay->reset();
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    te::MidiMessageArray midi;
+                    int clickAt = -1;
+                    float clickLevel = 0.0f;
+
+                    for (int pos = 0; pos < 8192; pos += 512)
+                    {
+                        buffer.clear();
+
+                        if (pos == 0)
+                            buffer.setSample (0, 0, 1.0f);
+
+                        te::PluginRenderContext rc (&buffer, 0, 512, &midi, 0.0, {}, true, false, false, false);
+                        trackDelay->applyToBuffer (rc);
+
+                        for (int i = 0; i < 512; ++i)
+                            if (std::abs (buffer.getSample (0, i)) > clickLevel)
+                            {
+                                clickLevel = std::abs (buffer.getSample (0, i));
+                                clickAt = pos + i;
+                            }
+                    }
+
+                    check ("track delay 100 ms: a click comes out at sample", clickAt, 4410.0, 4410.0);
+                    check ("track delay: at full level", clickLevel, 0.999, 1.001);
+                }
+                else
+                {
+                    ok = false;
+                }
+
                 peakThrough (*meterPlugin, 1000.0, 0.1f);
 
                 if (auto* meter = dynamic_cast<LoudnessMeterPlugin*> (meterPlugin.get()))
@@ -6965,6 +7035,91 @@ private:
                 return ok;
             },
             10000 });
+
+        steps.push_back ({ "2.4 listening tools: quiet parts of a take found (strip silence), a 140 BPM loop's tempo, no tempo in noise, the key of an A minor and a G major melody",
+            {},
+            [this]
+            {
+                bool ok = true;
+                auto check = [&ok] (const juce::String& what, bool good, const juce::String& got)
+                {
+                    std::cout << "    " << what << ": " << got << (good ? "" : "   <-- WRONG") << std::endl;
+                    ok = ok && good;
+                };
+
+                // Strip silence: sound at 1.0-2.0 s and 4.0-4.5 s (with a 0.1 s dip at 1.5 s) in 6 s.
+                std::vector<float> peaks (600, 0.0005f);
+
+                for (int i = 100; i < 200; ++i)  peaks[(size_t) i] = i >= 150 && i < 160 ? 0.001f : 0.5f;
+                for (int i = 400; i < 450; ++i)  peaks[(size_t) i] = 0.3f;
+
+                const auto regions = audiotools::findSoundRegions (peaks, 0.01, audiotools::silenceThresholdDb (0.5f));
+                juce::String found;
+
+                for (auto& r : regions)
+                    found << juce::String (r.getStart(), 2) << "-" << juce::String (r.getEnd(), 2) << " ";
+
+                check ("strip silence finds two parts (0.96-2.15 and 3.96-4.65 s)",
+                       regions.size() == 2 && std::abs (regions[0].getStart() - 0.96) < 0.011 && std::abs (regions[0].getEnd() - 2.15) < 0.011
+                         && std::abs (regions[1].getStart() - 3.96) < 0.011 && std::abs (regions[1].getEnd() - 4.65) < 0.011, found);
+
+                // A drum loop at 140 BPM: noise bursts on a kick-like pattern of 16ths, 8 s.
+                const double sr = 11025.0;
+                juce::Random random (140);
+                std::vector<float> loop ((size_t) (sr * 8.0), 0.0f);
+                const float pattern[16] = { 1.0f, 0, 0, 0, 0.5f, 0, 0, 0, 1.0f, 0, 0.3f, 0, 0.5f, 0, 0, 0 };
+
+                for (int k = 0;; ++k)
+                {
+                    const auto start = (size_t) (k * 60.0 / 140.0 / 4.0 * sr);
+
+                    if (start >= loop.size())
+                        break;
+
+                    if (pattern[k % 16] > 0.0f)
+                        for (size_t i = 0; i < (size_t) (sr * 0.03) && start + i < loop.size(); ++i)
+                            loop[start + i] += pattern[k % 16] * std::exp (-(float) i / (float) (sr * 0.006)) * (random.nextFloat() * 2.0f - 1.0f);
+                }
+
+                const double bpm = audiotools::estimateBpm (loop.data(), (int) loop.size(), sr);
+                check ("a 140 BPM loop's tempo", bpm > 139.0 && bpm < 141.0, juce::String (bpm, 2));
+
+                std::vector<float> noise ((size_t) (sr * 6.0));
+
+                for (auto& s : noise)
+                    s = random.nextFloat() * 2.0f - 1.0f;
+
+                const double noiseBpm = audiotools::estimateBpm (noise.data(), (int) noise.size(), sr);
+                check ("steady noise has no tempo", noiseBpm == 0.0, juce::String (noiseBpm, 2));
+
+                // Melodies of plucked notes (three harmonics each), a quarter of a second a note.
+                auto melody = [sr] (std::initializer_list<int> pitches)
+                {
+                    std::vector<float> out;
+
+                    for (int pitch : pitches)
+                    {
+                        const double hz = 440.0 * std::pow (2.0, (pitch - 69) / 12.0);
+
+                        for (int i = 0; i < (int) (sr * 0.25); ++i)
+                        {
+                            const double t = i / sr, w = juce::MathConstants<double>::twoPi * hz * t;
+                            out.push_back ((float) (0.4 * std::exp (-3.0 * t) * (std::sin (w) + 0.4 * std::sin (2.0 * w) + 0.2 * std::sin (3.0 * w))));
+                        }
+                    }
+
+                    return out;
+                };
+
+                const auto aMinor = melody ({ 57, 60, 64, 69, 67, 65, 64, 62, 60, 59, 57, 64, 57, 60, 64, 57 });
+                const auto gMajor = melody ({ 55, 59, 62, 67, 66, 64, 62, 60, 59, 57, 55, 62, 55, 59, 62, 55 });
+                const auto keyA = audiotools::estimateKey (aMinor.data(), (int) aMinor.size(), sr);
+                const auto keyG = audiotools::estimateKey (gMajor.data(), (int) gMajor.size(), sr);
+                check ("an A minor melody's key", keyA.note == 9 && keyA.minor, keyA.toString() + " (" + juce::String (keyA.confidence, 2) + ")");
+                check ("a G major melody's key", keyG.note == 7 && ! keyG.minor, keyG.toString() + " (" + juce::String (keyG.confidence, 2) + ")");
+                return ok;
+            },
+            15000 });
 
         steps.push_back ({ "2.2 speed: a big song (40 channels, 60 patterns of 480 notes, 600 clips) - comparing copies, the unsaved-changes check and a SONG-mode compile are fast; copies compare exactly as in 2.1",
             [this] { bigSongResult = runBigSongSpeedTest() ? 1 : 0; },

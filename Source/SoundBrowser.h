@@ -74,6 +74,8 @@ private:
     // The sound at the bottom (selected / playing)
     juce::File shownFile;
     juce::String shownInfo;
+    juce::String shownAnalysis;   // "140 BPM  -  F# min" (2.4), filled in a moment after the sound is shown
+    void analyse (const juce::File&);
     juce::AudioThumbnailCache thumbCache { 4 };
     juce::AudioThumbnail thumbnail;
     juce::Rectangle<int> previewArea, waveArea, noteArea;

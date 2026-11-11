@@ -62,6 +62,10 @@ SamplerPlugin::SamplerPlugin (te::PluginCreationInfo info) : CotoFxPlugin (info)
     });
     cutoffParam    = makeParam ("cutoff", TRANS ("Cutoff"), skewed (20.0f, 20000.0f, 1000.0f), 20000.0f, hzText);
     resonanceParam = makeParam ("resonance", TRANS ("Resonance"), { 0.0f, 1.0f }, 0.0f, pctText);
+
+    // (Last, so the older knobs keep their places.)
+    glideParam = makeParam ("glide", TRANS ("Glide"), skewed (0.0f, 1000.0f, 150.0f), 0.0f,
+                            [] (float v) { return v < 0.5f ? TRANS ("Off") : juce::String (juce::roundToInt (v)) + " ms"; });
 }
 
 SamplerPlugin::~SamplerPlugin()
@@ -174,6 +178,7 @@ SamplerPlugin::Settings SamplerPlugin::readSettings (const Sample& s) const
     k.tune = tuneParam->getCurrentValue() + fineParam->getCurrentValue() * 0.01f;
     k.level = levelParam->getCurrentValue();
     k.stopAtNoteEnd = noteLengthValue.get();
+    k.glideSamples = glideParam->getCurrentValue() < 0.5f ? 0 : juce::jmax (1, (int) (glideParam->getCurrentValue() * 0.001 * sampleRate));
 
     k.envelope = envOnParam->getCurrentValue() >= 0.5f;
     const auto samples = [this] (te::AutomatableParameter* p) { return (float) (p->getCurrentValue() * 0.001 * sampleRate); };
@@ -195,6 +200,20 @@ void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumb
     if (k.region.getLength() < 2.0)
         return;   // trimmed to nothing
 
+    // Glide (2.4): while another note is still held, this one only bends it to its pitch
+    // (an 808 sliding up or down), over the Glide time.
+    if (k.glideSamples > 0)
+        for (auto& held : voices)
+            if (held.active && held.held && held.fadeStep == 0.0f)
+            {
+                const double target = s.rate / sampleRate * std::pow (2.0, (noteNumber - 60 + (double) k.tune + fineCents / 100.0) / 12.0)
+                                        * (k.reverse ? -1.0 : 1.0);
+                held.stepChange = (target - held.step) / k.glideSamples;
+                held.glideLeft = k.glideSamples;
+                held.note = noteNumber;   // (this note's end is now the one that lets it go)
+                return;
+            }
+
     if (cut)
         for (auto& v : voices)
             if (v.active && v.fadeStep == 0.0f)
@@ -206,6 +225,8 @@ void SamplerPlugin::startVoice (const Sample& s, const Settings& k, int noteNumb
     const double speed = s.rate / sampleRate * std::pow (2.0, (noteNumber - 60 + (double) k.tune + fineCents / 100.0) / 12.0);
     v.active = true;
     v.released = false;
+    v.held = true;
+    v.glideLeft = 0;
     v.note = noteNumber;
     v.step = k.reverse ? -speed : speed;
     v.position = v.startPosition = k.reverse ? k.region.getEnd() - 1.0 - 1.0e-6 : k.region.getStart();
@@ -232,6 +253,9 @@ void SamplerPlugin::releaseNote (int noteNumber, const Settings& k, int releaseV
     // Otherwise the whole sound plays, like before (one-shot).
     for (auto& v : voices)
     {
+        if (v.note == noteNumber)
+            v.held = false;
+
         if (! v.active || v.released || v.note != noteNumber)
             continue;
 
@@ -453,6 +477,12 @@ void SamplerPlugin::applyToBuffer (const te::PluginRenderContext& fc)
             outL += (srcL[index] + frac * (srcL[index + 1] - srcL[index])) * g * v.gainL;
             outR += (srcR[index] + frac * (srcR[index + 1] - srcR[index])) * g * v.gainR;
             v.position += v.step;
+
+            if (v.glideLeft > 0)
+            {
+                v.step += v.stepChange;
+                --v.glideLeft;
+            }
 
             if (v.fadeStep > 0.0f && (v.fade -= v.fadeStep) <= 0.0f)
                 v.active = false;

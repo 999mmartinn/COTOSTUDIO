@@ -30,6 +30,10 @@ SamplerEditor::SamplerEditor (SamplerPlugin& p) : plugin (p)
     add (plugin.cutoffParam, TRANS ("Cutoff"), sky, TRANS ("Where the filter starts working"));
     add (plugin.resonanceParam, TRANS ("Res"), sky, TRANS ("Resonance: a boost at the cutoff (high = a whistling peak)"));
 
+    // (2.4; knob 14, shown with the pitch knobs)
+    add (plugin.glideParam, TRANS ("Glide"), lilac, TRANS ("For 808 slides: with a time set, a note that starts while another is still held "
+                                                         "bends the sounding one to its pitch instead of starting again (overlap the notes in the piano roll)"));
+
     reverseToggle = std::make_unique<fxui::ParamToggle> (*plugin.reverseParam, TRANS ("Reverse"), amber);
     reverseToggle->setTooltip (TRANS ("Plays the sound backwards (the trim and the fades follow the reversed sound)"));
     envelopeToggle = std::make_unique<fxui::ParamToggle> (*plugin.envOnParam, TRANS ("On"), teal);
@@ -127,7 +131,7 @@ void SamplerEditor::resized()
     buttons.removeFromLeft (8);
     noteLengthButton.setBounds (buttons.removeFromLeft (110));
     place (knobRow (sampleArea), { 0, 1, 2, 3 });
-    place (knobRow (pitchArea), { 4, 5, 6 });
+    place (knobRow (pitchArea), { 4, 5, 14, 6 });
 
     // Envelope: On in its title row, the shape on the left, then the knobs.
     envelopeToggle->setBounds (envelopeArea.withTrimmedTop (4).withHeight (titleH - 6).removeFromRight (92).translated (-pad, 0));

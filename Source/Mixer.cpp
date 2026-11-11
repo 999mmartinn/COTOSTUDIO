@@ -1,9 +1,73 @@
 #include "Mixer.h"
 #include "Look.h"
+#include "AppData.h"
 
 using namespace song;
 
 namespace col = theme::colours;
+
+//==============================================================================
+// Chain presets (2.4, like Pro Tools' track presets): an insert's effects, with their
+// settings, saved under a name on this PC (Settings\Chains) and added to any insert later.
+namespace chains
+{
+    static juce::File folder()      { return appdata::settingsFolder().getChildFile ("Chains"); }
+
+    static juce::Array<juce::File> files()
+    {
+        auto found = folder().findChildFiles (juce::File::findFiles, false, "*.cotochain");
+        found.sort();
+        return found;
+    }
+
+    static bool save (te::AudioTrack& insert, const juce::String& name)
+    {
+        juce::ValueTree chain ("CHAIN");
+
+        for (auto* p : getInsertEffects (insert))
+        {
+            p->flushPluginStateToValueTree();   // (a VST's own settings, as they are now)
+            auto copy = p->state.createCopy();
+            copy.removeProperty (te::IDs::id, nullptr);
+            chain.appendChild (copy, nullptr);
+        }
+
+        const auto legal = juce::File::createLegalFileName (name).trim();
+
+        if (legal.isEmpty() || chain.getNumChildren() == 0 || ! folder().createDirectory())
+            return false;
+
+        if (auto xml = chain.createXml())
+            return xml->writeTo (folder().getChildFile (legal + ".cotochain"));
+
+        return false;
+    }
+
+    /** Adds the preset's effects after the insert's own. Returns how many. */
+    static int load (te::Edit& edit, te::AudioTrack& insert, const juce::File& file)
+    {
+        auto xml = juce::parseXML (file);
+
+        if (xml == nullptr)
+            return 0;
+
+        int added = 0;
+
+        for (auto child : juce::ValueTree::fromXml (*xml))
+        {
+            auto copy = child.createCopy();
+            copy.removeProperty (te::IDs::id, nullptr);
+
+            if (auto plugin = edit.getPluginCache().createNewPlugin (copy))
+            {
+                putEffect (edit, &insert, plugin, -1);
+                ++added;
+            }
+        }
+
+        return added;
+    }
+}
 
 //==============================================================================
 /** A vertical peak meter reading an engine LevelMeasurer (local only, nothing is sent). */
@@ -530,6 +594,19 @@ public:
         juce::PopupMenu m;
         m.addItem (1, TRANS ("Rename..."));
         m.addItem (2, TRANS ("Delete insert"));
+        m.addSeparator();
+        m.addItem (3, TRANS ("Save its effects as a chain preset..."), ! getInsertEffects (*t).isEmpty());
+
+        juce::PopupMenu presets;
+        const auto presetFiles = chains::files();
+
+        for (int i = 0; i < presetFiles.size(); ++i)
+            presets.addItem (1000 + i, presetFiles[i].getFileNameWithoutExtension());
+
+        if (presetFiles.isEmpty())
+            presets.addItem (-1, TRANS ("(none yet: save an insert's effects first)"), false);
+
+        m.addSubMenu (TRANS ("Add a chain preset's effects"), presets);
 
         m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (name),
                          [self = juce::Component::SafePointer<Strip> (this)] (int r)
@@ -573,6 +650,41 @@ public:
                 mixer.state.beginAction();
                 mixer.state.selectedInsert = {};
                 removeInsert (*edit, *track);
+            }
+            else if (r == 3)
+            {
+                auto* w = new juce::AlertWindow (TRANS ("Save chain preset"), TRANS ("A name for these effects and their settings (kept on this PC):"),
+                                                 juce::MessageBoxIconType::NoIcon);
+                w->addTextEditor ("name", track->getName());
+                w->addButton (TRANS ("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
+                w->addButton (TRANS ("Cancel"), 0, juce::KeyPress (juce::KeyPress::escapeKey));
+                const auto id = insertID;
+                auto& st = mixer.state;
+                w->enterModalState (true, juce::ModalCallbackFunction::create ([&st, id, w] (int res)
+                {
+                    if (res != 1 || st.getEdit() == nullptr)
+                        return;
+
+                    const auto presetName = w->getTextEditorContents ("name").trim().substring (0, 60);
+
+                    if (auto* t2 = findInsert (*st.getEdit(), id))
+                        st.session.logMessage (chains::save (*t2, presetName)
+                                                 ? TRANS ("Chain preset saved: {NAME}").replace ("{NAME}", presetName)
+                                                 : TRANS ("The chain preset could not be saved"));
+                }), true);
+            }
+            else if (r >= 1000)
+            {
+                const auto presetFiles = chains::files();
+
+                if (juce::isPositiveAndBelow (r - 1000, presetFiles.size()))
+                {
+                    mixer.state.beginAction();
+                    const int added = chains::load (*edit, *track, presetFiles[r - 1000]);
+                    mixer.state.session.logMessage (TRANS ("{N} effect(s) added from the chain preset {NAME}")
+                                                      .replace ("{N}", juce::String (added))
+                                                      .replace ("{NAME}", presetFiles[r - 1000].getFileNameWithoutExtension()));
+                }
             }
         }
     }
