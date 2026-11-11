@@ -323,6 +323,7 @@ private:
     int passed = 0, failed = 0, skipped = 0;
     juce::StringArray failures;
     juce::String deletedChannelID;
+    juce::String rejoinRefusal;
     bool loopRefused = false;
 
     // Audio file sharing
@@ -3043,13 +3044,25 @@ private:
                 if (! rejoinedAlone)
                 {
                     rejoinedAlone = ! peer1.isFollowingShare() && ! P1().getTransport().isPlaying();
-                    peer1.joinShare ("0");
                     return false;
                 }
 
-                return rejoinedAlone && peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
+                // (Asked again until it takes: the list of people can reach a rejoiner a moment
+                // after the song does, and until then there is nobody to listen along with.)
+                if (! peer1.isFollowingShare())
+                {
+                    const auto refused = peer1.joinShare ("0");
+
+                    if (refused.isNotEmpty() && refused != rejoinRefusal)
+                        std::cout << "    not yet: " << refused << std::endl;
+
+                    rejoinRefusal = refused;
+                    return false;
+                }
+
+                return peer1.isFollowingShare() && P1().getTransport().isPlaying() && peer1.isSongMode();
             },
-            25000 });   // (a slow build machine has needed more than the usual 8 s here: the song and the share both have to arrive)
+            20000 });
 
         steps.push_back ({ "People: peer 1 is back in everyone's list and got the earlier chat",
             {},
