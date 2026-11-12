@@ -66,6 +66,10 @@ void framePanel (juce::Graphics& g, juce::Rectangle<int> area)
 
 juce::Rectangle<int> drawPanelTitle (juce::Graphics& g, juce::Rectangle<int> row, const juce::String& title, const juce::String& note)
 {
+    g.setColour (colours::accent);
+    g.fillRoundedRectangle (juce::Rectangle<float> (3.0f, 12.0f).withCentre ({ (float) row.getX() + 1.5f, (float) row.getCentreY() }), 1.5f);
+    row.removeFromLeft (9);
+
     auto f = ui (12.5f, Weight::bold);
     const int w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (f, title)) + 2;
     g.setColour (colours::text);
@@ -491,7 +495,7 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
         return;
     }
 
-    // Soft fills and no outline: only what is switched on (or coloured by the code) keeps a thin one.
+    // A soft fill with a thin, slightly lighter edge; what is switched on gets the accent.
     juce::Colour fill = colour, hot = colour.brighter (0.1f), border = juce::Colours::transparentBlack;
 
     if (style == "flat")
@@ -535,6 +539,9 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
     else if (down)
         fill = fill.darker (0.12f);
 
+    if (border.isTransparent() && style != "flat")
+        border = fill.brighter (0.25f).withMultipliedAlpha (0.75f);
+
     // Buttons joined to a neighbour (PAT|SONG) are square on that side.
     const bool left = b.isConnectedOnLeft(), right = b.isConnectedOnRight(),
                top = b.isConnectedOnTop(), bottom = b.isConnectedOnBottom();
@@ -542,7 +549,12 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
     shape.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(), corner, corner,
                                ! (left || top), ! (right || top), ! (left || bottom), ! (right || bottom));
 
-    g.setColour (fill);
+    // The bigger buttons get a slight top-to-bottom shade (the small ones, many in the mixer, stay plain).
+    if (style != "flat" && r.getHeight() >= 24.0f)
+        g.setGradientFill (juce::ColourGradient (fill.brighter (0.1f), 0.0f, r.getY(), fill.darker (0.12f), 0.0f, r.getBottom(), false));
+    else
+        g.setColour (fill);
+
     g.fillPath (shape);
 
     if (! border.isTransparent())
@@ -648,14 +660,14 @@ void Look::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, i
     g.setColour (fill.interpolatedWith (fill == button ? buttonHover : fill.brighter (0.1f), glow));
     g.fillRoundedRectangle (r, corner);
 
-    // Like the buttons: no outline, except while it has the keyboard (or the code gave it one).
-    const auto outline = box.hasKeyboardFocus (true) ? accent : box.findColour (juce::ComboBox::outlineColourId);
+    // The same thin edge as the buttons; the accent while it has the keyboard.
+    auto outline = box.hasKeyboardFocus (true) ? accent : box.findColour (juce::ComboBox::outlineColourId);
 
-    if (! outline.isTransparent())
-    {
-        g.setColour (outline);
-        g.drawRoundedRectangle (r, corner, 1.0f);
-    }
+    if (outline.isTransparent())
+        outline = fill.brighter (0.25f).withMultipliedAlpha (0.75f);
+
+    g.setColour (outline);
+    g.drawRoundedRectangle (r, corner, 1.0f);
 
     drawIcon (g, Icon::chevronDown, juce::Rectangle<float> ((float) w - 22.0f, 0.0f, 16.0f, (float) h).withSizeKeepingCentre (12.0f, 12.0f),
               box.findColour (juce::ComboBox::arrowColourId), 1.8f);
@@ -700,7 +712,7 @@ void Look::getIdealPopupMenuItemSize (const juce::String& itemText, bool isSepar
 
     // (JUCE measures the text and the shortcut together.) Room for the tick, the sub-menu arrow and the padding.
     h = standardHeight > 0 ? standardHeight : 28;
-    w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (getPopupMenuFont(), itemText)) + 4 + 6 + 18 + 16 + 30;
+    w = (int) std::ceil (juce::GlyphArrangement::getStringWidth (getPopupMenuFont(), itemText)) + 4 + 6 + 18 + 16 + 38;
 }
 
 void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& area, bool isSeparator, bool isActive,
@@ -720,9 +732,12 @@ void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& are
     {
         g.setColour (accentSoft);
         g.fillRoundedRectangle (r.toFloat(), 6.0f);
+        g.setColour (accent);
+        g.fillRoundedRectangle (r.toFloat().withWidth (3.0f).reduced (0.0f, 6.0f), 1.5f);   // a mark at its left
     }
 
     r.reduce (3, 0);
+    r.removeFromRight (8);   // (shortcuts and sub-menu arrows keep clear of the edge)
 
     auto colour = textColourToUse != nullptr ? *textColourToUse : text;
 
@@ -758,7 +773,7 @@ void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& are
 void Look::drawPopupMenuSectionHeader (juce::Graphics& g, const juce::Rectangle<int>& area, const juce::String& sectionName)
 {
     g.setFont (ui (11.0f, Weight::bold));
-    g.setColour (muted);
+    g.setColour (accent);
     g.drawText (sectionName.toUpperCase(), area.reduced (12, 0), juce::Justification::bottomLeft, true);
 }
 
@@ -803,8 +818,9 @@ void Look::drawAlertBox (juce::Graphics& g, juce::AlertWindow& w, const juce::Re
     g.fillRoundedRectangle (r, 10.0f);
     g.setColour (line);
     g.drawRoundedRectangle (r.reduced (0.5f), 10.0f, 1.0f);
-    g.setColour (accent);
-    g.fillRoundedRectangle (r.removeFromTop (3.0f).reduced (14.0f, 0.0f), 1.5f);
+    const auto strip = r.removeFromTop (3.0f).reduced (14.0f, 0.0f);
+    g.setGradientFill (juce::ColourGradient (accent, strip.getX(), 0.0f, teal, strip.getRight(), 0.0f, false));
+    g.fillRoundedRectangle (strip, 1.5f);
     layout.draw (g, textArea.toFloat().withTrimmedTop (4.0f));
 }
 
@@ -862,6 +878,18 @@ void Look::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, floa
         g.strokePath (value, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
+    // A cap in the middle (on knobs big enough for it), the pointer over it.
+    const float capRadius = radius - thickness * 1.15f;
+
+    if (capRadius >= 5.0f)
+    {
+        const auto cap = juce::Rectangle<float> (capRadius * 2.0f, capRadius * 2.0f).withCentre (c);
+        g.setColour (button);
+        g.fillEllipse (cap);
+        g.setColour (buttonHover);
+        g.drawEllipse (cap.reduced (0.5f), 1.0f);
+    }
+
     juce::Path pointer;
     pointer.startNewSubPath (c.getPointOnCircumference (radius * 0.2f, angle));
     pointer.lineTo (c.getPointOnCircumference (radius - thickness * 0.6f, angle));
@@ -879,10 +907,13 @@ void Look::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, floa
         g.setColour (stepOffAlt);
         g.fillRoundedRectangle (cx - 2.0f, (float) y, 4.0f, (float) h, 2.0f);
 
+        g.setColour (s.findColour (juce::Slider::trackColourId).withMultipliedAlpha (0.55f));
+        g.fillRoundedRectangle (cx - 2.0f, pos, 4.0f, juce::jmax (0.0f, (float) (y + h) - pos), 2.0f);
+
         const auto cap = juce::Rectangle<float> (juce::jmin (26.0f, (float) w - 2.0f), 28.0f).withCentre ({ cx, pos });
         g.setColour (s.isMouseOverOrDragging() ? juce::Colour (0xfff4f0fd) : juce::Colour (0xffe2dcf3));
         g.fillRoundedRectangle (cap, 5.0f);
-        g.setColour (accentText.withAlpha (0.7f));
+        g.setColour (juce::Colour (0xff6d4fe0));
         g.fillRoundedRectangle (cap.withSizeKeepingCentre (cap.getWidth() - 8.0f, 2.0f), 1.0f);
         return;
     }
@@ -894,8 +925,10 @@ void Look::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, floa
         g.fillRoundedRectangle ((float) x, cy - 2.0f, (float) w, 4.0f, 2.0f);
         g.setColour (s.findColour (juce::Slider::trackColourId));
         g.fillRoundedRectangle ((float) x, cy - 2.0f, juce::jmax (0.0f, pos - (float) x), 4.0f, 2.0f);
+        g.setColour (s.findColour (juce::Slider::trackColourId));
+        g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ pos, cy }));
         g.setColour (text);
-        g.fillEllipse (juce::Rectangle<float> (12.0f, 12.0f).withCentre ({ pos, cy }));
+        g.fillEllipse (juce::Rectangle<float> (8.0f, 8.0f).withCentre ({ pos, cy }));
         return;
     }
 
@@ -953,7 +986,12 @@ void Look::drawTabButton (juce::TabBarButton& b, juce::Graphics& g, bool over, b
     const auto name = b.getButtonText().trim();
     const auto font = ui (12.5f, front ? Weight::bold : Weight::semibold);
 
-    if (glow > 0.0f)
+    if (front)
+    {
+        g.setColour (accentSoft);
+        g.fillRoundedRectangle (r.reduced (1.0f, 4.0f), 6.0f);
+    }
+    else if (glow > 0.0f)
     {
         g.setColour (raised.withMultipliedAlpha (0.8f * glow));
         g.fillRoundedRectangle (r.reduced (1.0f, 4.0f), 6.0f);
@@ -1007,7 +1045,7 @@ void Look::drawProgressBar (juce::Graphics& g, juce::ProgressBar&, int w, int h,
 
     if (progress >= 0.0)
     {
-        g.setColour (accent);
+        g.setGradientFill (juce::ColourGradient (accent, r.getX(), 0.0f, teal, r.getRight(), 0.0f, false));
         g.fillRoundedRectangle (r.withWidth (r.getWidth() * (float) juce::jlimit (0.0, 1.0, progress)), r.getHeight() * 0.5f);
     }
 

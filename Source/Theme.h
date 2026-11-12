@@ -3,7 +3,7 @@
 #include <JuceHeader.h>
 
 /**
-    COTOSTUDIO's look ("Nocturno"): a dark purple-grey with a light lilac accent.
+    COTOSTUDIO's look ("Nocturno"): near-black violet, a lilac accent and aqua read-outs.
 
     Everything is flat (soft fills, few borders, no blur or shadows) so it stays light on
     the graphics card: only things that move (playhead, meters, the counter) repaint while
@@ -16,33 +16,33 @@ namespace theme
     //==============================================================================
     namespace colours
     {
-        inline const juce::Colour bg          { 0xff0f0d15 };   // window
-        inline const juce::Colour panel       { 0xff191622 };   // panels
-        inline const juce::Colour well        { 0xff13111a };   // fields (sunk into the panel)
-        inline const juce::Colour wellAlt     { 0xff15131d };   // inside panels (dock, grids)
-        inline const juce::Colour button      { 0xff242031 };   // buttons: a soft fill, no border
-        inline const juce::Colour buttonHover { 0xff2f2a40 };
-        inline const juce::Colour raised      { 0xff262235 };   // hover
-        inline const juce::Colour line        { 0xff2a2638 };   // borders
-        inline const juce::Colour menu        { 0xff1d1a28 };   // pop-up menus, tooltips
-        inline const juce::Colour text        { 0xfff1eefa };
-        inline const juce::Colour muted       { 0xffa49db9 };
-        inline const juce::Colour dim         { 0xff6b6585 };
-        inline const juce::Colour accent      { 0xffb39bff };   // light lilac
-        inline const juce::Colour accentSoft  { 0xff2d2748 };   // selection background
+        inline const juce::Colour bg          { 0xff0b0a11 };   // window
+        inline const juce::Colour panel       { 0xff1a1725 };   // panels
+        inline const juce::Colour well        { 0xff100e17 };   // fields (sunk into the panel)
+        inline const juce::Colour wellAlt     { 0xff14121c };   // inside panels (dock, grids)
+        inline const juce::Colour button      { 0xff2a2539 };   // buttons: a soft fill with a thin lighter edge
+        inline const juce::Colour buttonHover { 0xff373049 };
+        inline const juce::Colour raised      { 0xff2b2640 };   // hover
+        inline const juce::Colour line        { 0xff332e45 };   // borders
+        inline const juce::Colour menu        { 0xff211d2e };   // pop-up menus, tooltips
+        inline const juce::Colour text        { 0xfff6f3ff };
+        inline const juce::Colour muted       { 0xffb0a8cc };
+        inline const juce::Colour dim         { 0xff746d92 };
+        inline const juce::Colour accent      { 0xffa98bff };   // light lilac
+        inline const juce::Colour accentSoft  { 0xff352b5c };   // selection background
         inline const juce::Colour accentText  { 0xff17131f };   // text on the accent
-        inline const juce::Colour lcd         { 0xff0b0a10 };
-        inline const juce::Colour lcdText     { 0xffd4c7ff };
-        inline const juce::Colour lcdMuted    { 0xff8e82b8 };
-        inline const juce::Colour lane1       { 0xff181520 };
-        inline const juce::Colour lane2       { 0xff15131d };
-        inline const juce::Colour grid        { 0xff221f2e };
-        inline const juce::Colour gridBar     { 0xff3a3450 };
-        inline const juce::Colour stepOff     { 0xff272334 };
-        inline const juce::Colour stepOffAlt  { 0xff322d43 };
-        inline const juce::Colour red         { 0xfff2637a };
+        inline const juce::Colour lcd         { 0xff07060b };
+        inline const juce::Colour lcdText     { 0xff86ecd6 };
+        inline const juce::Colour lcdMuted    { 0xff7d789c };
+        inline const juce::Colour lane1       { 0xff1b1826 };
+        inline const juce::Colour lane2       { 0xff14121c };
+        inline const juce::Colour grid        { 0xff272336 };
+        inline const juce::Colour gridBar     { 0xff4a4268 };
+        inline const juce::Colour stepOff     { 0xff2a2639 };
+        inline const juce::Colour stepOffAlt  { 0xff3d3556 };
+        inline const juce::Colour red         { 0xffff5c7a };
         inline const juce::Colour redSoft     { 0xff3d2232 };
-        inline const juce::Colour green       { 0xff3dba7e };
+        inline const juce::Colour green       { 0xff34c987 };
         inline const juce::Colour teal        { 0xff38c9b6 };
         inline const juce::Colour amber       { 0xffe8b530 };
         inline const juce::Colour sky         { 0xff3fa2db };

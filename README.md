@@ -29,6 +29,19 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.6
+
+**A bolder Nocturno** (only the look changed; 2.6, 2.5 and 2.4 can share a session).
+
+- **More contrast**: a near-black window with clearly lighter panels, brighter text, a more
+  vivid lilac, stronger bar lines and beat groups in the playlist, piano roll and rack.
+- **A second colour**: the counter and the value read-outs are aqua; a thin line under the
+  top bar fades from lilac through teal; progress bars do the same.
+- **More detail**: buttons have a thin lighter edge and a slight shade, knobs have a cap,
+  faders light their groove below the cap, the open tab is a pill, the menu item under the
+  pointer has an accent mark, panel titles start with one.
+- Menus: shortcuts and sub-menu arrows no longer touch the right edge.
+
 ## What's new in 2.5
 
 **A cleaner look, and the wheel zooms the playlist.** 2.5 and 2.4 can share a session

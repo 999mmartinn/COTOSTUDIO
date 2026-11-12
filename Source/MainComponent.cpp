@@ -3577,6 +3577,13 @@ void MainComponent::paint (juce::Graphics& g)
     g.setColour (theme::colours::line);
     g.fillRect (0, topBarHeight - 1, getWidth(), 1);
 
+    // A thin line of colour under it: the accent fading through teal to nothing.
+    juce::ColourGradient glowLine (theme::colours::accent, 0.0f, 0.0f,
+                                   theme::colours::teal.withAlpha (0.0f), (float) getWidth() * 0.75f, 0.0f, false);
+    glowLine.addColour (0.5, theme::colours::teal.withAlpha (0.7f));
+    g.setGradientFill (glowLine);
+    g.fillRect (0, topBarHeight - 2, getWidth(), 2);
+
     // Separators between groups in the top bar
     g.setColour (theme::colours::line);
 
