@@ -2350,7 +2350,7 @@ public:
         if (p.y >= (float) barsH)
             return TRANS ("Markers: double-click (or right-click) here to add one - everyone sees it");
 
-        return TRANS ("Click: where SONG mode starts. Right-click: tempo change, marker, punch in / out. Ctrl + drag: punch range");
+        return TRANS ("Click: where SONG mode starts. Right-click: tempo change, marker, punch in / out. Ctrl + drag: punch range. Wheel: zoom");
     }
 
     /** Asks for a marker's text: a new marker at a beat (sid ""), or an existing one. */
@@ -2598,6 +2598,14 @@ public:
     double beatAt (float x) const
     {
         return juce::jmax (0.0, (double) (x + (float) owner.viewport->getViewPositionX()) / owner.pixelsPerBeat);
+    }
+
+    /** The wheel over the time line zooms in and out around the pointer (no Ctrl needed here). */
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (w.deltaY > 0.0f || w.deltaY < 0.0f)
+            owner.setZoom (owner.pixelsPerBeat * (w.deltaY > 0.0f ? 1.15f : 1.0f / 1.15f),
+                           e.position.x + (float) owner.viewport->getViewPositionX());
     }
 
     void mouseDown (const juce::MouseEvent& e) override

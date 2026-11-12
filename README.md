@@ -29,6 +29,22 @@ Free software under the **GNU AGPLv3** (see `LICENSE`), built on
 4. **Settings → Sound card and MIDI...** picks your audio interface (ASIO for the
    lowest delay, e.g. *UMC ASIO Driver* on a Behringer).
 
+## What's new in 2.5
+
+**A cleaner look, and the wheel zooms the playlist.** 2.5 and 2.4 can share a session
+(nothing changed in what is sent).
+
+- **Zoom with the wheel over the time line** (the bar numbers above the playlist), around
+  the pointer, like FL. Ctrl + wheel over the tracks still works.
+- **Nocturno, cleaner**: buttons and lists are soft fills without outlines (only what is
+  switched on keeps a thin one), deeper backgrounds with softer borders, menus are rounded
+  cards, the open tab is marked by a short accent line under its name.
+- **Short fades**: menus and call-outs fade in, buttons and tabs light up under the pointer.
+  They last about a tenth of a second, repaint only that control and never touch the song
+  (nothing is sent to the others). **Settings → Animations** turns them off.
+- The colours of patterns, channels and people are the same as before: existing songs look
+  the same.
+
 ## What's new in 2.4
 
 **Everyone in a session needs 2.4** (it has an effect and a Sampler knob that 2.3

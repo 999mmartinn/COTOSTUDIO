@@ -225,6 +225,143 @@ void setIcon (juce::Button& b, Icon icon)        { b.getProperties().set ("icon"
 void setStyle (juce::Button& b, const char* s)   { b.getProperties().set ("style", juce::String (s)); b.repaint(); }
 
 //==============================================================================
+// Motion: short fades only. One timer, running only while something is changing; each step
+// repaints (or re-blends) just that control. The amounts live in the control's own properties,
+// never in the song: nothing is sent to the others and the window is not redrawn.
+namespace
+{
+    const juce::Identifier hoverNow ("hoverNow"), hoverTo ("hoverTo");
+    bool animationsEnabled = true;
+
+    double nowMs()   { return juce::Time::getMillisecondCounterHiRes(); }
+
+    class Motion  : private juce::Timer
+    {
+    public:
+        /** How lit a control is under the pointer (0..1), moving towards "over" a little each frame. */
+        float hover (juce::Component& c, bool over)
+        {
+            const float target = over ? 1.0f : 0.0f;
+            auto& props = c.getProperties();
+            const float current = (float) (double) props.getWithDefault (hoverNow, 0.0);
+
+            if (! animationsEnabled || std::abs (current - target) < 0.01f)
+            {
+                if (! juce::approximatelyEqual (current, target))
+                    props.set (hoverNow, (double) target);
+
+                return target;
+            }
+
+            props.set (hoverTo, (double) target);
+
+            for (auto& h : hovers)
+                if (h.getComponent() == &c)
+                    return current;
+
+            hovers.push_back (&c);
+            wake();
+            return current;
+        }
+
+        /** Fades a window in (its whole-window alpha: the content is not redrawn for it). */
+        void fade (juce::Component& c, int ms)
+        {
+            if (! animationsEnabled || ms <= 0)
+                return;
+
+            c.setAlpha (0.0f);
+            fades.push_back ({ &c, nowMs(), (double) ms });
+            wake();
+        }
+
+    private:
+        struct Fade
+        {
+            juce::Component::SafePointer<juce::Component> target;
+            double start = 0.0, length = 1.0;
+        };
+
+        std::vector<juce::Component::SafePointer<juce::Component>> hovers;
+        std::vector<Fade> fades;
+        double lastTick = 0.0;
+
+        void wake()
+        {
+            if (! isTimerRunning())
+            {
+                lastTick = nowMs();
+                startTimerHz (60);   // short and small; it stops as soon as nothing is changing
+            }
+        }
+
+        void timerCallback() override
+        {
+            // By the clock, not by frames: the same speed when the message thread is busy.
+            const double now = nowMs();
+            const float elapsed = (float) juce::jlimit (0.0, 100.0, now - lastTick);
+            lastTick = now;
+
+            for (size_t i = hovers.size(); i-- > 0;)
+            {
+                auto* c = hovers[i].getComponent();
+                bool done = c == nullptr;
+
+                if (! done)
+                {
+                    auto& props = c->getProperties();
+                    const float target = (float) (double) props.getWithDefault (hoverTo, 0.0);
+                    float value = (float) (double) props.getWithDefault (hoverNow, 0.0);
+                    const float step = elapsed / (target > value ? 80.0f : 150.0f);   // in quickly, out a little slower
+
+                    value = target > value ? juce::jmin (target, value + step) : juce::jmax (target, value - step);
+                    done = std::abs (value - target) < 0.005f;
+                    props.set (hoverNow, (double) (done ? target : value));
+                    c->repaint();   // only this control
+                }
+
+                if (done)
+                    hovers.erase (hovers.begin() + (std::ptrdiff_t) i);
+            }
+
+            for (size_t i = fades.size(); i-- > 0;)
+            {
+                auto* c = fades[i].target.getComponent();
+                const float t = (float) ((now - fades[i].start) / fades[i].length);
+                const bool done = c == nullptr || t >= 1.0f;
+
+                if (c != nullptr)
+                {
+                    const float u = 1.0f - juce::jlimit (0.0f, 1.0f, t);
+                    c->setAlpha (done ? 1.0f : 1.0f - u * u * u);   // ease out
+                }
+
+                if (done)
+                    fades.erase (fades.begin() + (std::ptrdiff_t) i);
+            }
+
+            if (hovers.empty() && fades.empty())
+                stopTimer();
+        }
+    };
+
+    Motion& motion()
+    {
+        static Motion m;
+        return m;
+    }
+}
+
+void setAnimations (bool shouldAnimate)   { animationsEnabled = shouldAnimate; }
+bool animationsOn()                       { return animationsEnabled; }
+
+void fadeIn (juce::Component& c, int milliseconds)
+{
+    if (c.isOnDesktop())   // (inside another window it would redraw what is under it every frame)
+        motion().fade (c, milliseconds);
+}
+
+//==============================================================================
 Look::Look()
 {
     auto& f = fonts();
@@ -239,15 +376,16 @@ Look::Look()
 
     setColour (juce::ResizableWindow::backgroundColourId, bg);
     setColour (juce::DocumentWindow::backgroundColourId, bg);
-    setColour (juce::TextButton::buttonColourId, well);
+    setColour (juce::TextButton::buttonColourId, button);
     setColour (juce::TextButton::buttonOnColourId, accentSoft);
     setColour (juce::TextButton::textColourOffId, text);
     setColour (juce::TextButton::textColourOnId, text);
-    setColour (juce::ComboBox::backgroundColourId, well);
-    setColour (juce::ComboBox::outlineColourId, line);
+    setColour (juce::ComboBox::backgroundColourId, button);
+    setColour (juce::ComboBox::outlineColourId, juce::Colours::transparentBlack);
     setColour (juce::ComboBox::textColourId, text);
     setColour (juce::ComboBox::arrowColourId, muted);
-    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff221d30));
+    // (Just short of opaque, so the menu's window can have rounded corners; it is drawn opaque.)
+    setColour (juce::PopupMenu::backgroundColourId, menu.withAlpha ((juce::uint8) 254));
     setColour (juce::PopupMenu::textColourId, text);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, accentSoft);
     setColour (juce::PopupMenu::highlightedTextColourId, text);
@@ -276,7 +414,7 @@ Look::Look()
     setColour (juce::AlertWindow::backgroundColourId, panel);
     setColour (juce::AlertWindow::textColourId, text);
     setColour (juce::AlertWindow::outlineColourId, line);
-    setColour (juce::TooltipWindow::backgroundColourId, juce::Colour (0xff262138));
+    setColour (juce::TooltipWindow::backgroundColourId, menu.brighter (0.06f));
     setColour (juce::TooltipWindow::textColourId, text);
     setColour (juce::TooltipWindow::outlineColourId, line);
     setColour (juce::TabbedComponent::backgroundColourId, wellAlt);
@@ -324,7 +462,7 @@ static juce::String styleOf (juce::Button& b)
     return style;
 }
 
-static float cornerFor (juce::Rectangle<float> r)   { return juce::jmin (7.0f, r.getHeight() * 0.3f); }
+static float cornerFor (juce::Rectangle<float> r)   { return juce::jmin (8.0f, r.getHeight() * 0.3f); }
 
 void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour& colour, bool over, bool down)
 {
@@ -332,7 +470,7 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
     const auto style = styleOf (b);
     const bool on = b.getToggleState();
     const float corner = cornerFor (r);
-    juce::Colour fill = colour, border = line;
+    const float glow = motion().hover (b, b.isEnabled() && (over || down));   // 0..1, fades in and out
 
     // Colours set by the code (lights, channel names...) win over the style.
     const bool custom = b.isColourSpecified (on ? juce::TextButton::buttonOnColourId : juce::TextButton::buttonColourId);
@@ -344,54 +482,58 @@ void Look::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce:
         g.setColour (colour);
         g.fillEllipse (dot);
 
-        if (over || down)
+        if (glow > 0.0f)
         {
-            g.setColour (text.withAlpha (0.55f));
+            g.setColour (text.withAlpha (0.55f * glow));
             g.drawEllipse (dot.expanded (2.0f), 1.0f);
         }
 
         return;
     }
 
+    // Soft fills and no outline: only what is switched on (or coloured by the code) keeps a thin one.
+    juce::Colour fill = colour, hot = colour.brighter (0.1f), border = juce::Colours::transparentBlack;
+
     if (style == "flat")
     {
-        if (! (over || down || on))
+        if (! on && glow <= 0.0f)
             return;
 
-        fill = on ? accentSoft : raised;
-        border = juce::Colours::transparentBlack;
+        fill = on ? accentSoft : raised.withAlpha (0.0f);
+        hot = on ? accentSoft.brighter (0.1f) : raised;
     }
     else if (style == "accent" || (style == "toggle" && on))
     {
         fill = accent;
-        border = accent;
+        hot = accent.brighter (0.25f);
     }
     else if (style == "play")
     {
         fill = green;
-        border = green;
+        hot = green.brighter (0.18f);
     }
     else if (style == "record")
     {
-        fill = on ? red : well;
-        border = on ? red : line;
+        fill = on ? red : button;
+        hot = on ? red.brighter (0.18f) : buttonHover;
     }
     else if (! custom)
     {
-        fill = on ? accentSoft : well;
-        border = on ? accent : line;
+        fill = on ? accentSoft : button;
+        hot = on ? accentSoft.brighter (0.1f) : buttonHover;
+        border = on ? accent.withAlpha (0.6f) : juce::Colours::transparentBlack;
     }
     else
     {
         border = fill.brighter (0.15f);
     }
 
+    fill = fill.interpolatedWith (hot, glow);
+
     if (! b.isEnabled())
         fill = fill.withMultipliedAlpha (0.5f);
     else if (down)
         fill = fill.darker (0.12f);
-    else if (over)
-        fill = fill.brighter (0.07f);
 
     // Buttons joined to a neighbour (PAT|SONG) are square on that side.
     const bool left = b.isConnectedOnLeft(), right = b.isConnectedOnRight(),
@@ -501,10 +643,20 @@ void Look::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, i
 {
     auto r = juce::Rectangle<float> (0, 0, (float) w, (float) h).reduced (0.5f);
     const float corner = cornerFor (r);
-    g.setColour (box.findColour (juce::ComboBox::backgroundColourId).brighter (box.isMouseOver (true) ? 0.07f : 0.0f));
+    const auto fill = box.findColour (juce::ComboBox::backgroundColourId);
+    const float glow = motion().hover (box, box.isEnabled() && box.isMouseOver (true));
+    g.setColour (fill.interpolatedWith (fill == button ? buttonHover : fill.brighter (0.1f), glow));
     g.fillRoundedRectangle (r, corner);
-    g.setColour (box.hasKeyboardFocus (true) ? accent : box.findColour (juce::ComboBox::outlineColourId));
-    g.drawRoundedRectangle (r, corner, 1.0f);
+
+    // Like the buttons: no outline, except while it has the keyboard (or the code gave it one).
+    const auto outline = box.hasKeyboardFocus (true) ? accent : box.findColour (juce::ComboBox::outlineColourId);
+
+    if (! outline.isTransparent())
+    {
+        g.setColour (outline);
+        g.drawRoundedRectangle (r, corner, 1.0f);
+    }
+
     drawIcon (g, Icon::chevronDown, juce::Rectangle<float> ((float) w - 22.0f, 0.0f, 16.0f, (float) h).withSizeKeepingCentre (12.0f, 12.0f),
               box.findColour (juce::ComboBox::arrowColourId), 1.8f);
 }
@@ -522,9 +674,17 @@ void Look::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
 
 void Look::drawPopupMenuBackground (juce::Graphics& g, int w, int h)
 {
-    g.fillAll (findColour (juce::PopupMenu::backgroundColourId));
-    g.setColour (line);
-    g.drawRect (0, 0, w, h, 1);
+    // A rounded card (the window around it is see-through).
+    const auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h);
+    g.setColour (menu);
+    g.fillRoundedRectangle (r, 9.0f);
+    g.setColour (line.brighter (0.3f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 9.0f, 1.0f);
+}
+
+void Look::preparePopupMenuWindow (juce::Component& window)
+{
+    fadeIn (window, 110);   // menus (and sub-menus, and the lists of combo boxes) fade in
 }
 
 juce::Font Look::getPopupMenuFont()    { return ui (13.5f); }
@@ -554,13 +714,15 @@ void Look::drawPopupMenuItem (juce::Graphics& g, const juce::Rectangle<int>& are
         return;
     }
 
-    auto r = area.reduced (4, 1);
+    auto r = area.reduced (1, 1);
 
     if (isHighlighted && isActive)
     {
         g.setColour (accentSoft);
-        g.fillRoundedRectangle (r.toFloat(), 5.0f);
+        g.fillRoundedRectangle (r.toFloat(), 6.0f);
     }
+
+    r.reduce (3, 0);
 
     auto colour = textColourToUse != nullptr ? *textColourToUse : text;
 
@@ -649,10 +811,9 @@ void Look::drawAlertBox (juce::Graphics& g, juce::AlertWindow& w, const juce::Re
 void Look::drawTooltip (juce::Graphics& g, const juce::String& t, int w, int h)
 {
     auto r = juce::Rectangle<float> (0, 0, (float) w, (float) h);
-    g.setColour (findColour (juce::TooltipWindow::backgroundColourId));
-    g.fillRoundedRectangle (r, 6.0f);
-    g.setColour (line);
-    g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+    g.fillAll (findColour (juce::TooltipWindow::backgroundColourId));   // (its window is not see-through: no rounded corners)
+    g.setColour (line.brighter (0.3f));
+    g.drawRect (r, 1.0f);
 
     juce::AttributedString s;
     s.setJustification (juce::Justification::centredLeft);
@@ -719,12 +880,10 @@ void Look::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, floa
         g.fillRoundedRectangle (cx - 2.0f, (float) y, 4.0f, (float) h, 2.0f);
 
         const auto cap = juce::Rectangle<float> (juce::jmin (26.0f, (float) w - 2.0f), 28.0f).withCentre ({ cx, pos });
-        g.setColour (s.isMouseOverOrDragging() ? juce::Colour (0xffe6e0f8) : juce::Colour (0xffd8d0f0));
-        g.fillRoundedRectangle (cap, 4.0f);
-        g.setColour (gridBar);
-        g.drawRoundedRectangle (cap.reduced (0.5f), 4.0f, 1.0f);
-        g.setColour (bg.withAlpha (0.6f));
-        g.fillRect (cap.withSizeKeepingCentre (cap.getWidth() - 8.0f, 2.0f));
+        g.setColour (s.isMouseOverOrDragging() ? juce::Colour (0xfff4f0fd) : juce::Colour (0xffe2dcf3));
+        g.fillRoundedRectangle (cap, 5.0f);
+        g.setColour (accentText.withAlpha (0.7f));
+        g.fillRoundedRectangle (cap.withSizeKeepingCentre (cap.getWidth() - 8.0f, 2.0f), 1.0f);
         return;
     }
 
@@ -790,23 +949,27 @@ void Look::drawTabButton (juce::TabBarButton& b, juce::Graphics& g, bool over, b
 {
     auto r = b.getActiveArea().toFloat();
     const bool front = b.isFrontTab();
+    const float glow = motion().hover (b, over && ! front);
+    const auto name = b.getButtonText().trim();
+    const auto font = ui (12.5f, front ? Weight::bold : Weight::semibold);
+
+    if (glow > 0.0f)
+    {
+        g.setColour (raised.withMultipliedAlpha (0.8f * glow));
+        g.fillRoundedRectangle (r.reduced (1.0f, 4.0f), 6.0f);
+    }
+
+    g.setColour (front ? text : muted.interpolatedWith (text, glow));
+    g.setFont (font);
+    g.drawText (name, b.getTextArea(), juce::Justification::centred, true);
 
     if (front)
     {
-        g.setColour (wellAlt);
-        g.fillRoundedRectangle (r.withTrimmedBottom (-6.0f), 7.0f);
+        // The open tab: a short accent line under its name.
+        const float width = juce::jmin (r.getWidth() - 8.0f, juce::GlyphArrangement::getStringWidth (font, name) + 6.0f);
         g.setColour (accent);
-        g.fillRoundedRectangle (r.removeFromTop (2.0f).reduced (6.0f, 0.0f), 1.0f);
+        g.fillRoundedRectangle (r.withTop (r.getBottom() - 3.0f).withSizeKeepingCentre (width, 2.0f).translated (0.0f, -0.5f), 1.0f);
     }
-    else if (over)
-    {
-        g.setColour (raised.withAlpha (0.6f));
-        g.fillRoundedRectangle (r.reduced (0.0f, 2.0f), 6.0f);
-    }
-
-    g.setColour (front ? text : muted);
-    g.setFont (ui (12.5f, front ? Weight::bold : Weight::semibold));
-    g.drawText (b.getButtonText().trim(), b.getTextArea(), juce::Justification::centred, true);
 }
 
 void Look::drawTabbedButtonBarBackground (juce::TabbedButtonBar&, juce::Graphics&) {}

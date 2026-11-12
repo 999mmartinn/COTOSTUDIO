@@ -905,6 +905,7 @@ MainComponent::MainComponent (te::Engine& e)
 
     // Automatic backups (Settings): how often; old ones of never-saved songs go (in the background).
     backupMinutes = juce::jlimit (0, 10, prefs->getIntValue ("backupMinutes", 2));
+    theme::setAnimations (prefs->getBoolValue ("animations", true));   // (Settings: the short fades of menus and buttons)
     juce::Thread::launch ([] { backups::pruneOldUnsaved(); });
 
     state.ghostNotes = prefs->getBoolValue ("ghostNotes", true);
@@ -3413,7 +3414,7 @@ void MainComponent::showSessionPanel()
     callbacks.leave = [this] { session.leave(); refresh(); };
 
     auto panel = std::make_unique<SessionPanel> (session, *settings(), std::move (callbacks));
-    juce::CallOutBox::launchAsynchronously (std::move (panel), sessionPill.getScreenBounds(), nullptr);
+    theme::fadeIn (juce::CallOutBox::launchAsynchronously (std::move (panel), sessionPill.getScreenBounds(), nullptr));
 }
 
 void MainComponent::showSettingsMenu()
@@ -3447,6 +3448,7 @@ void MainComponent::showSettingsMenu()
                                      : TRANS ("Automatic backups: every {N} min").replace ("{N}", juce::String (backupMinutes)),
                   backupEvery);
 
+    m.addItem (5, TRANS ("Animations (short fades in menus and buttons)"), true, theme::animationsOn());
     m.addSeparator();
     m.addItem (3, TRANS ("Show every message"));
     m.addItem (4, TRANS ("About COTOSTUDIO"));
@@ -3457,6 +3459,11 @@ void MainComponent::showSettingsMenu()
         else if (r == 2)   showPluginScanner();
         else if (r == 3)   showLog();
         else if (r == 4)   showAbout();
+        else if (r == 5)
+        {
+            theme::setAnimations (! theme::animationsOn());
+            settings()->setValue ("animations", theme::animationsOn());
+        }
         else if (r == 20)  appdata::getRoot().startAsProcess();
         else if (r == 39)  showBackups();
         else if (r >= 40 && r <= 50)

@@ -1006,7 +1006,7 @@ public:
             return;
 
         auto panel = std::make_unique<SendsPanel> (mixer.state, insertID);
-        juce::CallOutBox::launchAsynchronously (std::move (panel), sends.getScreenBounds(), nullptr);
+        theme::fadeIn (juce::CallOutBox::launchAsynchronously (std::move (panel), sends.getScreenBounds(), nullptr));
     }
     MeterBar meter;
     ResetSlider fader, pan;

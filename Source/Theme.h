@@ -5,36 +5,41 @@
 /**
     COTOSTUDIO's look ("Nocturno"): a dark purple-grey with a light lilac accent.
 
-    Everything is flat (fills and thin borders, no blur, shadows or animations) so it
-    stays light on the graphics card: only things that move (playhead, meters, the
-    counter) repaint while playing.
+    Everything is flat (soft fills, few borders, no blur or shadows) so it stays light on
+    the graphics card: only things that move (playhead, meters, the counter) repaint while
+    playing. The only motion is short fades (a menu appearing, a button lighting under the
+    pointer): they repaint just that control, never touch the song, and can be turned off
+    in Settings.
 */
 namespace theme
 {
     //==============================================================================
     namespace colours
     {
-        inline const juce::Colour bg          { 0xff14111c };   // window
-        inline const juce::Colour panel       { 0xff1f1b2a };   // panels
-        inline const juce::Colour well        { 0xff17141f };   // buttons, fields
-        inline const juce::Colour wellAlt     { 0xff1a1724 };   // inside panels (dock, grids)
-        inline const juce::Colour raised      { 0xff27223a };   // hover
-        inline const juce::Colour line        { 0xff332d46 };   // borders
-        inline const juce::Colour text        { 0xffeeeaf8 };
-        inline const juce::Colour muted       { 0xffa79fc6 };
-        inline const juce::Colour dim         { 0xff6e6690 };
+        inline const juce::Colour bg          { 0xff0f0d15 };   // window
+        inline const juce::Colour panel       { 0xff191622 };   // panels
+        inline const juce::Colour well        { 0xff13111a };   // fields (sunk into the panel)
+        inline const juce::Colour wellAlt     { 0xff15131d };   // inside panels (dock, grids)
+        inline const juce::Colour button      { 0xff242031 };   // buttons: a soft fill, no border
+        inline const juce::Colour buttonHover { 0xff2f2a40 };
+        inline const juce::Colour raised      { 0xff262235 };   // hover
+        inline const juce::Colour line        { 0xff2a2638 };   // borders
+        inline const juce::Colour menu        { 0xff1d1a28 };   // pop-up menus, tooltips
+        inline const juce::Colour text        { 0xfff1eefa };
+        inline const juce::Colour muted       { 0xffa49db9 };
+        inline const juce::Colour dim         { 0xff6b6585 };
         inline const juce::Colour accent      { 0xffb39bff };   // light lilac
-        inline const juce::Colour accentSoft  { 0xff2e2747 };   // selection background
+        inline const juce::Colour accentSoft  { 0xff2d2748 };   // selection background
         inline const juce::Colour accentText  { 0xff17131f };   // text on the accent
-        inline const juce::Colour lcd         { 0xff0f0d16 };
+        inline const juce::Colour lcd         { 0xff0b0a10 };
         inline const juce::Colour lcdText     { 0xffd4c7ff };
         inline const juce::Colour lcdMuted    { 0xff8e82b8 };
-        inline const juce::Colour lane1       { 0xff1d1a28 };
-        inline const juce::Colour lane2       { 0xff1a1724 };
-        inline const juce::Colour grid        { 0xff29243a };
-        inline const juce::Colour gridBar     { 0xff40385a };
-        inline const juce::Colour stepOff     { 0xff2b2639 };
-        inline const juce::Colour stepOffAlt  { 0xff352e48 };
+        inline const juce::Colour lane1       { 0xff181520 };
+        inline const juce::Colour lane2       { 0xff15131d };
+        inline const juce::Colour grid        { 0xff221f2e };
+        inline const juce::Colour gridBar     { 0xff3a3450 };
+        inline const juce::Colour stepOff     { 0xff272334 };
+        inline const juce::Colour stepOffAlt  { 0xff322d43 };
         inline const juce::Colour red         { 0xfff2637a };
         inline const juce::Colour redSoft     { 0xff3d2232 };
         inline const juce::Colour green       { 0xff3dba7e };
@@ -86,6 +91,13 @@ namespace theme
     void drawHeading (juce::Graphics&, juce::Rectangle<int> area, const juce::String& text, juce::Justification = juce::Justification::centredLeft);
 
     //==============================================================================
+    // Motion: short fades, local to the control (see the note at the top).
+    void setAnimations (bool shouldAnimate);
+    bool animationsOn();
+    /** Fades in something that has its own window (a menu, a call-out). Does nothing for the rest. */
+    void fadeIn (juce::Component&, int milliseconds = 120);
+
+    //==============================================================================
     /** The look of every standard control: buttons, menus, lists, sliders, fields... */
     class Look  : public juce::LookAndFeel_V4
     {
@@ -111,7 +123,9 @@ namespace theme
         void drawPopupMenuSectionHeader (juce::Graphics&, const juce::Rectangle<int>&, const juce::String&) override;
         juce::Font getPopupMenuFont() override;
         void getIdealPopupMenuItemSize (const juce::String&, bool isSeparator, int standardHeight, int& w, int& h) override;
-        int getPopupMenuBorderSize() override                              { return 4; }
+        int getPopupMenuBorderSize() override                              { return 5; }
+        int getMenuWindowFlags() override                                  { return 0; }   // (no square system shadow: menus are rounded)
+        void preparePopupMenuWindow (juce::Component&) override;
 
         // Text
         void fillTextEditorBackground (juce::Graphics&, int w, int h, juce::TextEditor&) override;

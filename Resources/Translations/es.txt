@@ -305,6 +305,7 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "Find my plugins (VST3, VST2)..." = "Buscar mis plugins (VST3, VST2)..."
 "Language" = "Idioma"
 "Show every message" = "Ver todos los mensajes"
+"Animations (short fades in menus and buttons)" = "Animaciones (fundidos cortos en menús y botones)"
 "About COTOSTUDIO" = "Acerca de COTOSTUDIO"
 "Make music together, in sync, over Tailscale." = "Haz música en grupo, sincronizados, por Tailscale."
 "Free software (GNU AGPLv3). Built on Tracktion Engine and JUCE." = "Software libre (GNU AGPLv3). Hecho con Tracktion Engine y JUCE."
@@ -884,7 +885,7 @@ countries: es mx ar co cl pe ve uy ec gt cu bo do hn py sv ni cr pa pr
 "A note everyone sees on the ruler (\"drop\", \"verse 2\", \"fix the hats here\")" = "Una nota que todos ven en la regla (\"drop\", \"verso 2\", \"arreglar los hats aquí\")"
 "Click: play from here. Drag: move. Double-click: edit. Right-click: colour, delete" = "Clic: reproducir desde aquí. Arrastrar: mover. Doble clic: editar. Clic derecho: color, borrar"
 "Markers: double-click (or right-click) here to add one - everyone sees it" = "Marcadores: doble clic (o clic derecho) aquí para añadir uno; todos lo ven"
-"Click: where SONG mode starts. Right-click: tempo change, marker, punch in / out. Ctrl + drag: punch range" = "Clic: dónde empieza el modo SONG. Clic derecho: cambio de tempo, marcador, punch in / out. Ctrl + arrastrar: rango de punch"
+"Click: where SONG mode starts. Right-click: tempo change, marker, punch in / out. Ctrl + drag: punch range. Wheel: zoom" = "Clic: dónde empieza el modo SONG. Clic derecho: cambio de tempo, marcador, punch in / out. Ctrl + arrastrar: rango de punch. Rueda: zoom"
 
 // 1.10: note length, window buttons, importing beats from FL Studio
 "Note length" = "Duración de nota"

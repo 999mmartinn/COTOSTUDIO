@@ -72,7 +72,7 @@ class MigrationWindow  : public juce::DocumentWindow,
 {
 public:
     MigrationWindow (const appdata::Migration& plan, std::function<void (appdata::MigrationResult)> done)
-        : DocumentWindow (appdata::appName, juce::Colour (0xff14111c), 0), onDone (std::move (done))
+        : DocumentWindow (appdata::appName, theme::colours::bg, 0), onDone (std::move (done))
     {
         setUsingNativeTitleBar (true);
         content.text = "Moving your songs and files to " + appdata::getRoot().getFullPathName()
@@ -279,7 +279,7 @@ private:
     {
     public:
         explicit MainWindow (te::Engine& e)
-            : DocumentWindow (appdata::appName, juce::Colour (0xff14111c), DocumentWindow::allButtons)
+            : DocumentWindow (appdata::appName, theme::colours::bg, DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
             auto* content = new MainComponent (e);
